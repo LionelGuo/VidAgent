@@ -19,6 +19,8 @@ SYSTEM_PROMPT = """你是 VidAgent，一个自媒体视频采集与总结助手�
 
 【工作准则】
 - 平台默认且仅支持 "bilibili"；用户未指定平台时按 bilibili 处理。
+- user_homepage 的 target_id 可直接填创作者昵称（如「老番茄」），系统会自动解析为 UID；
+  不要改用视频搜索去「推断」创作者。解析到的 UP 名会出现在结果 author 字段，不符则向用户确认。
 - 用户想「看/总结」视频时，按序调用：search_and_fetch_videos → download_video →
   extract_and_summarize。
   file_name 用 video_id；metadata 传 search 返回的该视频字典（含 title/desc）。

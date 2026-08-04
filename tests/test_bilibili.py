@@ -53,3 +53,32 @@ def test_check_raises_on_error_code():
 
 def test_check_passes_on_zero():
     assert b._check({"code": 0, "data": {}}, "test")["code"] == 0
+
+
+def test_normalize_user():
+    u = b._normalize_user(
+        {"mid": 546195, "uname": "老番茄", "fans": "123", "level": 6, "face": "f"}
+    )
+    assert u["mid"] == "546195"
+    assert u["uname"] == "老番茄"
+    assert u["fans"] == 123
+    assert u["level"] == 6
+
+
+def test_pick_best_user_prefers_exact_name():
+    # 精确匹配优先，即便其 fans 不是最大
+    users = [
+        {"mid": "1", "uname": "老番茄2", "fans": 999},
+        {"mid": "546195", "uname": "老番茄", "fans": 100},
+        {"mid": "2", "uname": "X老番茄", "fans": 500},
+    ]
+    assert b._pick_best_user(users, "老番茄")["mid"] == "546195"
+
+
+def test_pick_best_user_no_exact_picks_top_fans():
+    users = [{"mid": "1", "uname": "A", "fans": 10}, {"mid": "2", "uname": "B", "fans": 99}]
+    assert b._pick_best_user(users, "不存在")["mid"] == "2"
+
+
+def test_pick_best_user_empty():
+    assert b._pick_best_user([], "x") is None

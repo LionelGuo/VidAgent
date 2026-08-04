@@ -179,3 +179,53 @@ async def fetch_user_videos(
         )
     vlist = (data.get("data", {}).get("list", {}) or {}).get("vlist", []) or []
     return [normalize(v) for v in vlist]
+
+
+def _normalize_user(item: dict) -> dict:
+    """归一化「用户」搜索项（区别于视频 normalize）。"""
+    return {
+        "mid": str(item.get("mid", "")),
+        "uname": item.get("uname", ""),
+        "fans": int(item.get("fans", 0) or 0),
+        "level": int(item.get("level", 0) or 0),
+        "face": item.get("face", ""),
+    }
+
+
+async def search_users(
+    client: httpx.AsyncClient, keyword: str, page: int = 1, page_size: int = 20
+) -> list[dict]:
+    """用户搜索（search_type=bili_user，WBI 签名，与视频搜索同族、headless 可用）。
+
+    返回 [{mid, uname, fans, level, face}, ...]。
+    """
+    await _ensure_fingerprint(client)
+    img_key, sub_key = await get_wbi_keys(client)
+    params = sign_wbi(
+        {"search_type": "bili_user", "keyword": keyword, "page": page, "page_size": page_size},
+        img_key,
+        sub_key,
+    )
+    data = await _get(client, f"{API_BASE}/x/web-interface/wbi/search/type", params)
+    _check(data, "user_search")
+    result = data.get("data", {}).get("result", []) or []
+    return [_normalize_user(u) for u in result]
+
+
+def _pick_best_user(users: list[dict], name: str) -> dict | None:
+    """从候选用户中选最佳：优先 uname 完全等于 name（取其中 fans 最多）；
+    无精确匹配则取整体 fans 最多的（B站按相关度排序，首位通常即目标）。"""
+    if not users:
+        return None
+    exact = [u for u in users if u.get("uname") == name]
+    pool = exact if exact else users
+    return max(pool, key=lambda u: u.get("fans", 0))
+
+
+async def resolve_creator_mid(client: httpx.AsyncClient, name: str) -> tuple[str, str, int]:
+    """昵称 → (mid, uname, fans)。搜不到抛 ValueError。"""
+    users = await search_users(client, name)
+    best = _pick_best_user(users, name)
+    if not best:
+        raise ValueError(f"找不到 B站创作者「{name}」")
+    return best["mid"], best["uname"], best["fans"]

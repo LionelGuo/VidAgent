@@ -10,9 +10,13 @@
 
 from __future__ import annotations
 
+import logging
+
 from vidagent.config import settings
 from vidagent.tools import bilibili, hotboard
 from vidagent.utils.dates import filter_today
+
+logger = logging.getLogger(__name__)
 
 _BILI_ALIASES = ("bilibili", "bili", "b站")
 
@@ -30,7 +34,8 @@ async def search_and_fetch_videos(
         platform: 平台，目前支持 "bilibili"。
         task_type: 任务类型："hot_board"(平台综合热门) / "search"(关键词搜索) /
             "user_homepage"(指定创作者主页，B站需登录 Cookie)。
-        target_id: search 时为搜索关键词；user_homepage 时为用户 UID/mid；hot_board 时留空。
+        target_id: search 时为搜索关键词；user_homepage 时为「用户名 或 数字 UID」
+            （用户名会自动解析为 UID）；hot_board 时留空。
         date_filter: 时间过滤，目前支持 "today"（仅今天发布；过滤为空则回退原列表）。
         limit: 返回条数上限。
 
@@ -56,14 +61,13 @@ async def _bilibili(
             items = await bilibili.search_videos(client, target_id, page_size=max(limit, 20))
         elif task_type == "user_homepage":
             if not target_id:
-                raise ValueError("task_type=user_homepage 时 target_id 必填（用户 UID/mid）")
-            if not str(target_id).isdigit():
-                raise ValueError(
-                    "B站创作者主页的 target_id 必须是数字 UID（mid），不能用昵称。"
-                    "在 UP 主页 URL bilibili.com/space/<数字> 里取那串数字，"
-                    "例如「总结 UP主 546195 的视频」。"
-                )
-            items = await bilibili.fetch_user_videos(client, target_id, ps=max(limit, 30))
+                raise ValueError("task_type=user_homepage 时 target_id 必填（用户名 或 UID）")
+            mid = str(target_id)
+            if not mid.isdigit():
+                # 昵称 → 自动解析为 UID（搜索同族接口，免登录）
+                mid, uname, fans = await bilibili.resolve_creator_mid(client, mid)
+                logger.info("创作者「%s」解析为 mid=%s（%s，粉丝 %s）", target_id, mid, uname, fans)
+            items = await bilibili.fetch_user_videos(client, mid, ps=max(limit, 30))
         else:
             raise ValueError(
                 f"未知 task_type: {task_type}（可选: hot_board / search / user_homepage）"
