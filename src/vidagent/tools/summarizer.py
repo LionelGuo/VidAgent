@@ -28,7 +28,17 @@ _SUMMARY_SYS = (
 
 
 def extract_and_summarize(local_path: str, metadata: dict | None = None) -> str:
-    """对本地视频：抽音 → ASR → LLM 总结，返回结构化 Markdown 字符串。"""
+    """对本地视频抽取音频、语音转写并生成结构化中文总结（Markdown）。
+
+    无音频轨时自动降级为仅依据元数据的总结（不报错）。
+
+    Args:
+        local_path: 本地视频文件路径（用 download_video 返回的 local_path）。
+        metadata: 视频元数据，至少含 title 与 desc（来自 search_and_fetch_videos）。
+
+    Returns:
+        结构化 Markdown 总结（核心观点 + 主要内容梳理）。
+    """
     metadata = metadata or {}
     transcript = ""
     try:

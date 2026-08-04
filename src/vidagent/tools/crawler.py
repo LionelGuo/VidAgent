@@ -24,6 +24,19 @@ async def search_and_fetch_videos(
     date_filter: str | None = None,  # "today"
     limit: int = 10,
 ) -> list[dict]:
+    """获取视频元数据列表（按平台/任务类型）。
+
+    Args:
+        platform: 平台，目前支持 "bilibili"。
+        task_type: 任务类型："hot_board"(平台综合热门) / "search"(关键词搜索) /
+            "user_homepage"(指定创作者主页，B站需登录 Cookie)。
+        target_id: search 时为搜索关键词；user_homepage 时为用户 UID/mid；hot_board 时留空。
+        date_filter: 时间过滤，目前支持 "today"（仅今天发布；过滤为空则回退原列表）。
+        limit: 返回条数上限。
+
+    Returns:
+        每项含 video_id / title / desc / publish_time / video_url / platform / author / view_count。
+    """
     platform = platform.lower()
     if platform in _BILI_ALIASES:
         return await _bilibili(task_type, target_id, date_filter, limit)

@@ -27,10 +27,15 @@ def _platform_of(url: str) -> str:
 
 
 def download_video(video_url: str, file_name: str) -> dict:
-    """下载视频到 workspace。
+    """下载视频（无水印）到本地 workspace 目录。
 
-    返回 {"status": "success", "local_path": ..., "platform": ...}
-    或    {"status": "error", "error": ..., "video_url": ...}（交由 Agent 反思重试）。
+    Args:
+        video_url: 视频地址（用 search_and_fetch_videos 返回的 video_url）。
+        file_name: 保存文件名前缀，通常用 video_id。
+
+    Returns:
+        {"status":"success","local_path":...,"platform":...}，
+        或失败时 {"status":"error","error":...,"video_url":...}（应反思重试）。
     """
     platform = _platform_of(video_url)
     if platform == "bilibili":
