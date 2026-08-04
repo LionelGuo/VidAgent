@@ -1,0 +1,34 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+
+# venv
+.venv/
+venv/
+env/
+
+# 环境/密钥
+.env
+
+# 运行期缓存（视频/音频/中间产物）
+workspace/
+*.mp4
+*.mp3
+*.flv
+*.webm
+
+# 第三方爬虫（按需 vendor）
+vendor/
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
+
+# 测试/缓存
+.pytest_cache/
+.ruff_cache/

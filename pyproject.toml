@@ -1,0 +1,45 @@
+[project]
+name = "vidagent"
+version = "0.1.0"
+description = "智能自媒体数据采集与多模态分析 Agent 系统"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    # HTTP（爬虫/接口调用）
+    "httpx>=0.27",
+    # 配置
+    "pydantic-settings>=2.2",
+    "python-dotenv>=1.0",
+    # 下载（B站无水印，最稳）
+    "yt-dlp>=2024.8.6",
+]
+
+[project.optional-dependencies]
+# Sprint 2：ASR
+asr = ["faster-whisper>=1.0"]
+# Sprint 3：Agent 编排 + UI
+agent = ["agno>=1.0", "openai>=1.40"]
+ui = ["gradio>=4.40"]
+# Sprint 4：抖音/小红书/快手无水印下载
+f2 = ["f2>=0.0.1.6"]
+# 开发
+dev = ["pytest>=8.0", "pytest-asyncio>=0.23", "ruff>=0.6"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/vidagent"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
