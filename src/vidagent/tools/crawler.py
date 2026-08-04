@@ -57,6 +57,12 @@ async def _bilibili(
         elif task_type == "user_homepage":
             if not target_id:
                 raise ValueError("task_type=user_homepage 时 target_id 必填（用户 UID/mid）")
+            if not str(target_id).isdigit():
+                raise ValueError(
+                    "B站创作者主页的 target_id 必须是数字 UID（mid），不能用昵称。"
+                    "在 UP 主页 URL bilibili.com/space/<数字> 里取那串数字，"
+                    "例如「总结 UP主 546195 的视频」。"
+                )
             items = await bilibili.fetch_user_videos(client, target_id, ps=max(limit, 30))
         else:
             raise ValueError(
