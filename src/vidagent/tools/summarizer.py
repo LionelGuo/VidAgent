@@ -1,0 +1,100 @@
+"""Tool 3: extract_and_summarize —— 音频提取 + ASR + LLM 总结。
+
+- 抽音：ffmpeg 子进程（utils.audio）
+- ASR：faster-whisper（ctranslate2，GPU 优先）
+- 总结：OpenAI 兼容协议（httpx 直调），云端 DeepSeek / 本地 Ollama
+- 降级（文档 §5.2）：无音频轨 / ASR 失败 → 仅用「标题+简介」总结，不崩溃
+"""
+
+from __future__ import annotations
+
+import logging
+
+import httpx
+
+from vidagent.config import settings
+from vidagent.utils.audio import extract_audio
+
+logger = logging.getLogger(__name__)
+
+_SUMMARY_SYS = (
+    "你是一个专业的视频内容总结助手。根据提供的视频语音转写文本（及标题/简介），"
+    "用中文输出结构化总结：\n"
+    "1. **核心观点**（1-3 条，最关键的结论或主张）\n"
+    "2. **主要内容梳理**（按逻辑分点，简明扼要）\n"
+    "若转写文本为空或质量很差，仅依据标题与简介做力所能及的总结，"
+    "并在开头注明「⚠️ 仅有元数据，总结基于标题/简介」。"
+)
+
+
+def extract_and_summarize(local_path: str, metadata: dict | None = None) -> str:
+    """对本地视频：抽音 → ASR → LLM 总结，返回结构化 Markdown 字符串。"""
+    metadata = metadata or {}
+    transcript = ""
+    try:
+        mp3 = extract_audio(local_path)
+        transcript, _lang = _transcribe(mp3)
+        logger.info("ASR 完成，转写 %d 字", len(transcript))
+    except Exception as e:  # 抽音/ASR 失败 → 降级
+        logger.warning("ASR 失败，走降级总结（仅元数据）: %s", e)
+
+    return _summarize(transcript, metadata)
+
+
+def _transcribe(mp3_path) -> tuple[str, str]:
+    """faster-whisper 转写，返回 (text, language)。"""
+    from faster_whisper import WhisperModel
+
+    device = _resolve_device()
+    compute_type = "float16" if device == "cuda" else "int8"
+    logger.info(
+        "加载 faster-whisper(%s, device=%s, compute=%s)",
+        settings.whisper_model, device, compute_type,
+    )
+    model = WhisperModel(settings.whisper_model, device=device, compute_type=compute_type)
+    segments, info = model.transcribe(str(mp3_path), beam_size=5, vad_filter=True)
+    text = "".join(seg.text for seg in segments).strip()
+    return text, info.language
+
+
+def _resolve_device() -> str:
+    """auto → 依据 ctranslate2 CUDA 计数选 cuda/cpu。"""
+    if settings.asr_device != "auto":
+        return settings.asr_device
+    try:
+        import ctranslate2
+
+        return "cuda" if ctranslate2.get_cuda_device_count() > 0 else "cpu"
+    except Exception:
+        return "cpu"
+
+
+def _summarize(transcript: str, metadata: dict) -> str:
+    base_url, api_key, model = settings.active_llm()
+    if settings.llm_provider == "cloud" and not settings.openai_api_key:
+        raise RuntimeError(
+            f"未配置云端 LLM API key：请在 .env 设置 OPENAI_API_KEY（推荐 DeepSeek）。"
+            f" 转写文本({len(transcript)} 字)已就绪，配好 key 后重试即可。"
+        )
+
+    meta_block = ""
+    if metadata:
+        meta_block = f"【标题】{metadata.get('title', '')}\n【简介】{metadata.get('desc', '')}\n"
+    user = f"{meta_block}\n【语音转写】\n{transcript or '(空)'}\n\n请输出结构化总结。"
+
+    payload = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": _SUMMARY_SYS},
+            {"role": "user", "content": user},
+        ],
+        "temperature": 0.3,
+    }
+    resp = httpx.post(
+        f"{base_url}/chat/completions",
+        json=payload,
+        headers={"Authorization": f"Bearer {api_key}"},
+        timeout=120,
+    )
+    resp.raise_for_status()
+    return resp.json()["choices"][0]["message"]["content"]
