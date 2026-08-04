@@ -106,5 +106,8 @@ def _summarize(transcript: str, metadata: dict) -> str:
         headers={"Authorization": f"Bearer {api_key}"},
         timeout=120,
     )
-    resp.raise_for_status()
+    if resp.status_code != 200:
+        raise RuntimeError(
+            f"LLM 调用失败 HTTP {resp.status_code}: {resp.text[:300]}"
+        )
     return resp.json()["choices"][0]["message"]["content"]

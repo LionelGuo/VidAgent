@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import re
 
 import httpx
@@ -57,6 +58,36 @@ async def _ensure_fingerprint(client: httpx.AsyncClient) -> None:
         pass
 
 
+class BiliAPIError(RuntimeError):
+    """B站接口错误（网络失败 / 非 JSON / 业务 code != 0）。"""
+
+
+async def _get(client: httpx.AsyncClient, url: str, params: dict) -> dict:
+    """带重试的 GET + JSON 解析：网络错误与非 JSON（如 412 风控页）最多重试 3 次。"""
+    last: object = None
+    for attempt in range(3):
+        try:
+            resp = await client.get(url, params=params)
+            try:
+                return resp.json()
+            except ValueError:
+                last = BiliAPIError(f"非 JSON 响应(HTTP {resp.status_code})，疑似风控拦截")
+        except httpx.HTTPError as e:  # 连接/超时等瞬时错误
+            last = e
+        if attempt < 2:
+            await asyncio.sleep(1.0 * (attempt + 1))
+    raise BiliAPIError(f"B站接口请求失败({url}): {last}")
+
+
+def _check(data: dict, where: str) -> dict:
+    """校验业务返回 code==0，否则抛 BiliAPIError。"""
+    if data.get("code") != 0:
+        raise BiliAPIError(
+            f"B站接口 {where} 返回错误 code={data.get('code')} msg={data.get('message')}"
+        )
+    return data
+
+
 def _strip_html(text: str) -> str:
     return _TAG_RE.sub("", text or "").strip()
 
@@ -96,24 +127,20 @@ def normalize(item: dict) -> dict:
 
 async def fetch_popular(client: httpx.AsyncClient, ps: int = 20, pn: int = 1) -> list[dict]:
     """综合热门（首页 trending，最贴近「今日热榜」）。"""
-    resp = (
-        await client.get(
-            f"{API_BASE}/x/web-interface/popular", params={"ps": ps, "pn": pn}
-        )
-    ).json()
-    return [normalize(v) for v in resp.get("data", {}).get("list", [])]
+    data = await _get(client, f"{API_BASE}/x/web-interface/popular", {"ps": ps, "pn": pn})
+    _check(data, "popular")
+    return [normalize(v) for v in data.get("data", {}).get("list", [])]
 
 
 async def fetch_ranking(
     client: httpx.AsyncClient, rid: int = 0, type_: str = "all"
 ) -> list[dict]:
     """排行榜（全站：rid=0）。"""
-    resp = (
-        await client.get(
-            f"{API_BASE}/x/web-interface/ranking/v2", params={"rid": rid, "type": type_}
-        )
-    ).json()
-    return [normalize(v) for v in resp.get("data", {}).get("list", [])]
+    data = await _get(
+        client, f"{API_BASE}/x/web-interface/ranking/v2", {"rid": rid, "type": type_}
+    )
+    _check(data, "ranking")
+    return [normalize(v) for v in data.get("data", {}).get("list", [])]
 
 
 async def search_videos(
@@ -127,10 +154,9 @@ async def search_videos(
         img_key,
         sub_key,
     )
-    resp = (
-        await client.get(f"{API_BASE}/x/web-interface/wbi/search/type", params=params)
-    ).json()
-    result = resp.get("data", {}).get("result", []) or []
+    data = await _get(client, f"{API_BASE}/x/web-interface/wbi/search/type", params)
+    _check(data, "search")
+    result = data.get("data", {}).get("result", []) or []
     return [normalize(v) for v in result if v.get("type") == "video"]
 
 
@@ -145,16 +171,9 @@ async def fetch_user_videos(
     await _ensure_fingerprint(client)
     img_key, sub_key = await get_wbi_keys(client)
     params = sign_wbi({"mid": mid, "pn": pn, "ps": ps, "order": order}, img_key, sub_key)
-    resp = await client.get(f"{API_BASE}/x/space/wbi/arc/search", params=params)
-    try:
-        data = resp.json()
-    except Exception as e:
-        raise RuntimeError(
-            "B站创作者接口返回非 JSON（疑似风控拦截）。请在 .env 设置 BILI_COOKIE "
-            "（从浏览器复制含 SESSDATA 的 Cookie）后重试。"
-        ) from e
+    data = await _get(client, f"{API_BASE}/x/space/wbi/arc/search", params)
     if data.get("code") != 0:
-        raise RuntimeError(
+        raise BiliAPIError(
             f"B站创作者接口失败 code={data.get('code')} msg={data.get('message')}。"
             "通常需在 .env 设置 BILI_COOKIE（含 SESSDATA）。"
         )

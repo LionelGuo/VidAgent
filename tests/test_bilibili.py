@@ -42,3 +42,14 @@ def test_wbi_mixin_key_length_and_deterministic():
     k = wbi._get_mixin_key(s)
     assert len(k) == 32
     assert wbi._get_mixin_key(s) == wbi._get_mixin_key(s)
+
+
+def test_check_raises_on_error_code():
+    import pytest
+
+    with pytest.raises(b.BiliAPIError):
+        b._check({"code": -352, "message": "风控"}, "test")
+
+
+def test_check_passes_on_zero():
+    assert b._check({"code": 0, "data": {}}, "test")["code"] == 0
