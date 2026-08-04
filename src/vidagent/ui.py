@@ -1,9 +1,11 @@
-"""Gradio 对话 UI：自然语言驱动 + Markdown 渲染 + 最新视频内嵌播放（文档 §2.1）。
+"""Gradio 对话 UI：自然语言驱动 + Markdown + 最新视频内嵌播放 + 多轮记忆（文档 §2.1）。
 
 启动：uv run python -m vidagent.ui
 """
 
 from __future__ import annotations
+
+import uuid
 
 import gradio as gr
 
@@ -32,11 +34,11 @@ def _user_step(user_msg: str, history):
     return "", history + [{"role": "user", "content": user_msg}]
 
 
-async def _bot_step(history):
-    """运行 Agent（arun 以支持异步工具），追加回复并更新视频窗口。"""
+async def _bot_step(history, session_id: str):
+    """运行 Agent（arun + session_id 实现多轮记忆），追加回复并更新视频窗口。"""
     user_msg = history[-1]["content"]
     try:
-        resp = await get_agent().arun(user_msg)
+        resp = await get_agent().arun(user_msg, session_id=session_id)
         text = getattr(resp, "content", None) or str(resp)
     except Exception as e:  # 不让 UI 崩溃
         text = f"⚠️ 运行出错：{e}"
@@ -44,37 +46,47 @@ async def _bot_step(history):
     return history, _latest_mp4()
 
 
+def _clear_chat():
+    """清空对话：重置界面并开新会话（新 session_id → 无历史记忆）。"""
+    return [], None, uuid.uuid4().hex
+
+
 def build_ui() -> gr.Blocks:
     with gr.Blocks(title="VidAgent") as demo:
         gr.Markdown(
             "# 🎬 VidAgent — 视频采集与多模态总结助手\n"
-            "自然语言驱动。例如：「抓 B站 今日热榜前 3 并逐个总结」"
+            "自然语言驱动，支持多轮对话。例如：「抓 B站 今日热榜前 3 并逐个总结」"
         )
         with gr.Row():
             chatbot = gr.Chatbot(height=460, label="对话")
             video = gr.Video(label="最新下载的视频")
         with gr.Row():
             msg = gr.Textbox(
-                placeholder="抓 B站 今日热榜前 3 并逐个总结 / 搜索「大模型」并总结第一条",
+                placeholder="抓 B站 今日热榜前 3 并逐个总结 / 总结老番茄最近的视频",
                 scale=4,
                 label="指令",
             )
             btn = gr.Button("发送", variant="primary", scale=1)
+            clear_btn = gr.Button("清空对话", scale=1)
 
         gr.Examples(
             examples=[
                 "B站今日热榜前2名是什么？",
                 "抓B站今日热榜前1名并总结",
-                "搜索B站「大模型」并总结第一个视频",
+                "总结老番茄最近2个视频",
             ],
             inputs=msg,
         )
 
-        # 提交链：先把用户消息上屏 → 再跑 Agent
+        session_state = gr.State(uuid.uuid4().hex)  # 会话 id：多轮记忆的载体
+
+        # 提交链：先把用户消息上屏 → 再跑 Agent（带上 session_id）
         sub = msg.submit(_user_step, [msg, chatbot], [msg, chatbot])
         clk = btn.click(_user_step, [msg, chatbot], [msg, chatbot])
         for ev in (sub, clk):
-            ev.then(_bot_step, [chatbot], [chatbot, video])
+            ev.then(_bot_step, [chatbot, session_state], [chatbot, video])
+
+        clear_btn.click(_clear_chat, outputs=[chatbot, video, session_state])
 
     return demo
 

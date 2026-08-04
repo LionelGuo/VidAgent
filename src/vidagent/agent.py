@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from agno.agent import Agent
+from agno.db.in_memory import InMemoryDb
 
 from vidagent.llm import build_model
 from vidagent.tools.crawler import search_and_fetch_videos
@@ -30,6 +31,10 @@ SYSTEM_PROMPT = """你是 VidAgent，一个自媒体视频采集与总结助手�
 """
 
 
+# 进程内会话存储：按 session_id 记录多轮历史，实现多轮记忆
+_session_db = InMemoryDb()
+
+
 def build_agent() -> Agent:
     return Agent(
         name="VidAgent",
@@ -38,4 +43,7 @@ def build_agent() -> Agent:
         instructions=SYSTEM_PROMPT,
         markdown=True,
         retries=3,
+        db=_session_db,  # 持久化会话（内存）
+        add_history_to_context=True,  # 把历史轮次加入上下文 → 多轮记忆
+        num_history_runs=6,  # 保留最近 6 轮
     )
