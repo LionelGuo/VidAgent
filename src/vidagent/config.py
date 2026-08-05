@@ -23,6 +23,10 @@ class Settings(BaseSettings):
     ollama_base_url: str = "http://localhost:11434/v1"
     llm_model_local: str = "qwen2.5:7b-instruct-q4_K_M"
 
+    # 模型额外参数（JSON 字符串），传给 provider 的 extra_body；
+    # 例：关闭 SiliconFlow Qwen3 思考模式 → {"enable_thinking": false}
+    llm_extra_body: str = "{}"
+
     # ----- ASR（Sprint 2 起生效）-----
     whisper_model: str = "base"  # tiny / base / small / medium
     asr_device: str = "auto"  # auto / cuda / cpu

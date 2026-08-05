@@ -5,6 +5,8 @@
 
 from __future__ import annotations
 
+import json
+
 from agno.models.openai import OpenAIChat
 
 from vidagent.config import settings
@@ -12,6 +14,11 @@ from vidagent.config import settings
 
 def build_model() -> OpenAIChat:
     base_url, api_key, model = settings.active_llm()
+    # 解析模型额外参数（如 {"enable_thinking": false}）
+    try:
+        extra = json.loads(settings.llm_extra_body) if settings.llm_extra_body.strip() else None
+    except (json.JSONDecodeError, ValueError):
+        extra = None
     # DeepSeek/Ollama 仅认 "system"；Agno 默认把 system 映射成 OpenAI 的 "developer"，需改回。
     return OpenAIChat(
         id=model,
@@ -23,4 +30,5 @@ def build_model() -> OpenAIChat:
             "assistant": "assistant",
             "tool": "tool",
         },
+        extra_body=extra,
     )
