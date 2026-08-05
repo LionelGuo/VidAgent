@@ -103,6 +103,11 @@ tests/          pytest（18 项）
 - **总结提示「未配置 API key」**：在 `.env` 填 `OPENAI_API_KEY`。
 - **ASR 显存吃紧**：把 `WHISPER_MODEL` 调小（base→tiny），或 `ASR_DEVICE=cpu`。
 - **下载失败**：yt-dlp 偶发被限流，工具内置随机抖动；重试即可。
+- **页面乱码 / 卡在「⏳ 思考中…」/ 只输出残缺工具调用 JSON 文本**：模型选型问题。Agent 依赖**结构化工具调用（function calling）**，必须用原生支持它的非思考（Instruct）模型：
+  - ✅ 推荐：`deepseek-ai/DeepSeek-V3`（DeepSeek 官方同族）。实测工具调用稳定、输出干净。
+  - ⚠️ 勉强：`Qwen/Qwen2.5-72B-Instruct`（会调用，偶有标残留）。
+  - ❌ 避开：`Qwen/Qwen2.5-7B-Instruct`（7B 太小，工具调用能力不足，把 JSON 当文本吐）；以及所有**思考/推理类模型**（如 `Qwen3.X` 带 `reasoning_content`、DeepSeek-R1 等）——思考走 `reasoning_content`、常不支持 tool-calling，与 Agent 不兼容。
+  - 经验：Agent 选 ≥32B 的 Instruct 模型，或原生支持 function-calling 者；思考模型和非思考模型区别见 `.env.example`。
 
 ## 测试
 
