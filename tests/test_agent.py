@@ -1,9 +1,9 @@
-def test_build_agent_wires_three_tools():
-    """Agent 应注册三大工具（构建过程不触网）。"""
+def test_build_agent_wires_tools():
+    """Agent 应注册检索×3 + 下载 + 总结 共 5 个工具（构建不触网）。"""
     from vidagent.agent import build_agent
 
     agent = build_agent()
-    assert len(agent.tools) == 3
+    assert len(agent.tools) == 5
 
 
 def test_build_agent_has_multi_turn_memory():

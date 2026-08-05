@@ -42,9 +42,12 @@ def _user_step(user_msg: str, history):
 
 
 _TOOL_LABELS = {
-    "search_and_fetch_videos": "检索视频",
+    "get_hot_videos": "热门",
+    "search_videos": "搜索",
+    "get_creator_videos": "创作者",
     "download_video": "下载视频",
     "extract_and_summarize": "转写+总结",
+    "search_and_fetch_videos": "检索视频",  # 旧名，保留无害
 }
 
 

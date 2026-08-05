@@ -37,6 +37,31 @@ def test_normalize_user_vlist_shape():
     assert n["author"] == "UP3"
 
 
+def test_normalize_duration_int_seconds():
+    n = b.normalize({"bvid": "BV1", "title": "t", "duration": 149})
+    assert n["duration"] == 149
+    assert n["duration_text"] == "02:29"
+
+
+def test_normalize_duration_mss_string():
+    n = b.normalize({"bvid": "BV2", "title": "t", "duration": "11:41"})
+    assert n["duration"] == 701
+    assert n["duration_text"] == "11:41"
+
+
+def test_normalize_duration_hmmss_string():
+    n = b.normalize({"bvid": "BV3", "title": "t", "duration": "1:02:03"})
+    assert n["duration"] == 3723
+    assert n["duration_text"] == "1:02:03"
+
+
+def test_normalize_duration_from_length_field():
+    """创作者 vlist 用 length 字段而非 duration。"""
+    n = b.normalize({"bvid": "BV4", "title": "t", "length": "10:30"})
+    assert n["duration"] == 630
+    assert n["duration_text"] == "10:30"
+
+
 def test_wbi_mixin_key_length_and_deterministic():
     s = "0123456789abcdef" * 4  # 64 chars
     k = wbi._get_mixin_key(s)

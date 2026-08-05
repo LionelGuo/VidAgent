@@ -1,11 +1,15 @@
-"""Tool 1: search_and_fetch_videos —— 按平台/任务类型获取视频元数据。
+"""视频检索工具：三个意图明确的独立工具 + 一个向后兼容的分发器。
 
-输出统一 schema：
-    [{video_id, title, desc, publish_time, video_url, platform, author, view_count}]
+工具（Agent 使用）：
+    get_hot_videos     —— 平台综合热门
+    search_videos      —— 关键词搜索
+    get_creator_videos —— 指定创作者（昵称或 UID，昵称自动解析）
 
-平台支持：
-    bilibili（已实现）：hot_board / search / user_homepage
-    douyin / xiaohongshu / kuaishou（Sprint4 经 MediaCrawler 接入）
+输出统一 schema（含时长，便于 Agent 直接按时长/播放量筛选，无需下载）：
+    [{video_id, title, desc, publish_time, duration, duration_text,
+      video_url, platform, author, view_count}]
+
+平台：bilibili（已实现）；抖音/小红书/快手（Sprint4 经 MediaCrawler 接入）。
 """
 
 from __future__ import annotations
@@ -22,59 +26,102 @@ logger = logging.getLogger(__name__)
 _BILI_ALIASES = ("bilibili", "bili", "b站")
 
 
-async def search_and_fetch_videos(
-    platform: str,
-    task_type: str,  # hot_board | search | user_homepage
-    target_id: str | None = None,  # 关键词 或 用户 UID/mid
-    date_filter: str | None = None,  # "today"
-    limit: int = 10,
+def _ensure_bili(platform: str) -> str:
+    p = platform.lower()
+    if p not in _BILI_ALIASES:
+        raise NotImplementedError(f"平台暂未接入: {platform}（Sprint4 计划接入抖音/小红书/快手）")
+    return p
+
+
+async def get_hot_videos(
+    platform: str = "bilibili", limit: int = 10, date_filter: str | None = None
 ) -> list[dict]:
-    """获取视频元数据列表（按平台/任务类型）。
+    """获取平台综合热门视频（最贴近「今日热榜」）。
 
     Args:
         platform: 平台，目前支持 "bilibili"。
-        task_type: 任务类型："hot_board"(平台综合热门) / "search"(关键词搜索) /
-            "user_homepage"(指定创作者主页，B站需登录 Cookie)。
-        target_id: search 时为搜索关键词；user_homepage 时为「用户名 或 数字 UID」
-            （用户名会自动解析为 UID）；hot_board 时留空。
-        date_filter: 时间过滤，目前支持 "today"（仅今天发布；过滤为空则回退原列表）。
         limit: 返回条数上限。
+        date_filter: 时间过滤，目前支持 "today"。
 
     Returns:
-        每项含 video_id / title / desc / publish_time / video_url / platform / author / view_count。
+        每项含 video_id/title/desc/publish_time/duration/duration_text/
+        video_url/platform/author/view_count。
     """
+    _ensure_bili(platform)
     with Timer("B站抓取"):
-        platform = platform.lower()
-        if platform in _BILI_ALIASES:
-            return await _bilibili(task_type, target_id, date_filter, limit)
-        raise NotImplementedError(f"平台暂未接入: {platform}（Sprint4 计划接入抖音/小红书/快手）")
-
-
-async def _bilibili(
-    task_type: str, target_id: str | None, date_filter: str | None, limit: int
-) -> list[dict]:
-    async with bilibili.make_client(cookie=settings.bili_cookie or None) as client:
-        if task_type == "hot_board":
+        async with bilibili.make_client(cookie=settings.bili_cookie or None) as client:
             return await hotboard.fetch_hot_board(client, "bilibili", date_filter, limit)
 
-        if task_type == "search":
-            if not target_id:
-                raise ValueError("task_type=search 时 target_id 必填（搜索关键词）")
-            items = await bilibili.search_videos(client, target_id, page_size=max(limit, 20))
-        elif task_type == "user_homepage":
-            if not target_id:
-                raise ValueError("task_type=user_homepage 时 target_id 必填（用户名 或 UID）")
-            mid = str(target_id)
-            if not mid.isdigit():
-                # 昵称 → 自动解析为 UID（搜索同族接口，免登录）
-                mid, uname, fans = await bilibili.resolve_creator_mid(client, mid)
-                logger.info("创作者「%s」解析为 mid=%s（%s，粉丝 %s）", target_id, mid, uname, fans)
-            items = await bilibili.fetch_user_videos(client, mid, ps=max(limit, 30))
-        else:
-            raise ValueError(
-                f"未知 task_type: {task_type}（可选: hot_board / search / user_homepage）"
-            )
 
+async def search_videos(
+    platform: str = "bilibili",
+    keyword: str = "",
+    limit: int = 10,
+    date_filter: str | None = None,
+) -> list[dict]:
+    """按关键词搜索视频。
+
+    Args:
+        platform: 平台，目前支持 "bilibili"。
+        keyword: 搜索关键词（必填）。
+        limit: 返回条数上限。
+        date_filter: 时间过滤，目前支持 "today"。
+    """
+    _ensure_bili(platform)
+    if not keyword:
+        raise ValueError("keyword 必填（搜索关键词）")
+    with Timer("B站抓取"):
+        async with bilibili.make_client(cookie=settings.bili_cookie or None) as client:
+            items = await bilibili.search_videos(client, keyword, page_size=max(limit, 20))
     if date_filter == "today":
         items = filter_today(items)
     return items[:limit]
+
+
+async def get_creator_videos(
+    platform: str = "bilibili",
+    creator: str = "",
+    limit: int = 10,
+    date_filter: str | None = None,
+) -> list[dict]:
+    """获取指定创作者（UP 主）的视频。
+
+    creator 可为昵称（如「老番茄」，自动解析为 UID）或数字 UID。
+    注意：B站该接口风控较严，需在 .env 配置 BILI_COOKIE（含 SESSDATA）。
+
+    Args:
+        platform: 平台，目前支持 "bilibili"。
+        creator: 创作者昵称 或 数字 UID（必填）。
+        limit: 返回条数上限。
+        date_filter: 时间过滤，目前支持 "today"。
+    """
+    _ensure_bili(platform)
+    if not creator:
+        raise ValueError("creator 必填（创作者昵称 或 UID）")
+    with Timer("B站抓取"):
+        async with bilibili.make_client(cookie=settings.bili_cookie or None) as client:
+            mid = str(creator)
+            if not mid.isdigit():
+                mid, uname, fans = await bilibili.resolve_creator_mid(client, mid)
+                logger.info("创作者「%s」解析为 mid=%s（%s，粉丝 %s）", creator, mid, uname, fans)
+            items = await bilibili.fetch_user_videos(client, mid, ps=max(limit, 30))
+    if date_filter == "today":
+        items = filter_today(items)
+    return items[:limit]
+
+
+async def search_and_fetch_videos(
+    platform: str,
+    task_type: str,  # hot_board | search | user_homepage
+    target_id: str | None = None,
+    date_filter: str | None = None,
+    limit: int = 10,
+) -> list[dict]:
+    """[向后兼容] 按 task_type 分派到上面三个工具。供 pipeline / crawl_cli / 旧测试使用。"""
+    if task_type == "hot_board":
+        return await get_hot_videos(platform, limit, date_filter)
+    if task_type == "search":
+        return await search_videos(platform, target_id or "", limit, date_filter)
+    if task_type == "user_homepage":
+        return await get_creator_videos(platform, target_id or "", limit, date_filter)
+    raise ValueError(f"未知 task_type: {task_type}（可选: hot_board / search / user_homepage）")

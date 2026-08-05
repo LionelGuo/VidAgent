@@ -110,14 +110,44 @@ def _view_count(item: dict) -> int:
     return int(play) if play is not None else 0
 
 
+def _parse_duration(raw) -> int:
+    """时长 → 秒。兼容 int 秒、'M:SS'、'H:MM:SS'；无法解析返回 0。"""
+    if raw is None or raw == "":
+        return 0
+    if isinstance(raw, (int, float)):
+        return int(raw)
+    parts = str(raw).strip().split(":")
+    try:
+        nums = [int(p) for p in parts]
+    except ValueError:
+        return 0
+    if len(nums) == 2:  # M:SS
+        return nums[0] * 60 + nums[1]
+    if len(nums) == 3:  # H:MM:SS
+        return nums[0] * 3600 + nums[1] * 60 + nums[2]
+    return 0
+
+
+def _fmt_duration(sec: int) -> str:
+    """秒 → 'MM:SS' 或 'H:MM:SS'。"""
+    if sec <= 0:
+        return "00:00"
+    h, rem = divmod(sec, 3600)
+    m, s = divmod(rem, 60)
+    return f"{h:d}:{m:02d}:{s:02d}" if h else f"{m:02d}:{s:02d}"
+
+
 def normalize(item: dict) -> dict:
-    """将 B站各类接口的视频项归一化为统一 schema。"""
+    """将 B站各类接口的视频项归一化为统一 schema（含时长）。"""
     bvid = item.get("bvid") or ""
+    duration = _parse_duration(item.get("duration") or item.get("length"))
     return {
         "video_id": bvid,
         "title": _strip_html(item.get("title") or ""),
         "desc": _strip_html(item.get("desc") or item.get("description") or ""),
         "publish_time": int(item.get("pubdate") or item.get("created") or 0),
+        "duration": duration,  # 秒
+        "duration_text": _fmt_duration(duration),
         "video_url": f"https://www.bilibili.com/video/{bvid}" if bvid else "",
         "platform": "bilibili",
         "author": _author_name(item),

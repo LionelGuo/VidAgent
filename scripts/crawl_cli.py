@@ -46,7 +46,7 @@ async def run(args) -> list[dict]:
         print(f"\n[{i}] {it['title']}")
         print(
             f"    UP: {it['author']}  | 播放: {it['view_count']}  "
-            f"| 发布: {fmt_ts(it['publish_time'])}"
+            f"| 时长: {it.get('duration_text', '-')}  | 发布: {fmt_ts(it['publish_time'])}"
         )
         print(f"    {it['video_url']}")
         if it["desc"] and it["desc"] != "-":
