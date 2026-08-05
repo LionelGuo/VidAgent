@@ -52,3 +52,18 @@ def test_transcript_cache_skips_asr(monkeypatch, tmp_path):
     assert out == "SUMMARY"
     assert asr_called["v"] is False            # 未触发 ASR
     assert captured["t"] == "缓存的转写文本"    # 用了缓存文本
+
+
+def test_live_asr_holder():
+    """实时转写进度 holder：begin/update/reset 与查询函数。"""
+    assert summarizer.live_active() is False
+    assert summarizer.live_partial() == ""
+
+    summarizer._live.begin()
+    summarizer._live.update("部分转写文本")
+    assert summarizer.live_active() is True
+    assert summarizer.live_partial() == "部分转写文本"
+
+    summarizer._live.reset()
+    assert summarizer.live_active() is False
+    assert summarizer.live_partial() == ""

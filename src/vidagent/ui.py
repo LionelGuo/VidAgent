@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 import uuid
@@ -12,6 +13,7 @@ import uuid
 import gradio as gr
 
 from vidagent.agent import build_agent
+from vidagent.tools import summarizer
 from vidagent.utils import storage
 from vidagent.utils.logging import setup_logging
 
@@ -58,7 +60,11 @@ def _render_status(running: list, answer: str) -> str:
 
 
 async def _bot_step(history, session_id: str):
-    """流式运行 Agent：实时显示阶段进度（工具调用）+ 逐字回答。"""
+    """流式运行 Agent：实时显示阶段进度 + ASR 逐段转写 + 逐字回答。
+
+    Agent 的工具调用（尤其 ASR）期间不产事件，故用 queue+timeout 在等待间隙
+    轮询 summarizer.live_partial()，把转写进度实时刷到界面。
+    """
     user_msg = history[-1]["content"]
     history = history + [{"role": "assistant", "content": ""}]
     idx = len(history) - 1
@@ -66,15 +72,40 @@ async def _bot_step(history, session_id: str):
     answer_parts: list[str] = []
     t0 = time.perf_counter()
 
-    def snapshot():
-        history[idx]["content"] = _render_status(running, "".join(answer_parts))
+    def snapshot(extra: str = ""):
+        body = _render_status(running, "".join(answer_parts))
+        if extra:
+            body = f"{body}\n\n{extra}" if body else extra
+        history[idx]["content"] = body
         return history, _latest_mp4()
 
+    queue: asyncio.Queue = asyncio.Queue()
+
+    async def consume():
+        try:
+            async for ev in get_agent().arun(
+                user_msg, session_id=session_id, stream=True, stream_events=True
+            ):
+                await queue.put(ev)
+        except Exception as e:
+            await queue.put(e)
+        finally:
+            await queue.put(None)
+
+    task = asyncio.create_task(consume())
     try:
-        stream = get_agent().arun(
-            user_msg, session_id=session_id, stream=True, stream_events=True
-        )
-        async for ev in stream:
+        while True:
+            try:
+                ev = await asyncio.wait_for(queue.get(), timeout=1.0)
+            except TimeoutError:
+                partial = summarizer.live_partial()
+                if partial:  # ASR 进行中：实时显示已转写文本尾部
+                    yield snapshot(f"<sub>🎙️ 转写中（{len(partial)} 字）…{partial[-100:]}</sub>")
+                continue
+            if ev is None:
+                break
+            if isinstance(ev, Exception):
+                raise ev
             etype = type(ev).__name__
             if etype == "ToolCallStartedEvent":
                 name = getattr(getattr(ev, "tool", None), "tool_name", "") or "工具"
@@ -93,6 +124,9 @@ async def _bot_step(history, session_id: str):
         history[idx]["content"] = _render_status(running, final) or final
     except Exception as e:  # 不让 UI 崩溃
         history[idx]["content"] = f"⚠️ 运行出错：{e}"
+    finally:
+        if not task.done():
+            task.cancel()
     logger.info("⏱ 本轮 Agent 总耗时 %.2fs", time.perf_counter() - t0)
     yield history, _latest_mp4()
 
