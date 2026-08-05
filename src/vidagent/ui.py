@@ -123,9 +123,14 @@ async def _bot_step(history, session_id: str):
                 if delta:
                     answer_parts.append(delta)
                     yield snapshot()
-                elif getattr(ev, "reasoning_content", None):
-                    # 思考模型在推理中（content 为空，reasoning 在流）
-                    yield snapshot("<sub>💭 正在推理…</sub>")
+                else:
+                    # 部分模型（如 Qwen3-Omni + tools）把回答放在 reasoning_content
+                    r = getattr(ev, "reasoning_content", "") or ""
+                    if r:
+                        answer_parts.append(r)
+                        yield snapshot()
+                    else:
+                        yield snapshot("<sub>💭 正在推理…</sub>")
         final = "".join(answer_parts).strip()
         history[idx]["content"] = _render_status(running, final) or final
     except Exception as e:  # 不让 UI 崩溃
