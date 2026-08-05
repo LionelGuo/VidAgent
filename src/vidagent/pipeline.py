@@ -11,14 +11,15 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import logging
 
 from vidagent.tools.crawler import search_and_fetch_videos
 from vidagent.tools.downloader import download_video
 from vidagent.tools.summarizer import extract_and_summarize
 from vidagent.utils import storage
+from vidagent.utils.logging import setup_logging
+from vidagent.utils.timer import Timer
 
-logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
+setup_logging()
 
 
 async def run(platform: str, task: str, target: str | None, date: str | None, limit: int) -> None:
@@ -31,15 +32,16 @@ async def run(platform: str, task: str, target: str | None, date: str | None, li
     print(f"\n获取 {len(items)} 个视频，开始逐个「下载 → ASR → 总结」\n")
     for i, it in enumerate(items, 1):
         print(f"===== [{i}/{len(items)}] {it['title']} =====")
-        d = download_video(it["video_url"], it["video_id"])
-        if d["status"] != "success":
-            print("  ❌ 下载失败:", d.get("error"))
-            continue
-        try:
-            summary = extract_and_summarize(d["local_path"], it)
-            print("\n" + summary + "\n")
-        except Exception as e:
-            print("  ❌ 总结失败:", e)
+        with Timer(f"视频[{i}] 全流程(下载→总结)"):
+            d = download_video(it["video_url"], it["video_id"])
+            if d["status"] != "success":
+                print("  ❌ 下载失败:", d.get("error"))
+                continue
+            try:
+                summary = extract_and_summarize(d["local_path"], it)
+                print("\n" + summary + "\n")
+            except Exception as e:
+                print("  ❌ 总结失败:", e)
 
 
 def main() -> None:

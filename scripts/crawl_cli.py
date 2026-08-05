@@ -18,6 +18,7 @@ from vidagent.tools.crawler import search_and_fetch_videos
 from vidagent.tools.downloader import download_video
 from vidagent.utils import storage
 from vidagent.utils.audio import extract_audio
+from vidagent.utils.logging import setup_logging
 
 
 def fmt_ts(ts: int) -> str:
@@ -79,6 +80,7 @@ def main() -> None:
     ap.add_argument("--json", action="store_true", help="以 JSON 输出元数据")
     args = ap.parse_args()
 
+    setup_logging()
     storage.cleanup_old_files()  # 任务开始前清理（文档 §5.3）
     asyncio.run(run(args))
 

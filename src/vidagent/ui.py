@@ -5,12 +5,16 @@
 
 from __future__ import annotations
 
+import logging
 import uuid
 
 import gradio as gr
 
 from vidagent.agent import build_agent
 from vidagent.utils import storage
+from vidagent.utils.logging import setup_logging
+
+logger = logging.getLogger(__name__)
 
 _agent = None
 
@@ -40,6 +44,9 @@ async def _bot_step(history, session_id: str):
     try:
         resp = await get_agent().arun(user_msg, session_id=session_id)
         text = getattr(resp, "content", None) or str(resp)
+        dur = getattr(getattr(resp, "metrics", None), "duration", None)
+        if dur:
+            logger.info("⏱ 本轮 Agent 总耗时 %.2fs", dur)
     except Exception as e:  # 不让 UI 崩溃
         text = f"⚠️ 运行出错：{e}"
     history = history + [{"role": "assistant", "content": text}]
@@ -92,4 +99,5 @@ def build_ui() -> gr.Blocks:
 
 
 if __name__ == "__main__":
+    setup_logging()
     build_ui().launch()

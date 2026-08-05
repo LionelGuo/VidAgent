@@ -11,6 +11,7 @@ from pathlib import Path
 import yt_dlp
 
 from vidagent.utils import storage
+from vidagent.utils.timer import Timer
 
 
 def _platform_of(url: str) -> str:
@@ -57,8 +58,9 @@ def _download_bili(url: str, file_name: str) -> dict:
         "no_warnings": True,
     }
     try:
-        with yt_dlp.YoutubeDL(opts) as ydl:
-            ydl.download([url])
+        with Timer("视频下载(yt-dlp)"):
+            with yt_dlp.YoutubeDL(opts) as ydl:
+                ydl.download([url])
     except yt_dlp.utils.DownloadError as e:
         return {"status": "error", "error": f"yt-dlp 下载失败: {e}", "video_url": url}
 

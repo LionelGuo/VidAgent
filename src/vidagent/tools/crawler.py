@@ -15,6 +15,7 @@ import logging
 from vidagent.config import settings
 from vidagent.tools import bilibili, hotboard
 from vidagent.utils.dates import filter_today
+from vidagent.utils.timer import Timer
 
 logger = logging.getLogger(__name__)
 
@@ -42,10 +43,11 @@ async def search_and_fetch_videos(
     Returns:
         每项含 video_id / title / desc / publish_time / video_url / platform / author / view_count。
     """
-    platform = platform.lower()
-    if platform in _BILI_ALIASES:
-        return await _bilibili(task_type, target_id, date_filter, limit)
-    raise NotImplementedError(f"平台暂未接入: {platform}（Sprint4 计划接入抖音/小红书/快手）")
+    with Timer("B站抓取"):
+        platform = platform.lower()
+        if platform in _BILI_ALIASES:
+            return await _bilibili(task_type, target_id, date_filter, limit)
+        raise NotImplementedError(f"平台暂未接入: {platform}（Sprint4 计划接入抖音/小红书/快手）")
 
 
 async def _bilibili(

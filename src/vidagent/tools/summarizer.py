@@ -14,6 +14,7 @@ import httpx
 
 from vidagent.config import settings
 from vidagent.utils.audio import extract_audio
+from vidagent.utils.timer import Timer
 
 logger = logging.getLogger(__name__)
 
@@ -42,13 +43,16 @@ def extract_and_summarize(local_path: str, metadata: dict | None = None) -> str:
     metadata = metadata or {}
     transcript = ""
     try:
-        mp3 = extract_audio(local_path)
-        transcript, _lang = _transcribe(mp3)
+        with Timer("音频提取(ffmpeg)"):
+            mp3 = extract_audio(local_path)
+        with Timer("ASR 转写"):
+            transcript, _lang = _transcribe(mp3)
         logger.info("ASR 完成，转写 %d 字", len(transcript))
     except Exception as e:  # 抽音/ASR 失败 → 降级
         logger.warning("ASR 失败，走降级总结（仅元数据）: %s", e)
 
-    return _summarize(transcript, metadata)
+    with Timer("LLM 总结"):
+        return _summarize(transcript, metadata)
 
 
 def _transcribe(mp3_path) -> tuple[str, str]:
