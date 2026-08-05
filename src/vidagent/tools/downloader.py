@@ -6,12 +6,15 @@ B站：yt-dlp（B站本身无水印，最稳）
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
 import yt_dlp
 
 from vidagent.utils import storage
 from vidagent.utils.timer import Timer
+
+logger = logging.getLogger(__name__)
 
 
 def _platform_of(url: str) -> str:
@@ -35,9 +38,20 @@ def download_video(video_url: str, file_name: str) -> dict:
         file_name: 保存文件名前缀，通常用 video_id。
 
     Returns:
-        {"status":"success","local_path":...,"platform":...}，
+        {"status":"success","local_path":...,"platform":...,"cached":bool}，
         或失败时 {"status":"error","error":...,"video_url":...}（应反思重试）。
     """
+    # 下载缓存：已存在则直接复用，跳过 yt-dlp 与抖动
+    target = storage.media_path(file_name, ".mp4")
+    if target.exists():
+        logger.info("下载命中缓存: %s", target)
+        return {
+            "status": "success",
+            "local_path": str(target),
+            "platform": _platform_of(video_url),
+            "cached": True,
+        }
+
     platform = _platform_of(video_url)
     if platform == "bilibili":
         return _download_bili(video_url, file_name)

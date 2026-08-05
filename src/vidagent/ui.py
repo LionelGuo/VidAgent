@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import logging
+import time
 import uuid
 
 import gradio as gr
@@ -38,19 +39,62 @@ def _user_step(user_msg: str, history):
     return "", history + [{"role": "user", "content": user_msg}]
 
 
+_TOOL_LABELS = {
+    "search_and_fetch_videos": "检索视频",
+    "download_video": "下载视频",
+    "extract_and_summarize": "转写+总结",
+}
+
+
+def _render_status(running: list, answer: str) -> str:
+    """组装 assistant 消息：顶部阶段进度行 + 下方流式回答。"""
+    parts = []
+    if running:
+        badges = " · ".join(("✅" if done else "⏳") + lbl for done, lbl in running)
+        parts.append(f"<sub>{badges}</sub>")
+    if answer:
+        parts.append(answer)
+    return "\n\n".join(parts) if parts else "⏳ 思考中…"
+
+
 async def _bot_step(history, session_id: str):
-    """运行 Agent（arun + session_id 实现多轮记忆），追加回复并更新视频窗口。"""
+    """流式运行 Agent：实时显示阶段进度（工具调用）+ 逐字回答。"""
     user_msg = history[-1]["content"]
+    history = history + [{"role": "assistant", "content": ""}]
+    idx = len(history) - 1
+    running: list = []  # [(done?, 标签), ...]
+    answer_parts: list[str] = []
+    t0 = time.perf_counter()
+
+    def snapshot():
+        history[idx]["content"] = _render_status(running, "".join(answer_parts))
+        return history, _latest_mp4()
+
     try:
-        resp = await get_agent().arun(user_msg, session_id=session_id)
-        text = getattr(resp, "content", None) or str(resp)
-        dur = getattr(getattr(resp, "metrics", None), "duration", None)
-        if dur:
-            logger.info("⏱ 本轮 Agent 总耗时 %.2fs", dur)
+        stream = get_agent().arun(
+            user_msg, session_id=session_id, stream=True, stream_events=True
+        )
+        async for ev in stream:
+            etype = type(ev).__name__
+            if etype == "ToolCallStartedEvent":
+                name = getattr(getattr(ev, "tool", None), "tool_name", "") or "工具"
+                running.append((False, _TOOL_LABELS.get(name, name)))
+                yield snapshot()
+            elif etype == "ToolCallCompletedEvent":
+                if running and not running[-1][0]:
+                    running[-1] = (True, running[-1][1])
+                yield snapshot()
+            elif etype == "RunContentEvent":
+                delta = getattr(ev, "content", "") or ""
+                if delta:
+                    answer_parts.append(delta)
+                    yield snapshot()
+        final = "".join(answer_parts).strip()
+        history[idx]["content"] = _render_status(running, final) or final
     except Exception as e:  # 不让 UI 崩溃
-        text = f"⚠️ 运行出错：{e}"
-    history = history + [{"role": "assistant", "content": text}]
-    return history, _latest_mp4()
+        history[idx]["content"] = f"⚠️ 运行出错：{e}"
+    logger.info("⏱ 本轮 Agent 总耗时 %.2fs", time.perf_counter() - t0)
+    yield history, _latest_mp4()
 
 
 def _clear_chat():

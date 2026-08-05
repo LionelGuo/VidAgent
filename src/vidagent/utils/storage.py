@@ -29,6 +29,11 @@ def media_path(file_name: str, ext: str) -> Path:
     return workspace() / f"{sanitize(file_name)}{ext}"
 
 
+def transcript_path(video_id: str) -> Path:
+    """转写文本缓存路径（按 video_id），存 workspace，享 >7 天自动清理。"""
+    return workspace() / f"{sanitize(video_id)}.transcript.txt"
+
+
 def random_delay(low: float = 2.0, high: float = 5.0) -> None:
     """下载前随机抖动，降低风控（文档 §5.1）。同步版。"""
     time.sleep(random.uniform(low, high))

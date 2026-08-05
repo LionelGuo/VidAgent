@@ -13,6 +13,7 @@ import logging
 import httpx
 
 from vidagent.config import settings
+from vidagent.utils import storage
 from vidagent.utils.audio import extract_audio
 from vidagent.utils.timer import Timer
 
@@ -41,31 +42,55 @@ def extract_and_summarize(local_path: str, metadata: dict | None = None) -> str:
         结构化 Markdown 总结（核心观点 + 主要内容梳理）。
     """
     metadata = metadata or {}
+    video_id = metadata.get("video_id", "")
+    cache_path = storage.transcript_path(video_id) if video_id else None
+
     transcript = ""
-    try:
-        with Timer("音频提取(ffmpeg)"):
-            mp3 = extract_audio(local_path)
-        with Timer("ASR 转写"):
-            transcript, _lang = _transcribe(mp3)
-        logger.info("ASR 完成，转写 %d 字", len(transcript))
-    except Exception as e:  # 抽音/ASR 失败 → 降级
-        logger.warning("ASR 失败，走降级总结（仅元数据）: %s", e)
+    if cache_path and cache_path.exists():
+        # 转写缓存命中：跳过抽音 + ASR
+        transcript = cache_path.read_text(encoding="utf-8").strip()
+        logger.info("ASR 命中缓存(%s)，转写 %d 字", video_id, len(transcript))
+    else:
+        try:
+            with Timer("音频提取(ffmpeg)"):
+                mp3 = extract_audio(local_path)
+            with Timer("ASR 转写"):
+                transcript, _lang = _transcribe(mp3)
+            logger.info("ASR 完成，转写 %d 字", len(transcript))
+            if transcript and cache_path:  # 仅成功转写才缓存（空/降级不缓存）
+                cache_path.write_text(transcript, encoding="utf-8")
+        except Exception as e:  # 抽音/ASR 失败 → 降级
+            logger.warning("ASR 失败，走降级总结（仅元数据）: %s", e)
 
     with Timer("LLM 总结"):
         return _summarize(transcript, metadata)
 
 
-def _transcribe(mp3_path) -> tuple[str, str]:
-    """faster-whisper 转写，返回 (text, language)。"""
-    from faster_whisper import WhisperModel
+# Whisper 模型单例：进程内只加载一次，避免每次转写重复加载权重进显存
+_WHISPER = None
 
-    device = _resolve_device()
-    compute_type = "float16" if device == "cuda" else "int8"
-    logger.info(
-        "加载 faster-whisper(%s, device=%s, compute=%s)",
-        settings.whisper_model, device, compute_type,
-    )
-    model = WhisperModel(settings.whisper_model, device=device, compute_type=compute_type)
+
+def _get_whisper():
+    global _WHISPER
+    if _WHISPER is None:
+        from faster_whisper import WhisperModel
+
+        device = _resolve_device()
+        compute_type = "float16" if device == "cuda" else "int8"
+        with Timer("加载 faster-whisper(仅首次)"):
+            logger.info(
+                "首次加载 faster-whisper(%s, device=%s, compute=%s)",
+                settings.whisper_model, device, compute_type,
+            )
+            _WHISPER = WhisperModel(
+                settings.whisper_model, device=device, compute_type=compute_type
+            )
+    return _WHISPER
+
+
+def _transcribe(mp3_path) -> tuple[str, str]:
+    """faster-whisper 转写，返回 (text, language)。模型复用单例。"""
+    model = _get_whisper()
     segments, info = model.transcribe(str(mp3_path), beam_size=5, vad_filter=True)
     text = "".join(seg.text for seg in segments).strip()
     return text, info.language
