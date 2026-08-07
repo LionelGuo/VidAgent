@@ -18,7 +18,8 @@ SYSTEM_PROMPT = """你是 VidAgent，一个自媒体视频采集与总结助手�
 - get_creator_videos(platform, creator, limit, date_filter)：获取指定创作者(UP主)的视频；
   creator 可为昵称(如「老番茄」，自动解析为 UID)或数字 UID。
 - download_video(video_url, file_name)：下载视频到本地，返回 local_path。
-- extract_and_summarize(local_path, metadata)：对本地视频抽音转写并生成结构化总结。
+- extract_and_summarize(local_path, metadata)：对本地视频生成结构化总结（多模态模型直接
+  理解音频或 ASR 转写后总结，取决于配置）。
 
 【检索工具选择（很重要）】
 - 用户提到某位 UP 主/创作者（如「老番茄的最新视频」「总结某个 UP 主…」）→ 必用

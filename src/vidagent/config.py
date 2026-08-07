@@ -27,6 +27,15 @@ class Settings(BaseSettings):
     # 例：关闭 SiliconFlow Qwen3 思考模式 → {"enable_thinking": false}
     llm_extra_body: str = "{}"
 
+    # 多模态模型开关：开启后 extract_and_summarize 跳过 ASR，音频直送 LLM
+    # 需要模型支持 audio_url（如 Qwen3-Omni 系列）
+    llm_multimodal: bool = False
+
+    # 多模态推理服务独立端点（需要 audio_url + image_url 支持，如 Qwen2.5-Omni-7B）
+    # 与 agent 模型分离：agent 需要 function calling，多模态不需要
+    multimodal_base_url: str = ""
+    multimodal_model: str = ""
+
     # ----- ASR（Sprint 2 起生效）-----
     whisper_model: str = "base"  # tiny / base / small / medium
     asr_device: str = "auto"  # auto / cuda / cpu

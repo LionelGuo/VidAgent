@@ -8,7 +8,9 @@
 
 from __future__ import annotations
 
+import base64
 import logging
+from pathlib import Path
 
 import httpx
 
@@ -65,19 +67,40 @@ _SUMMARY_SYS = (
 
 
 def extract_and_summarize(local_path: str, metadata: dict | None = None) -> str:
-    """对本地视频抽取音频、语音转写并生成结构化中文总结（Markdown）。
+    """对本地视频生成结构化中文总结（Markdown）。
+
+    多模态模型（LLM_MULTIMODAL=true）：抽取音频 → 直送 LLM，跳过 ASR。
+    普通模型：抽取音频 → ASR 转写 → 文本总结。
 
     无音频轨时自动降级为仅依据元数据的总结（不报错）。
 
     Args:
         local_path: 本地视频文件路径（用 download_video 返回的 local_path）。
-        metadata: 视频元数据，至少含 title 与 desc（来自 search_and_fetch_videos）。
+        metadata: 视频元数据，至少含 title 与 desc。
 
     Returns:
         结构化 Markdown 总结（核心观点 + 主要内容梳理）。
     """
     metadata = metadata or {}
     video_id = metadata.get("video_id", "")
+
+    # ── 多模态路径：音频直送 LLM，跳过 ASR ──
+    if settings.llm_multimodal:
+        _live.begin()
+        _live.update("🎵 多模态模型分析音频中…")
+        try:
+            with Timer("音频提取(ffmpeg)"):
+                mp3 = extract_audio(local_path)
+            with Timer("多模态总结(音频直送)"):
+                return _summarize_multimodal(Path(mp3), metadata, video_path=Path(local_path))
+        except Exception as e:
+            logger.warning("多模态总结失败，走降级总结（仅元数据）: %s", e)
+            with Timer("LLM 总结(降级)"):
+                return _summarize("", metadata)
+        finally:
+            _live.reset()
+
+    # ── 原 ASR 路径 ──
     cache_path = storage.transcript_path(video_id) if video_id else None
 
     transcript = ""
@@ -192,5 +215,80 @@ def _summarize(transcript: str, metadata: dict) -> str:
     if resp.status_code != 200:
         raise RuntimeError(
             f"LLM 调用失败 HTTP {resp.status_code}: {resp.text[:300]}"
+        )
+    return resp.json()["choices"][0]["message"]["content"]
+
+
+def _summarize_multimodal(
+    mp3_path: Path, metadata: dict, video_path: Path | None = None,
+) -> str:
+    """音频直送多模态模型（+ 自适应关键帧），跳过 ASR 转写。
+
+    将 mp3 作为 audio_url，搭配按时长自适应采样的关键帧，
+    一起发给多模态 LLM（如 Qwen3-Omni），模型原生理解音视频内容并总结。
+    """
+    base_url = settings.multimodal_base_url or settings.openai_base_url
+    api_key = settings.openai_api_key
+    model = settings.multimodal_model or settings.llm_model
+    if not api_key:
+        raise RuntimeError("未配置 OPENAI_API_KEY")
+
+    mp3_b64 = base64.b64encode(mp3_path.read_bytes()).decode()
+    logger.info(
+        "多模态总结：音频 %s (%d KB) → base64 %d KB",
+        mp3_path.name, mp3_path.stat().st_size // 1024, len(mp3_b64) // 1024,
+    )
+
+    meta_block = ""
+    if metadata:
+        meta_block = f"【标题】{metadata.get('title', '')}\n【简介】{metadata.get('desc', '')}\n"
+
+    # 构建 multimodal content parts
+    prompt_text = f"{meta_block}\n请结合音频和关键帧画面，输出结构化总结。"
+
+    content_parts: list[dict] = [
+        {"type": "text", "text": prompt_text},
+        {"type": "audio_url", "audio_url": {"url": f"data:audio/mp3;base64,{mp3_b64}"}},
+    ]
+
+    # 自适应帧采样（帧抽取失败不影响主流程——降级为纯音频）
+    frame_count = 0
+    if video_path and video_path.exists():
+        try:
+            from vidagent.utils.frames import extract_frames
+
+            frames = extract_frames(video_path)
+            for f in frames:
+                img_b64 = base64.b64encode(f.read_bytes()).decode()
+                content_parts.append({
+                    "type": "image_url",
+                    "image_url": {
+                        "url": f"data:image/jpeg;base64,{img_b64}",
+                        "detail": "low",
+                    },
+                })
+            frame_count = len(frames)
+            logger.info("多模态总结：+ %d 帧画面", frame_count)
+        except Exception as e:
+            logger.warning("关键帧抽取失败，降级为纯音频: %s", e)
+
+    payload = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": _SUMMARY_SYS},
+            {"role": "user", "content": content_parts},
+        ],
+        "temperature": 0.3,
+        "max_tokens": 2048,
+    }
+    resp = httpx.post(
+        f"{base_url}/chat/completions",
+        json=payload,
+        headers={"Authorization": f"Bearer {api_key}"},
+        timeout=180,
+    )
+    if resp.status_code != 200:
+        raise RuntimeError(
+            f"多模态 LLM 调用失败 HTTP {resp.status_code}: {resp.text[:300]}"
         )
     return resp.json()["choices"][0]["message"]["content"]

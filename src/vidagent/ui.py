@@ -117,6 +117,13 @@ async def _bot_step(history, session_id: str):
             elif etype == "ToolCallCompletedEvent":
                 if running and not running[-1][0]:
                     running[-1] = (True, running[-1][1])
+                # extract_and_summarize 的返回值就是最终总结，直接渲染
+                # 避免等 Agent 模型"读一遍再转述"——省掉思考 + 生成延迟
+                name = getattr(getattr(ev, "tool", None), "tool_name", "") or ""
+                if name == "extract_and_summarize":
+                    result = getattr(ev, "content", None)
+                    if isinstance(result, str) and result.strip():
+                        answer_parts.append(result)
                 yield snapshot()
             elif etype == "RunContentEvent":
                 delta = getattr(ev, "content", "") or ""
