@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, type ReactNode } from "react";
+import { memo, useEffect, useRef, type MutableRefObject, type ReactNode } from "react";
 import { type Message } from "@ai-sdk/react";
 import { cn } from "@/lib/utils";
 import { useLayoutStore, useVideoStore, type VideoInfo } from "@/lib/stores";
@@ -74,7 +74,7 @@ export function ToolBadge({
 // VideoCard — 内嵌视频小结卡片（点击触发 DetailPanel）
 // ---------------------------------------------------------------------------
 
-export function VideoCard({
+export const VideoCard = memo(function VideoCard({
   videoId,
   title,
   author,
@@ -115,13 +115,13 @@ export function VideoCard({
       </div>
     </button>
   );
-}
+});
 
 // ---------------------------------------------------------------------------
-// ChatMessage — 单条消息渲染
+// ChatMessage — 单条消息渲染（memo：相同 message 引用时跳过渲染）
 // ---------------------------------------------------------------------------
 
-function ChatMessage({
+const ChatMessage = memo(function ChatMessage({
   message,
   onVideoClick,
 }: {
@@ -148,7 +148,7 @@ function ChatMessage({
       </div>
     </div>
   );
-}
+}, (prev, next) => prev.message === next.message);
 
 // ---------------------------------------------------------------------------
 // 从工具调用结果中提取视频数据
@@ -176,6 +176,32 @@ function extractVideoResults(toolInvocations: any[]): VideoInfo[] {
             platform: v.platform,
             publish_time: v.publish_time,
           });
+        }
+      }
+    }
+
+    // 批量总结 → 提取 videos[] 元数据写入 VideoStore
+    if (ti.toolName === "batch_summarize_videos") {
+      const batchVideos: any[] = ti.args?.videos ?? [];
+      for (const v of batchVideos) {
+        if (v.video_id) {
+          videos.push({
+            video_id: v.video_id,
+            title: v.title ?? "未知标题",
+            desc: v.desc ?? "",
+            author: v.author ?? "",
+            duration_text: v.duration_text ?? "",
+            video_url: v.video_url ?? "",
+            view_count: 0,
+          });
+        }
+      }
+      // 批量工具完成时从 result.tasks 获取 final 状态
+      if (ti.state === "result" && ti.result?.tasks) {
+        for (const t of ti.result.tasks) {
+          if (t.status === "error") {
+            console.warn("批量总结失败:", t.video_id, t.error || "未知错误");
+          }
         }
       }
     }
@@ -270,6 +296,42 @@ function AssistantContent({
 }
 
 // ---------------------------------------------------------------------------
+// SSE 连接辅助
+// ---------------------------------------------------------------------------
+
+function _connectSSE(
+  videoId: string,
+  activeStreamsRef: MutableRefObject<Map<string, SSEController>>,
+): SSEController {
+  return streamSummaryByVideo(
+    videoId,
+    (text) => {
+      useVideoStore.getState().setSummary(videoId, text);
+    },
+    (result) => {
+      useVideoStore.getState().setSummary(videoId, result);
+      activeStreamsRef.current.delete(videoId);
+    },
+    (err) => {
+      console.warn("总结 SSE 错误:", err.message);
+      activeStreamsRef.current.delete(videoId);
+    },
+  );
+}
+
+function _closeSSE(
+  videoId: string | undefined,
+  activeStreamsRef: MutableRefObject<Map<string, SSEController>>,
+) {
+  if (!videoId) return;
+  const ctrl = activeStreamsRef.current.get(videoId);
+  if (ctrl) {
+    ctrl.close();
+    activeStreamsRef.current.delete(videoId);
+  }
+}
+
+// ---------------------------------------------------------------------------
 // ChatView — 消息列表 + 工具结果 → VideoStore 同步
 // ---------------------------------------------------------------------------
 
@@ -303,39 +365,34 @@ export function ChatView({
       const toolInvocations: any[] = (msg as any).toolInvocations ?? [];
 
       for (const ti of toolInvocations) {
-        if (ti.toolName !== "extract_and_summarize") continue;
-        const videoId: string | undefined = ti.args?.metadata?.video_id;
-        if (!videoId) continue;
+        // ── extract_and_summarize（单视频）──
+        if (ti.toolName === "extract_and_summarize") {
+          const videoId: string | undefined = ti.args?.metadata?.video_id;
+          if (!videoId) continue;
 
-        // 工具被调用 → 打开 fetch-SSE 连接（避免重复）
-        if (ti.state === "call" && !activeStreamsRef.current.has(videoId)) {
-          const controller = streamSummaryByVideo(
-            videoId,
-            // onProgress：流式更新
-            (text) => {
-              useVideoStore.getState().setSummary(videoId, text);
-            },
-            // onDone：最终结果 + 清理
-            (result) => {
-              useVideoStore.getState().setSummary(videoId, result);
-              activeStreamsRef.current.delete(videoId);
-            },
-            // onError：保留部分文本 + 清理
-            (err) => {
-              console.warn("总结 SSE 错误:", err.message);
-              activeStreamsRef.current.delete(videoId);
-            },
-          );
-
-          activeStreamsRef.current.set(videoId, controller);
+          if (ti.state === "call" && !activeStreamsRef.current.has(videoId)) {
+            activeStreamsRef.current.set(videoId, _connectSSE(videoId, activeStreamsRef));
+          }
+          if (ti.state === "result") {
+            _closeSSE(videoId, activeStreamsRef);
+          }
         }
 
-        // 工具已完成 → 确保 SSE 连接已清理
-        if (ti.state === "result") {
-          const ctrl = activeStreamsRef.current.get(videoId);
-          if (ctrl) {
-            ctrl.close();
-            activeStreamsRef.current.delete(videoId);
+        // ── batch_summarize_videos（批量）──
+        if (ti.toolName === "batch_summarize_videos") {
+          const videos: any[] = ti.args?.videos ?? [];
+
+          if (ti.state === "call") {
+            for (const v of videos) {
+              const vid: string | undefined = v?.video_id;
+              if (!vid || activeStreamsRef.current.has(vid)) continue;
+              activeStreamsRef.current.set(vid, _connectSSE(vid, activeStreamsRef));
+            }
+          }
+          if (ti.state === "result") {
+            for (const v of videos) {
+              _closeSSE(v?.video_id, activeStreamsRef);
+            }
           }
         }
       }

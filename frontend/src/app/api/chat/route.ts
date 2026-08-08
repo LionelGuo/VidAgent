@@ -59,9 +59,9 @@ const SYSTEM_PROMPT = `你是 VidAgent，一个自媒体视频采集与总结助
   如果用户明确要求"总结视频"或"下载并总结"，才按序执行：检索 → download_video → extract_and_summarize。
   不要在任务完成后调用无关工具。
 - **date_filter 参数：默认不传。** 热榜/搜索本身反映当前热门内容，不需要按发布日期过滤。仅在用户明确说「只看今天/今日发布的」时才传 "today"。
-- **并行策略（很重要）**：当用户要求总结多个视频时，先在同一轮中批量调用 download_video
-	  每个视频一个 <tool_call>），等全部下载完成后，再在同一轮中批量调用 extract_and_summarize。
-	  独立的任务应并行执行，不要串行逐个处理。下载/总结完成后用简短文字告知进度。
+- **批量总结（很重要）**：当用户要求总结多个视频（≥2）时，**必须使用 batch_summarize_videos**，
+	  一次性传入所有视频，后端会自动并行下载+总结。不要逐个调用 download_video + extract_and_summarize。
+	  单视频时可用 extract_and_summarize。
 - 工具返回 status=error 或抛异常时：简要说明原因，最多重试 3 次；仍失败则如实告知，绝不编造内容。
 - 全程中文；总结用 Markdown，分「核心观点」与「主要内容梳理」。
 `;
@@ -213,6 +213,39 @@ export async function POST(req: Request) {
             body: JSON.stringify({ video_url, file_name }),
           });
           if (!res.ok) throw new Error(`下载失败: HTTP ${res.status}`);
+          return res.json();
+        },
+      },
+
+      // ── 批量总结工具（并行下载 + 总结多个视频）──
+      batch_summarize_videos: {
+        description:
+          "【推荐】批量并行总结多个视频。传入视频列表，后端自动并行处理，比逐个调用 extract_and_summarize 更快。每个视频独立重试、独立错误。总结结果在右侧详情面板实时显示。",
+        parameters: z.object({
+          videos: z
+            .array(
+              z.object({
+                video_url: z.string().describe("视频播放页地址"),
+                video_id: z.string().describe("视频 ID，如 BVxxx"),
+                title: z.string().describe("视频标题"),
+                desc: z.string().optional().describe("视频简介"),
+                author: z.string().optional().describe("作者/UP 主"),
+                duration_text: z.string().optional().describe("时长文本"),
+                platform: z.string().optional().describe("平台（默认从 URL 自动检测）"),
+              })
+            )
+            .describe("要总结的视频列表"),
+        }),
+        execute: async ({ videos }) => {
+          const res = await fetch(`${API_BASE}/api/tools/batch-summarize`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ videos }),
+          });
+          if (!res.ok) {
+            const err = await res.json().catch(() => ({}));
+            throw new Error(err.detail || `批量总结失败: HTTP ${res.status}`);
+          }
           return res.json();
         },
       },

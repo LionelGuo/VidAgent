@@ -152,4 +152,55 @@ TOOL_DEFINITIONS: list[dict] = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "batch_summarize_videos",
+            "description": "【推荐】批量并行总结多个视频。后端自动并行下载+总结，比逐个调用 extract_and_summarize 更快。传入视频列表，后台同时处理所有视频（下载→多模态总结），每个视频独立重试、独立错误。总结结果在右侧详情面板实时流式显示。适用于用户要求同时总结多个视频的场景。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "videos": {
+                        "type": "array",
+                        "description": "要总结的视频列表。每项含 video_url 和 video_id（必填），以及 title/desc/author/duration_text（推荐，用于生成更精准的总结）",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "video_url": {
+                                    "type": "string",
+                                    "description": "视频播放页地址（来自检索结果的 video_url 字段）",
+                                },
+                                "video_id": {
+                                    "type": "string",
+                                    "description": "视频 ID，如 BVxxx",
+                                },
+                                "title": {
+                                    "type": "string",
+                                    "description": "视频标题",
+                                },
+                                "desc": {
+                                    "type": "string",
+                                    "description": "视频简介",
+                                },
+                                "author": {
+                                    "type": "string",
+                                    "description": "作者/UP 主",
+                                },
+                                "duration_text": {
+                                    "type": "string",
+                                    "description": "时长文本，如 '12:34'",
+                                },
+                                "platform": {
+                                    "type": "string",
+                                    "description": "平台（默认从 URL 自动检测）",
+                                },
+                            },
+                            "required": ["video_url", "video_id", "title"],
+                        },
+                    },
+                },
+                "required": ["videos"],
+            },
+        },
+    },
 ]

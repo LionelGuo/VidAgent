@@ -21,6 +21,8 @@ import asyncio
 import logging
 import os
 import sys
+import threading
+import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -74,6 +76,9 @@ VLLM_API_KEY = os.getenv("OPENAI_API_KEY", "not-needed")
 # 5 workers 支持并行下载 + 总结
 _executor = ThreadPoolExecutor(max_workers=5)
 
+# vLLM 并发控制：避免多视频同时 Omni 推理导致显存/队列拥塞
+_llm_semaphore = threading.BoundedSemaphore(2)
+
 # 总结任务追踪：{task_id: {"status": str, "result": str, "partial": str}}
 _summarize_tasks: dict[str, dict[str, Any]] = {}
 # video_id → task_id 映射（供浏览器按视频 ID 连接 SSE）
@@ -92,6 +97,20 @@ class DownloadRequest(BaseModel):
 class SummarizeRequest(BaseModel):
     local_path: str
     metadata: dict | None = None
+
+
+class BatchVideoItem(BaseModel):
+    video_url: str
+    video_id: str
+    title: str
+    desc: str | None = None
+    author: str | None = None
+    duration_text: str | None = None
+    platform: str | None = None
+
+
+class BatchSummarizeRequest(BaseModel):
+    videos: list[BatchVideoItem]
 
 
 # ---------------------------------------------------------------------------
@@ -334,7 +353,7 @@ async def tool_summarize_stream(task_id: str):
                 if summary_text:
                     yield f"data: {json.dumps({'type': 'progress', 'stage': 'summary', 'message': summary_text}, ensure_ascii=False)}\n\n"
 
-            await asyncio.sleep(0.3)
+            await asyncio.sleep(0.05)  # ~20fps，感知为逐 token 流式
 
     return StreamingResponse(
         _stream(),
@@ -356,15 +375,128 @@ async def tool_summarize_stream_by_video(video_id: str):
 
     return await tool_summarize_stream(task_id)
 
-    return StreamingResponse(
-        _stream(),
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-            "X-Accel-Buffering": "no",
-        },
-    )
+
+# ---------------------------------------------------------------------------
+# 批量总结工具（并行下载 + 总结多个视频）
+# ---------------------------------------------------------------------------
+
+
+@app.post("/api/tools/batch-summarize")
+async def tool_batch_summarize(req: BatchSummarizeRequest):
+    """批量并行总结：接受视频列表，后端并行处理下载+总结。
+
+    每个视频独立：下载 → 抽取音频+帧 → Omni 多模态总结。
+    各视频完全独立，一视频失败不影响其他。下载/总结各重试最多 3 次（指数退避）。
+
+    返回：
+        { batch_id, tasks: [{ task_id, video_id, status }] }
+    前端可立即按 video_id 连接 SSE 获取各视频流式进度。
+    """
+    from vidagent.tools.summarizer import extract_and_summarize, cleanup_progress
+    from vidagent.tools.downloader import download_video
+
+    batch_id = f"batch_{uuid.uuid4().hex[:12]}"
+    tasks: list[dict] = []
+
+    MAX_RETRIES = 3
+    RETRY_BASE_DELAY = 2  # 秒，指数退避：2s / 4s / 8s
+
+    def _run_one(video: dict) -> None:
+        task_id = uuid.uuid4().hex[:12]
+        video_id = video["video_id"]
+
+        # 注册任务
+        _video_task_map[video_id] = task_id
+        _summarize_tasks[task_id] = {
+            "status": "processing",
+            "result": None,
+            "partial": f"⏳ {video.get('title', video_id)} 排队中…",
+        }
+        tasks.append({"task_id": task_id, "video_id": video_id, "status": "processing"})
+
+        try:
+            # ── 下载（重试）──
+            local_path = None
+            last_err = None
+            for retry in range(1, MAX_RETRIES + 1):
+                try:
+                    result = download_video(video["video_url"], video_id)
+                    if result.get("status") == "success":
+                        local_path = result["local_path"]
+                        break
+                    last_err = result.get("error", "未知下载错误")
+                except Exception as e:
+                    last_err = str(e)
+                if retry < MAX_RETRIES:
+                    delay = RETRY_BASE_DELAY ** retry
+                    logger.warning(
+                        "下载重试 %d/%d (%.0fs 后退避): %s",
+                        retry, MAX_RETRIES, delay, video_id,
+                    )
+                    time.sleep(delay)
+
+            if not local_path:
+                _summarize_tasks[task_id] = {
+                    "status": "error",
+                    "result": f"下载失败(已重试{MAX_RETRIES}次): {last_err}",
+                }
+                cleanup_progress(task_id)
+                _video_task_map.pop(video_id, None)
+                tasks[-1]["status"] = "error"
+                return
+
+            # ── 总结（重试，受 semaphore 控制并发）──
+            metadata = {
+                "title": video.get("title", ""),
+                "desc": video.get("desc", ""),
+                "video_id": video_id,
+                "author": video.get("author"),
+                "duration_text": video.get("duration_text"),
+            }
+
+            last_err = None
+            with _llm_semaphore:
+                for retry in range(1, MAX_RETRIES + 1):
+                    try:
+                        summary = extract_and_summarize(
+                            local_path, metadata, task_id=task_id,
+                        )
+                        _summarize_tasks[task_id] = {
+                            "status": "done",
+                            "result": summary,
+                        }
+                        tasks[-1]["status"] = "done"
+                        logger.info(
+                            "批量总结完成: %s (%s)", video_id, video.get("title", "")
+                        )
+                        return
+                    except Exception as e:
+                        last_err = str(e)
+                        if retry < MAX_RETRIES:
+                            delay = RETRY_BASE_DELAY ** retry
+                            logger.warning(
+                                "总结重试 %d/%d (%.0fs 后退避): %s — %s",
+                                retry, MAX_RETRIES, delay, video_id, last_err[:100],
+                            )
+                            time.sleep(delay)
+
+                # 重试耗尽
+                _summarize_tasks[task_id] = {
+                    "status": "error",
+                    "result": f"总结失败(已重试{MAX_RETRIES}次): {last_err}",
+                }
+                tasks[-1]["status"] = "error"
+
+        finally:
+            cleanup_progress(task_id)
+            _video_task_map.pop(video_id, None)
+
+    # 所有视频并行提交到线程池
+    for video in req.videos:
+        _executor.submit(_run_one, video.model_dump())
+
+    logger.info("批量总结启动: batch=%s, %d 个视频", batch_id, len(req.videos))
+    return {"batch_id": batch_id, "tasks": tasks}
 
 
 # ---------------------------------------------------------------------------
