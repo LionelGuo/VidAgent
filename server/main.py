@@ -34,6 +34,7 @@ if str(_PROJECT_ROOT) not in sys.path:
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from server.sse_relay import relay_stream
@@ -55,6 +56,11 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# 静态文件服务 — 让前端可直接播放 workspace 下的视频 / 关键帧
+_workspace_dir = _PROJECT_ROOT / "workspace"
+_workspace_dir.mkdir(parents=True, exist_ok=True)
+app.mount("/workspace", StaticFiles(directory=str(_workspace_dir)), name="workspace")
+
 # ---------------------------------------------------------------------------
 # 配置（从环境变量 / .env 读取，与 src/vidagent/config.py 共用）
 # ---------------------------------------------------------------------------
@@ -69,6 +75,8 @@ _executor = ThreadPoolExecutor(max_workers=3)
 
 # 总结任务追踪：{task_id: {"status": str, "result": str, "partial": str}}
 _summarize_tasks: dict[str, dict[str, Any]] = {}
+# video_id → task_id 映射（供浏览器按视频 ID 连接 SSE）
+_video_task_map: dict[str, str] = {}
 
 # ---------------------------------------------------------------------------
 # Pydantic models
@@ -228,8 +236,10 @@ async def tool_summarize_start(req: SummarizeRequest):
     """启动多模态总结任务，返回 task_id + stream_url。
 
     总结在后台线程执行，通过 GET /api/tools/summarize/{task_id}/stream 获取实时进度。
+    若 metadata 含 video_id，同时建立 video_id → task_id 映射，
+    供浏览器通过 GET /api/tools/summarize/by-video/{video_id}/stream 连接。
     """
-    from vidagent.tools.summarizer import extract_and_summarize
+    from vidagent.tools.summarizer import extract_and_summarize, cleanup_progress
 
     task_id = uuid.uuid4().hex[:12]
     _summarize_tasks[task_id] = {
@@ -238,15 +248,24 @@ async def tool_summarize_start(req: SummarizeRequest):
         "partial": "⏳ 总结任务已创建…",
     }
 
+    # 建立 video_id → task_id 映射
+    video_id = (req.metadata or {}).get("video_id")
+    if video_id:
+        _video_task_map[video_id] = task_id
+
     def _run():
         try:
-            result = extract_and_summarize(req.local_path, req.metadata)
+            result = extract_and_summarize(req.local_path, req.metadata, task_id=task_id)
             _summarize_tasks[task_id]["status"] = "done"
             _summarize_tasks[task_id]["result"] = result
         except Exception as e:
             logger.exception("总结任务 %s 失败", task_id)
             _summarize_tasks[task_id]["status"] = "error"
             _summarize_tasks[task_id]["result"] = str(e)
+        finally:
+            cleanup_progress(task_id)
+            if video_id:
+                _video_task_map.pop(video_id, None)
 
     _executor.submit(_run)
 
@@ -259,8 +278,8 @@ async def tool_summarize_start(req: SummarizeRequest):
 
 @app.get("/api/tools/summarize/{task_id}/stream")
 async def tool_summarize_stream(task_id: str):
-    """SSE 进度流：实时推送总结进度。"""
-    from vidagent.tools.summarizer import live_partial, live_summary, live_summary_active, live_active
+    """SSE 进度流：实时推送总结进度（per-task 隔离）。"""
+    from vidagent.tools.summarizer import get_progress
 
     async def _stream():
         import json
@@ -285,11 +304,22 @@ async def tool_summarize_stream(task_id: str):
                 yield "data: [DONE]\n\n"
                 return
 
-            # 轮询 live 进度
-            asr_active = live_active()
-            summary_active = live_summary_active()
-            asr_text = live_partial()
-            summary_text = live_summary()
+            # 轮询 per-task progress（优先）或全局进度（回退）
+            progress = get_progress(task_id)
+            if progress is not None:
+                asr_active = False
+                asr_text = ""
+                summary_active = progress.active
+                summary_text = progress.partial if progress.active else ""
+            else:
+                # 回退：未传 task_id 的旧调用仍走全局单例
+                from vidagent.tools.summarizer import (
+                    live_partial, live_summary, live_summary_active, live_active,
+                )
+                asr_active = live_active()
+                summary_active = live_summary_active()
+                asr_text = live_partial()
+                summary_text = live_summary()
 
             if asr_active != last_asr_active or asr_text != last_partial:
                 last_asr_active = asr_active
@@ -304,6 +334,26 @@ async def tool_summarize_stream(task_id: str):
                     yield f"data: {json.dumps({'type': 'progress', 'stage': 'summary', 'message': summary_text}, ensure_ascii=False)}\n\n"
 
             await asyncio.sleep(0.3)
+
+    return StreamingResponse(
+        _stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+@app.get("/api/tools/summarize/by-video/{video_id}/stream")
+async def tool_summarize_stream_by_video(video_id: str):
+    """按 video_id 获取总结进度 SSE（浏览器端 EventSource 使用）。"""
+    task_id = _video_task_map.get(video_id)
+    if not task_id:
+        raise HTTPException(status_code=404, detail="未找到该视频的总结任务")
+
+    return await tool_summarize_stream(task_id)
 
     return StreamingResponse(
         _stream(),

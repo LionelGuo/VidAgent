@@ -38,9 +38,16 @@ export async function startSummarize(localPath: string, metadata?: Record<string
   return res.json() as Promise<{ task_id: string; stream_url: string }>;
 }
 
-/** 创建 SSE 连接到总结进度流 */
+/** 创建 SSE 连接到总结进度流（按 task_id） */
 export function createSummarizeStream(taskId: string): EventSource {
   return new EventSource(
     `${apiBaseUrl}/api/tools/summarize/${taskId}/stream`
+  );
+}
+
+/** 创建 SSE 连接到总结进度流（按 video_id，浏览器端使用） */
+export function createSummaryStreamByVideo(videoId: string): EventSource {
+  return new EventSource(
+    `${apiBaseUrl}/api/tools/summarize/by-video/${videoId}/stream`
   );
 }

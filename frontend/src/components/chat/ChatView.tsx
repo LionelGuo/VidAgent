@@ -1,8 +1,11 @@
 "use client";
 
+import { useEffect, useRef, type ReactNode } from "react";
 import { type Message } from "@ai-sdk/react";
 import { cn } from "@/lib/utils";
-import { useLayoutStore } from "@/lib/stores";
+import { useLayoutStore, useVideoStore, type VideoInfo } from "@/lib/stores";
+import { MarkdownRenderer } from "@/components/ui/MarkdownRenderer";
+import { createSummaryStreamByVideo } from "@/lib/api";
 import {
   CheckCircle,
   Loader2,
@@ -17,13 +20,16 @@ import {
 // 工具名称 → 图标 + 中文标签映射
 // ---------------------------------------------------------------------------
 
-const TOOL_META: Record<string, { icon: React.ReactNode; label: string }> = {
+const TOOL_META: Record<string, { icon: ReactNode; label: string }> = {
   get_hot_videos: { icon: <Flame className="w-3.5 h-3.5" />, label: "热门" },
   search_videos: { icon: <Search className="w-3.5 h-3.5" />, label: "搜索" },
   get_creator_videos: { icon: <User className="w-3.5 h-3.5" />, label: "创作者" },
   download_video: { icon: <Download className="w-3.5 h-3.5" />, label: "下载" },
   extract_and_summarize: { icon: <FileText className="w-3.5 h-3.5" />, label: "总结" },
 };
+
+/** 返回检索结果的工具名集合 */
+const SEARCH_TOOLS = new Set(["get_hot_videos", "search_videos", "get_creator_videos"]);
 
 // ---------------------------------------------------------------------------
 // ToolBadge — 工具调用状态指示器
@@ -145,6 +151,59 @@ function ChatMessage({
 }
 
 // ---------------------------------------------------------------------------
+// 从工具调用结果中提取视频数据
+// ---------------------------------------------------------------------------
+
+function extractVideoResults(toolInvocations: any[]): VideoInfo[] {
+  const videos: VideoInfo[] = [];
+
+  for (const ti of toolInvocations) {
+    if (ti.state !== "result") continue;
+
+    // 检索工具 → 提取 results[]
+    if (SEARCH_TOOLS.has(ti.toolName)) {
+      const results = ti.result?.results ?? [];
+      for (const v of results) {
+        if (v.video_id) {
+          videos.push({
+            video_id: v.video_id,
+            title: v.title ?? "未知标题",
+            desc: v.desc ?? "",
+            author: v.author ?? "",
+            duration_text: v.duration_text ?? "",
+            video_url: v.video_url ?? "",
+            view_count: v.view_count ?? 0,
+            platform: v.platform,
+            publish_time: v.publish_time,
+          });
+        }
+      }
+    }
+
+    // 下载工具 → 关联 local_path
+    if (ti.toolName === "download_video" && ti.result?.local_path) {
+      const localPath = ti.result.local_path;
+      // 从路径中提取 video_id（格式如 workspace/BVxxx.mp4）
+      const match = localPath.match(/(BV[\w]+)/);
+      if (match) {
+        const vid = match[1];
+        useVideoStore.getState().setLocalPath(vid, localPath);
+      }
+    }
+
+    // 总结工具 → 关联 summary（通过 video_id 精确匹配）
+    if (ti.toolName === "extract_and_summarize" && ti.result?.summary) {
+      const vid = ti.result.video_id;
+      if (vid) {
+        useVideoStore.getState().setSummary(vid, ti.result.summary);
+      }
+    }
+  }
+
+  return videos;
+}
+
+// ---------------------------------------------------------------------------
 // AssistantContent — 渲染 AI 回复（文本 + tool badges + video cards）
 // ---------------------------------------------------------------------------
 
@@ -155,8 +214,24 @@ function AssistantContent({
   message: Message;
   onVideoClick: (id: string) => void;
 }) {
-  // 工具调用徽章
   const toolInvocations = (message as any).toolInvocations ?? [];
+
+  // 从所有检索工具中提取视频卡片
+  const videoCards = toolInvocations
+    .filter((ti: any) => ti.state === "result" && SEARCH_TOOLS.has(ti.toolName))
+    .flatMap((ti: any) => {
+      const results = ti.result?.results ?? [];
+      return results.map((v: any, i: number) => (
+        <VideoCard
+          key={v.video_id ?? `${ti.toolName}-${i}`}
+          videoId={v.video_id ?? String(i)}
+          title={v.title ?? "未知标题"}
+          author={v.author}
+          duration={v.duration_text}
+          summary={v.desc}
+        />
+      ));
+    });
 
   return (
     <div className="space-y-3">
@@ -183,73 +258,19 @@ function AssistantContent({
 
       {/* 文本内容（Markdown 渲染） */}
       {message.content && (
-        <div className="prose prose-sm dark:prose-invert max-w-none text-sm leading-relaxed">
-          {renderContent(message.content)}
-        </div>
+        <MarkdownRenderer>{message.content}</MarkdownRenderer>
       )}
 
-      {/* 视频卡片（从工具结果中提取） */}
-      {toolInvocations
-        .filter((ti: any) => ti.state === "result" && ti.toolName === "get_hot_videos")
-        .flatMap((ti: any) => {
-          const results = ti.result?.results ?? [];
-          return results.slice(0, 3).map((v: any, i: number) => (
-            <VideoCard
-              key={v.video_id ?? i}
-              videoId={v.video_id ?? String(i)}
-              title={v.title ?? "未知标题"}
-              author={v.author}
-              duration={v.duration_text}
-              summary={v.desc}
-            />
-          ));
-        })}
+      {/* 视频卡片 */}
+      {videoCards.length > 0 && (
+        <div className="space-y-2 pt-1">{videoCards}</div>
+      )}
     </div>
   );
 }
 
 // ---------------------------------------------------------------------------
-// 简易 Markdown 渲染
-// ---------------------------------------------------------------------------
-
-function renderContent(text: string): React.ReactNode {
-  const lines = text.split("\n");
-  return lines.map((line, i) => {
-    // 标题
-    if (line.startsWith("### ")) {
-      return (
-        <h4 key={i} className="text-sm font-semibold mt-3 mb-1">
-          {line.slice(4)}
-        </h4>
-      );
-    }
-    if (line.startsWith("## ")) {
-      return (
-        <h3 key={i} className="text-base font-semibold mt-4 mb-2">
-          {line.slice(3)}
-        </h3>
-      );
-    }
-    // 加粗
-    const bolded = line.replace(
-      /\*\*(.+?)\*\*/g,
-      "<strong>$1</strong>"
-    );
-    if (!bolded.trim()) {
-      return <div key={i} className="h-2" />;
-    }
-    return (
-      <p
-        key={i}
-        className="min-h-[1.4em]"
-        dangerouslySetInnerHTML={{ __html: bolded }}
-      />
-    );
-  });
-}
-
-// ---------------------------------------------------------------------------
-// ChatView — 消息列表
+// ChatView — 消息列表 + 工具结果 → VideoStore 同步
 // ---------------------------------------------------------------------------
 
 export function ChatView({
@@ -261,6 +282,76 @@ export function ChatView({
   status: string;
   onVideoClick: (id: string) => void;
 }) {
+  // 工具结果 → VideoStore 同步
+  useEffect(() => {
+    for (const msg of messages) {
+      if (msg.role !== "assistant") continue;
+      const toolInvocations = (msg as any).toolInvocations ?? [];
+      const videos = extractVideoResults(toolInvocations);
+      if (videos.length > 0) {
+        useVideoStore.getState().upsertResults(videos);
+      }
+    }
+  }, [messages]);
+
+  // 总结流式进度 → VideoStore（浏览器端 EventSource 独立连接）
+  const activeStreamsRef = useRef<Map<string, EventSource>>(new Map());
+
+  useEffect(() => {
+    for (const msg of messages) {
+      if (msg.role !== "assistant") continue;
+      const toolInvocations: any[] = (msg as any).toolInvocations ?? [];
+
+      for (const ti of toolInvocations) {
+        if (ti.toolName !== "extract_and_summarize") continue;
+        const videoId: string | undefined = ti.args?.metadata?.video_id;
+        if (!videoId) continue;
+
+        // 工具被调用 → 打开 SSE 连接（避免重复）
+        if (ti.state === "call" && !activeStreamsRef.current.has(videoId)) {
+          const es = createSummaryStreamByVideo(videoId);
+
+          es.onmessage = (event) => {
+            try {
+              const data = JSON.parse(event.data);
+              if (data.type === "progress" && data.stage === "summary") {
+                useVideoStore.getState().setSummary(videoId, data.message);
+              } else if (data.type === "done") {
+                useVideoStore.getState().setSummary(videoId, data.result || "");
+                es.close();
+                activeStreamsRef.current.delete(videoId);
+              } else if (data.type === "error") {
+                console.warn("总结 SSE 错误:", data.message);
+                es.close();
+                activeStreamsRef.current.delete(videoId);
+              }
+            } catch {
+              // 忽略 parse 错误（如 [DONE]）
+            }
+          };
+
+          es.onerror = () => {
+            // SSE 连接异常 → 保留已有部分文本，清理连接
+            es.close();
+            activeStreamsRef.current.delete(videoId);
+          };
+
+          activeStreamsRef.current.set(videoId, es);
+        }
+      }
+    }
+  }, [messages]);
+
+  // 卸载时清理所有 SSE 连接
+  useEffect(() => {
+    return () => {
+      for (const es of activeStreamsRef.current.values()) {
+        es.close();
+      }
+      activeStreamsRef.current.clear();
+    };
+  }, []);
+
   if (messages.length === 0) {
     return (
       <div className="flex items-center justify-center h-full text-muted-foreground">

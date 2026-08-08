@@ -16,6 +16,61 @@ export const useLayoutStore = create<LayoutState>((set) => ({
 }));
 
 // ---------------------------------------------------------------------------
+// Video Store — 视频元数据（从工具结果中提取，驱动 DetailPanel）
+// ---------------------------------------------------------------------------
+
+export interface VideoInfo {
+  video_id: string;
+  title: string;
+  desc: string;
+  author: string;
+  duration_text: string;
+  video_url: string;
+  view_count: number;
+  platform?: string;
+  publish_time?: string;
+  /** 下载后填充 */
+  local_path?: string;
+  /** 总结后填充 */
+  summary?: string;
+}
+
+interface VideoStore {
+  videos: Record<string, VideoInfo>;
+  /** 批量写入检索结果 */
+  upsertResults: (results: VideoInfo[]) => void;
+  /** 设置下载路径 */
+  setLocalPath: (id: string, path: string) => void;
+  /** 设置总结内容 */
+  setSummary: (id: string, summary: string) => void;
+}
+
+export const useVideoStore = create<VideoStore>((set) => ({
+  videos: {},
+  upsertResults: (results) =>
+    set((s) => {
+      const next = { ...s.videos };
+      for (const v of results) {
+        if (!v.video_id) continue;
+        next[v.video_id] = { ...next[v.video_id], ...v };
+      }
+      return { videos: next };
+    }),
+  setLocalPath: (id, path) =>
+    set((s) => {
+      const existing = s.videos[id];
+      if (!existing) return s;
+      return { videos: { ...s.videos, [id]: { ...existing, local_path: path } } };
+    }),
+  setSummary: (id, summary) =>
+    set((s) => {
+      const existing = s.videos[id];
+      if (!existing) return s;
+      return { videos: { ...s.videos, [id]: { ...existing, summary } } };
+    }),
+}));
+
+// ---------------------------------------------------------------------------
 // Tool Progress Store — 补充 AI SDK toolInvocations，跟踪长时间工具进度
 // ---------------------------------------------------------------------------
 

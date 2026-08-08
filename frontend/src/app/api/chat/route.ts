@@ -247,7 +247,7 @@ export async function POST(req: Request) {
 
           // 2. 等待完成
           const summary = await waitForSummarizeTask(task_id);
-          return { status: "ok", summary };
+          return { status: "ok", summary, video_id: metadata?.video_id };
         },
       },
     },

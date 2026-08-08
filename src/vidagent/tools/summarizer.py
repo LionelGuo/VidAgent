@@ -79,6 +79,26 @@ class _LiveSummary:
 _live = _LiveASR()
 _live_summary = _LiveSummary()
 
+# per-task progress（替代全局单例，支持并行总结）
+_task_progress: dict[str, _LiveSummary] = {}
+
+
+def create_progress(task_id: str) -> _LiveSummary:
+    """创建一个 per-task 进度追踪器，存入全局 dict。"""
+    tp = _LiveSummary()
+    _task_progress[task_id] = tp
+    return tp
+
+
+def get_progress(task_id: str) -> _LiveSummary | None:
+    """获取 per-task 进度追踪器。"""
+    return _task_progress.get(task_id)
+
+
+def cleanup_progress(task_id: str) -> None:
+    """清理 per-task 进度追踪器。"""
+    _task_progress.pop(task_id, None)
+
 
 def live_partial() -> str:
     """当前转写文本（仅 ASR 进行中非空）。"""
@@ -154,13 +174,15 @@ def _chat_completion(
 
 def _chat_completion_stream(
     base_url: str, api_key: str, payload: dict, timeout: int = 300,
+    progress: _LiveSummary | None = None,
 ) -> str:
-    """流式 chat completion，返回完整响应文本；同时更新 _live_summary。"""
+    """流式 chat completion，返回完整响应文本；同时更新 progress（默认 _live_summary）。"""
     payload = {**payload, "stream": True}
     accumulated = ""
     token_count = 0
     t0 = time.perf_counter()
     ttft = None  # time-to-first-token
+    pg = progress or _live_summary  # 默认回退到全局单例，保持向后兼容
 
     with httpx.stream(
         "POST", f"{base_url}/chat/completions",
@@ -181,7 +203,7 @@ def _chat_completion_stream(
                             ttft = time.perf_counter() - t0
                         accumulated += token
                         token_count += len(token)
-                        _live_summary.append(token)
+                        pg.append(token)
                 except (json.JSONDecodeError, KeyError, IndexError):
                     pass
 
@@ -194,7 +216,9 @@ def _chat_completion_stream(
     return accumulated
 
 
-def extract_and_summarize(local_path: str, metadata: dict | None = None) -> str:
+def extract_and_summarize(
+    local_path: str, metadata: dict | None = None, task_id: str | None = None,
+) -> str:
     """对本地视频生成结构化中文总结（Markdown）。
 
     多模态模型（LLM_MULTIMODAL=true）：抽取音频 → 直送 LLM，跳过 ASR。
@@ -205,6 +229,7 @@ def extract_and_summarize(local_path: str, metadata: dict | None = None) -> str:
     Args:
         local_path: 本地视频文件路径（用 download_video 返回的 local_path）。
         metadata: 视频元数据，至少含 title 与 desc。
+        task_id: 可选，per-task 进度追踪 ID。传入时创建独立 progress 实例。
 
     Returns:
         结构化 Markdown 总结（核心观点 + 主要内容梳理）。
@@ -212,82 +237,94 @@ def extract_and_summarize(local_path: str, metadata: dict | None = None) -> str:
     metadata = metadata or {}
     video_id = metadata.get("video_id", "")
 
-    # ── 多模态路径：音频直送 LLM，跳过 ASR ──
-    if settings.llm_multimodal:
-        _live.begin()
-        _live.update("🎵 多模态模型分析音频中…")
-        _live_summary.begin()
-        try:
-            video_path = Path(local_path)
-            # 并行：音频提取 + 帧抽取（两个独立 ffmpeg 操作）
-            from concurrent.futures import ThreadPoolExecutor
+    # per-task progress（替代全局单例，支持并行 + 前端流式）
+    progress = create_progress(task_id) if task_id else None
+    try:
+        if progress:
+            progress.begin()
 
-            t0_pre = time.perf_counter()
-            with ThreadPoolExecutor(max_workers=2) as pool:
-                audio_future = pool.submit(extract_audio, local_path)
-                frames_future = pool.submit(
-                    extract_frames, video_path,
-                    duration=metadata.get("duration"),
+        # ── 多模态路径：音频直送 LLM，跳过 ASR ──
+        if settings.llm_multimodal:
+            _live.begin()
+            _live.update("🎵 多模态模型分析音频中…")
+            if not progress:
+                _live_summary.begin()
+            try:
+                video_path = Path(local_path)
+                # 并行：音频提取 + 帧抽取（两个独立 ffmpeg 操作）
+                from concurrent.futures import ThreadPoolExecutor
+
+                t0_pre = time.perf_counter()
+                with ThreadPoolExecutor(max_workers=2) as pool:
+                    audio_future = pool.submit(extract_audio, local_path)
+                    frames_future = pool.submit(
+                        extract_frames, video_path,
+                        duration=metadata.get("duration"),
+                    )
+                    mp3 = audio_future.result()
+                    all_frames = frames_future.result()
+                pre_elapsed = time.perf_counter() - t0_pre
+
+                mp3_kb = Path(mp3).stat().st_size // 1024
+                frames_kb = sum(f.stat().st_size for f in all_frames) // 1024
+                logger.info(
+                    "⚙️ 预处理完成: 音频 %d KB + %d 帧 / %d KB | %.1fs (并行)",
+                    mp3_kb, len(all_frames), frames_kb, pre_elapsed,
                 )
-                mp3 = audio_future.result()
-                all_frames = frames_future.result()
-            pre_elapsed = time.perf_counter() - t0_pre
 
-            mp3_kb = Path(mp3).stat().st_size // 1024
-            frames_kb = sum(f.stat().st_size for f in all_frames) // 1024
-            logger.info(
-                "⚙️ 预处理完成: 音频 %d KB + %d 帧 / %d KB | %.1fs (并行)",
-                mp3_kb, len(all_frames), frames_kb, pre_elapsed,
-            )
+                with Timer("多模态总结(音频直送)"):
+                    return _summarize_multimodal(
+                        Path(mp3), metadata,
+                        video_path=video_path,
+                        pre_extracted_frames=all_frames,
+                        progress=progress,
+                    )
+            except Exception as e:
+                logger.warning("多模态总结失败，走降级总结（仅元数据）: %s", e)
+                with Timer("LLM 总结(降级)"):
+                    return _summarize("", metadata)
+            finally:
+                _live.reset()
+                if not progress:
+                    _live_summary.reset()
 
-            with Timer("多模态总结(音频直送)"):
-                return _summarize_multimodal(
-                    Path(mp3), metadata,
-                    video_path=video_path,
-                    pre_extracted_frames=all_frames,
-                )
-        except Exception as e:
-            logger.warning("多模态总结失败，走降级总结（仅元数据）: %s", e)
-            with Timer("LLM 总结(降级)"):
-                return _summarize("", metadata)
-        finally:
-            _live.reset()
-            _live_summary.reset()
+        # ── 原 ASR 路径 ──
+        cache_path = storage.transcript_path(video_id) if video_id else None
 
-    # ── 原 ASR 路径 ──
-    cache_path = storage.transcript_path(video_id) if video_id else None
+        transcript = ""
+        if cache_path and cache_path.exists():
+            # 转写缓存命中：跳过抽音 + ASR
+            transcript = cache_path.read_text(encoding="utf-8").strip()
+            logger.info("ASR 命中缓存(%s)，转写 %d 字", video_id, len(transcript))
+        else:
+            _live.begin()
+            last_logged = 0
 
-    transcript = ""
-    if cache_path and cache_path.exists():
-        # 转写缓存命中：跳过抽音 + ASR
-        transcript = cache_path.read_text(encoding="utf-8").strip()
-        logger.info("ASR 命中缓存(%s)，转写 %d 字", video_id, len(transcript))
-    else:
-        _live.begin()
-        last_logged = 0
+            def on_partial(p: str) -> None:
+                _live.update(p)
+                nonlocal last_logged
+                if len(p) - last_logged >= 800:
+                    last_logged = len(p)
+                    logger.info("…ASR 进行中，已转 %d 字", len(p))
 
-        def on_partial(p: str) -> None:
-            _live.update(p)
-            nonlocal last_logged
-            if len(p) - last_logged >= 800:
-                last_logged = len(p)
-                logger.info("…ASR 进行中，已转 %d 字", len(p))
+            try:
+                with Timer("音频提取(ffmpeg)"):
+                    mp3 = extract_audio(local_path)
+                with Timer("ASR 转写(流式)"):
+                    transcript, _lang = _transcribe(mp3, on_partial=on_partial)
+                logger.info("ASR 完成，转写 %d 字", len(transcript))
+                if transcript and cache_path:  # 仅成功转写才缓存（空/降级不缓存）
+                    cache_path.write_text(transcript, encoding="utf-8")
+            except Exception as e:  # 抽音/ASR 失败 → 降级
+                logger.warning("ASR 失败，走降级总结（仅元数据）: %s", e)
+            finally:
+                _live.reset()
 
-        try:
-            with Timer("音频提取(ffmpeg)"):
-                mp3 = extract_audio(local_path)
-            with Timer("ASR 转写(流式)"):
-                transcript, _lang = _transcribe(mp3, on_partial=on_partial)
-            logger.info("ASR 完成，转写 %d 字", len(transcript))
-            if transcript and cache_path:  # 仅成功转写才缓存（空/降级不缓存）
-                cache_path.write_text(transcript, encoding="utf-8")
-        except Exception as e:  # 抽音/ASR 失败 → 降级
-            logger.warning("ASR 失败，走降级总结（仅元数据）: %s", e)
-        finally:
-            _live.reset()
-
-    with Timer("LLM 总结"):
-        return _summarize(transcript, metadata)
+        with Timer("LLM 总结"):
+            return _summarize(transcript, metadata)
+    finally:
+        if progress:
+            progress.reset()
 
 
 # Whisper 模型单例：进程内只加载一次，避免每次转写重复加载权重进显存
@@ -424,6 +461,7 @@ def _summarize_chunk(
     time_start: float, time_end: float,
     metadata: dict, frames: list[Path],
     base_url: str, api_key: str, model: str,
+    progress: _LiveSummary | None = None,
 ) -> str:
     """发送单个音频段落 + 帧到多模态模型，返回段落总结。"""
     import base64 as b64
@@ -469,7 +507,7 @@ def _summarize_chunk(
         "max_tokens": 512,
     }
     # 流式输出段落摘要（用于实时进度）
-    return _chat_completion_stream(base_url, api_key, payload, timeout=300)
+    return _chat_completion_stream(base_url, api_key, payload, timeout=300, progress=progress)
 
 
 def _frame_timestamp(frame_path: Path) -> float | None:
@@ -482,6 +520,7 @@ def _frame_timestamp(frame_path: Path) -> float | None:
 def _merge_summaries(
     chunk_summaries: list[str], metadata: dict,
     base_url: str, api_key: str, model: str,
+    progress: _LiveSummary | None = None,
 ) -> str:
     """将多个段落摘要合并为完整总结。"""
     if len(chunk_summaries) <= 1:
@@ -504,9 +543,10 @@ def _merge_summaries(
         "temperature": 0.3,
         "max_tokens": 2048,
     }
-    # 更新 live summary 显示合并阶段
-    _live_summary.set(_live_summary.partial + "\n\n--- 合并中… ---\n\n")
-    merged = _chat_completion_stream(base_url, api_key, payload, timeout=180)
+    # 更新 summary 显示合并阶段
+    pg = progress or _live_summary
+    pg.set(pg.partial + "\n\n--- 合并中… ---\n\n")
+    merged = _chat_completion_stream(base_url, api_key, payload, timeout=180, progress=progress)
     return merged
 
 
@@ -515,6 +555,7 @@ def _summarize_multimodal(
     metadata: dict,
     video_path: Path | None = None,
     pre_extracted_frames: list[Path] | None = None,
+    progress: _LiveSummary | None = None,
 ) -> str:
     """音频直送多模态模型（+ 自适应关键帧），跳过 ASR 转写。
 
@@ -553,9 +594,10 @@ def _summarize_multimodal(
             mp3_path=mp3_path, duration=duration,
             metadata=metadata, all_frames=all_frames,
             base_url=base_url, api_key=api_key, model=model,
+            progress=progress,
         )
 
-    # ── 短音频：单次请求（流式输出到 _live_summary）──
+    # ── 短音频：单次请求（流式输出到 progress）──
     t0_encode = time.perf_counter()
     mp3_b64 = base64.b64encode(mp3_path.read_bytes()).decode()
     audio_b64_kb = len(mp3_b64) // 1024
@@ -602,19 +644,21 @@ def _summarize_multimodal(
         audio_b64_kb, len(all_frames), frames_b64_kb,
         encode_elapsed, frames_encode_elapsed, payload_kb, base_url,
     )
-    # 流式：逐 token 更新 _live_summary，UI 可实时轮询
-    return _chat_completion_stream(base_url, api_key, payload, timeout=300)
+    # 流式：逐 token 更新 progress（或全局 _live_summary），UI 可实时轮询
+    return _chat_completion_stream(base_url, api_key, payload, timeout=300, progress=progress)
 
 
 def _summarize_multimodal_chunked(
     mp3_path: Path, duration: float, metadata: dict,
     all_frames: list[Path], base_url: str, api_key: str, model: str,
+    progress: _LiveSummary | None = None,
 ) -> str:
     """长音频分块处理：切分 → 逐段总结 → 合并。"""
     import tempfile
     from pathlib import Path as P
 
     work_dir = P(tempfile.mkdtemp(prefix="vidagent_chunks_"))
+    pg = progress or _live_summary
     try:
         # 基于文件大小的自适应分块：每段目标 ~8MB mp3（~10.6MB base64）
         mp3_size = mp3_path.stat().st_size
@@ -645,9 +689,9 @@ def _summarize_multimodal_chunked(
                     f"**段落 {j+1}** ({j*chunk_s:.0f}s–{min((j+1)*chunk_s, duration):.0f}s)：\n{s[:200]}…"
                     for j, s in enumerate(chunk_summaries)
                 )
-                _live_summary.set(progress_header + done_text + f"\n\n⏳ 段落 {i} 分析中…")
+                pg.set(progress_header + done_text + f"\n\n⏳ 段落 {i} 分析中…")
             else:
-                _live_summary.set(progress_header + f"⏳ 段落 {i} 分析中…")
+                pg.set(progress_header + f"⏳ 段落 {i} 分析中…")
 
             t0_chunk = time.perf_counter()
             summary = _summarize_chunk(
@@ -656,6 +700,7 @@ def _summarize_multimodal_chunked(
                 time_start=t_start, time_end=t_end,
                 metadata=metadata, frames=all_frames,
                 base_url=base_url, api_key=api_key, model=model,
+                progress=progress,
             )
             chunk_elapsed = time.perf_counter() - t0_chunk
             chunk_summaries.append(summary)
@@ -669,6 +714,7 @@ def _summarize_multimodal_chunked(
         return _merge_summaries(
             chunk_summaries, metadata,
             base_url=base_url, api_key=api_key, model=model,
+            progress=progress,
         )
     finally:
         # 清理临时文件
