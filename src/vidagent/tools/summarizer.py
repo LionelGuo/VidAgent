@@ -17,6 +17,7 @@ import httpx
 
 from vidagent.config import settings
 from vidagent.utils import storage
+from vidagent.utils.frames import extract_frames
 from vidagent.utils.audio import extract_audio
 from vidagent.utils.timer import Timer
 
@@ -130,7 +131,9 @@ _MERGE_SYS = (
 )
 
 # 长音频分块阈值：超过此时长按段落分片处理（每段独立请求 + 最终合并）
-_MAX_AUDIO_CHUNK_SECONDS = 3600  # 60 分钟
+# vLLM-Omni multimodal cache 有大小限制，单段过大会触发 AssertionError
+# 480s (8min) 每段 ≈ 7MB mp3 / 9MB base64，cache 稳定
+_MAX_AUDIO_CHUNK_SECONDS = 480  # 8 分钟
 
 
 def _chat_completion(
@@ -200,10 +203,25 @@ def extract_and_summarize(local_path: str, metadata: dict | None = None) -> str:
         _live.update("🎵 多模态模型分析音频中…")
         _live_summary.begin()
         try:
-            with Timer("音频提取(ffmpeg)"):
-                mp3 = extract_audio(local_path)
+            video_path = Path(local_path)
+            # 并行：音频提取 + 帧抽取（两个独立 ffmpeg 操作）
+            from concurrent.futures import ThreadPoolExecutor
+
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                audio_future = pool.submit(extract_audio, local_path)
+                frames_future = pool.submit(
+                    extract_frames, video_path,
+                    duration=metadata.get("duration"),
+                )
+                mp3 = audio_future.result()
+                all_frames = frames_future.result()
+
             with Timer("多模态总结(音频直送)"):
-                return _summarize_multimodal(Path(mp3), metadata, video_path=Path(local_path))
+                return _summarize_multimodal(
+                    Path(mp3), metadata,
+                    video_path=video_path,
+                    pre_extracted_frames=all_frames,
+                )
         except Exception as e:
             logger.warning("多模态总结失败，走降级总结（仅元数据）: %s", e)
             with Timer("LLM 总结(降级)"):
@@ -365,7 +383,7 @@ def _split_audio(mp3_path: Path, chunk_s: int, work_dir: Path) -> list[Path]:
         out_path = work_dir / f"{stem}_chunk{i:03d}.mp3"
         subprocess.run(
             ["ffmpeg", "-y", "-ss", str(start), "-t", str(end - start),
-             "-i", str(mp3_path), "-c:a", "libmp3lame", "-q:a", "4",
+             "-i", str(mp3_path), "-c:a", "libmp3lame", "-q:a", "7",
              str(out_path)],
             capture_output=True, timeout=30,
         )
@@ -469,7 +487,10 @@ def _merge_summaries(
 
 
 def _summarize_multimodal(
-    mp3_path: Path, metadata: dict, video_path: Path | None = None,
+    mp3_path: Path,
+    metadata: dict,
+    video_path: Path | None = None,
+    pre_extracted_frames: list[Path] | None = None,
 ) -> str:
     """音频直送多模态模型（+ 自适应关键帧），跳过 ASR 转写。
 
@@ -485,17 +506,16 @@ def _summarize_multimodal(
     if not api_key:
         raise RuntimeError("未配置 OPENAI_API_KEY")
 
-    # ── 关键帧抽取（提前做，供所有段落共享）──
-    all_frames: list[Path] = []
-    if video_path and video_path.exists():
+    # ── 关键帧（使用预提取的，或现场抽取）──
+    all_frames: list[Path] = pre_extracted_frames or []
+    if not all_frames and video_path and video_path.exists():
         try:
-            from vidagent.utils.frames import extract_frames
             all_frames = extract_frames(video_path)
             logger.info("多模态总结：%d 帧画面已抽取", len(all_frames))
         except Exception as e:
             logger.warning("关键帧抽取失败，降级为纯音频: %s", e)
 
-    # ── 检查音频时长，决定是否分块 ──
+    # ── 时长：优先用视频帧数推算，省一次 ffprobe ──
     duration = _get_audio_duration(mp3_path)
     if duration > _MAX_AUDIO_CHUNK_SECONDS:
         logger.info("长音频检测：%.0fs → 按 %ds 分块处理", duration, _MAX_AUDIO_CHUNK_SECONDS)

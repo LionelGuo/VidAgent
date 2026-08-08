@@ -58,6 +58,7 @@ const SYSTEM_PROMPT = `你是 VidAgent，一个自媒体视频采集与总结助
   如果用户仅需检索/列表（如"搜索xx教程，介绍一下"），检索完成后直接生成文本回复，不要继续下载或总结。
   如果用户明确要求"总结视频"或"下载并总结"，才按序执行：检索 → download_video → extract_and_summarize。
   不要在任务完成后调用无关工具。
+- **date_filter 参数：默认不传。** 热榜/搜索本身反映当前热门内容，不需要按发布日期过滤。仅在用户明确说「只看今天/今日发布的」时才传 "today"。
 - 多个视频时逐个完成「下载→总结」，并用简短进度告知用户（如「正在处理 2/5…」）。
 - 工具返回 status=error 或抛异常时：简要说明原因，最多重试 3 次；仍失败则如实告知，绝不编造内容。
 - 全程中文；总结用 Markdown，分「核心观点」与「主要内容梳理」。
@@ -132,16 +133,21 @@ export async function POST(req: Request) {
     model: vidagent("/root/autodl-tmp/Qwen3-Omni-30B-AWQ"),
     system: SYSTEM_PROMPT,
     messages,
-    maxSteps: 10,       // 自动继续：tool call → 执行 → 继续生成，最多 10 步
+    maxSteps: 10,
+    onError: (err: any) => {
+      const msg = err?.error?.message || err?.message || String(err);
+      console.error("[streamText ERROR]", msg.slice(0, 1000));
+      if (err?.error?.cause) console.error("[streamText CAUSE]", JSON.stringify(err.error.cause).slice(0, 500));
+    },
     tools: {
       // ── 检索工具 ──
       get_hot_videos: {
         description:
-          "获取平台综合热门视频榜单。返回视频列表，每项含 video_id/title/desc/duration/duration_text/video_url/platform/author/view_count。",
+          "获取平台综合热门视频榜单（热榜本身反映当前热度，不限发布日期）。返回视频列表，每项含 video_id/title/desc/duration/duration_text/video_url/platform/author/view_count。",
         parameters: z.object({
-          platform: z.string().default("bilibili").describe("平台，目前仅支持 bilibili"),
-          limit: z.number().default(10).describe("返回条数上限"),
-          date_filter: z.string().optional().describe("时间过滤：today 表示仅当日"),
+          platform: z.string().nullable().default("bilibili").describe("平台，目前仅支持 bilibili"),
+          limit: z.number().nullable().default(10).describe("返回条数上限"),
+          date_filter: z.string().nullable().optional().describe("按发布日期过滤。通常不传（热榜已反映当前热度）。仅在用户明确要求'只看今天发布的'时才传 'today'"),
         }),
         execute: async ({ platform, limit, date_filter }) => {
           const p = new URLSearchParams({ platform: platform || "bilibili", limit: String(limit || 10) });
@@ -156,10 +162,10 @@ export async function POST(req: Request) {
         description:
           "按关键词搜索视频。返回视频列表，每项含 video_id/title/desc/duration/duration_text/video_url/platform/author/view_count。",
         parameters: z.object({
-          platform: z.string().default("bilibili").describe("平台，目前仅支持 bilibili"),
+          platform: z.string().nullable().default("bilibili").describe("平台，目前仅支持 bilibili"),
           keyword: z.string().describe("搜索关键词（必填）"),
-          limit: z.number().default(10).describe("返回条数上限"),
-          date_filter: z.string().optional().describe("时间过滤：today 表示仅当日"),
+          limit: z.number().nullable().default(10).describe("返回条数上限"),
+          date_filter: z.string().nullable().optional().describe("时间过滤：today 表示仅当日"),
         }),
         execute: async ({ platform, keyword, limit, date_filter }) => {
           const p = new URLSearchParams({ platform: platform || "bilibili", keyword, limit: String(limit || 10) });
@@ -174,10 +180,10 @@ export async function POST(req: Request) {
         description:
           "获取指定创作者（UP 主）的视频列表。creator 可为昵称（如「老番茄」）或数字 UID。返回视频列表，每项含 video_id/title/desc/duration/duration_text/video_url/platform/author/view_count。",
         parameters: z.object({
-          platform: z.string().default("bilibili").describe("平台，目前仅支持 bilibili"),
+          platform: z.string().nullable().default("bilibili").describe("平台，目前仅支持 bilibili"),
           creator: z.string().describe("创作者昵称或数字 UID（必填）"),
-          limit: z.number().default(10).describe("返回条数上限"),
-          date_filter: z.string().optional().describe("时间过滤：today 表示仅当日"),
+          limit: z.number().nullable().default(10).describe("返回条数上限"),
+          date_filter: z.string().nullable().optional().describe("时间过滤：today 表示仅当日"),
         }),
         execute: async ({ platform, creator, limit, date_filter }) => {
           const p = new URLSearchParams({ platform: platform || "bilibili", creator, limit: String(limit || 10) });
