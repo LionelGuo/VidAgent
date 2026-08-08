@@ -22,6 +22,8 @@ agent = ["agno>=1.0", "openai>=1.40"]
 ui = ["gradio>=4.40"]
 # Sprint 4：抖音/小红书/快手无水印下载
 f2 = ["f2>=0.0.1.6"]
+# 后端服务 (FastAPI + SSE Relay)
+server = ["fastapi>=0.115", "uvicorn[standard]>=0.30", "sse-starlette>=2.0"]
 # 开发
 dev = ["pytest>=8.0", "pytest-asyncio>=0.23", "ruff>=0.6"]
 
