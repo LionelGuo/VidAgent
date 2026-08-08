@@ -11,6 +11,7 @@ from __future__ import annotations
 import base64
 import json
 import logging
+import time
 from pathlib import Path
 
 import httpx
@@ -157,6 +158,10 @@ def _chat_completion_stream(
     """流式 chat completion，返回完整响应文本；同时更新 _live_summary。"""
     payload = {**payload, "stream": True}
     accumulated = ""
+    token_count = 0
+    t0 = time.perf_counter()
+    ttft = None  # time-to-first-token
+
     with httpx.stream(
         "POST", f"{base_url}/chat/completions",
         json=payload,
@@ -172,10 +177,20 @@ def _chat_completion_stream(
                     delta = (chunk.get("choices") or [{}])[0].get("delta") or {}
                     token = delta.get("content", "")
                     if token:
+                        if ttft is None:
+                            ttft = time.perf_counter() - t0
                         accumulated += token
+                        token_count += len(token)
                         _live_summary.append(token)
                 except (json.JSONDecodeError, KeyError, IndexError):
                     pass
+
+    elapsed = time.perf_counter() - t0
+    logger.info(
+        "📡 vLLM 响应: %d tokens / %.1fs (%.0f tok/s), TTFT %.2fs, %d 字符",
+        token_count, elapsed, token_count / max(elapsed, 0.01),
+        ttft or 0, len(accumulated),
+    )
     return accumulated
 
 
@@ -207,6 +222,7 @@ def extract_and_summarize(local_path: str, metadata: dict | None = None) -> str:
             # 并行：音频提取 + 帧抽取（两个独立 ffmpeg 操作）
             from concurrent.futures import ThreadPoolExecutor
 
+            t0_pre = time.perf_counter()
             with ThreadPoolExecutor(max_workers=2) as pool:
                 audio_future = pool.submit(extract_audio, local_path)
                 frames_future = pool.submit(
@@ -215,6 +231,14 @@ def extract_and_summarize(local_path: str, metadata: dict | None = None) -> str:
                 )
                 mp3 = audio_future.result()
                 all_frames = frames_future.result()
+            pre_elapsed = time.perf_counter() - t0_pre
+
+            mp3_kb = Path(mp3).stat().st_size // 1024
+            frames_kb = sum(f.stat().st_size for f in all_frames) // 1024
+            logger.info(
+                "⚙️ 预处理完成: 音频 %d KB + %d 帧 / %d KB | %.1fs (并行)",
+                mp3_kb, len(all_frames), frames_kb, pre_elapsed,
+            )
 
             with Timer("多模态总结(音频直送)"):
                 return _summarize_multimodal(
@@ -532,24 +556,18 @@ def _summarize_multimodal(
         )
 
     # ── 短音频：单次请求（流式输出到 _live_summary）──
+    t0_encode = time.perf_counter()
     mp3_b64 = base64.b64encode(mp3_path.read_bytes()).decode()
-    logger.info(
-        "多模态总结：音频 %s (%d KB) → base64 %d KB",
-        mp3_path.name, mp3_path.stat().st_size // 1024, len(mp3_b64) // 1024,
-    )
+    audio_b64_kb = len(mp3_b64) // 1024
+    encode_elapsed = time.perf_counter() - t0_encode
 
-    meta_block = ""
-    if metadata:
-        meta_block = f"【标题】{metadata.get('title', '')}\n【简介】{metadata.get('desc', '')}\n"
-
-    prompt_text = f"{meta_block}\n请结合音频和关键帧画面，输出结构化总结。"
-
-    content_parts: list[dict] = [
-        {"type": "text", "text": prompt_text},
-        {"type": "input_audio", "input_audio": {"data": mp3_b64, "format": "mp3"}},
-    ]
+    # 帧 base64
+    frames_b64_kb = 0
+    t0_frames_encode = time.perf_counter()
+    content_parts: list[dict] = []
     for f in all_frames:
         img_b64 = base64.b64encode(f.read_bytes()).decode()
+        frames_b64_kb += len(img_b64) // 1024
         content_parts.append({
             "type": "image_url",
             "image_url": {
@@ -557,6 +575,15 @@ def _summarize_multimodal(
                 "detail": "low",
             },
         })
+    frames_encode_elapsed = time.perf_counter() - t0_frames_encode
+
+    meta_block = ""
+    if metadata:
+        meta_block = f"【标题】{metadata.get('title', '')}\n【简介】{metadata.get('desc', '')}\n"
+    prompt_text = f"{meta_block}\n请结合音频和关键帧画面，输出结构化总结。"
+
+    content_parts.insert(0, {"type": "input_audio", "input_audio": {"data": mp3_b64, "format": "mp3"}})
+    content_parts.insert(0, {"type": "text", "text": prompt_text})
 
     payload = {
         "model": model,
@@ -567,6 +594,14 @@ def _summarize_multimodal(
         "temperature": 0.3,
         "max_tokens": 2048,
     }
+    payload_kb = len(json.dumps(payload, ensure_ascii=False)) // 1024
+
+    logger.info(
+        "📦 发送多模态请求: 音频 %d KB (base64) + %d 帧 / %d KB | "
+        "编码 %.2fs (音频) + %.2fs (帧) | 总 payload %d KB → %s",
+        audio_b64_kb, len(all_frames), frames_b64_kb,
+        encode_elapsed, frames_encode_elapsed, payload_kb, base_url,
+    )
     # 流式：逐 token 更新 _live_summary，UI 可实时轮询
     return _chat_completion_stream(base_url, api_key, payload, timeout=300)
 
@@ -590,10 +625,15 @@ def _summarize_multimodal_chunked(
         logger.info("长音频分块完成：%d 段（每段 ~%ds）", total, chunk_s)
 
         chunk_summaries: list[str] = []
+        t0_chunks = time.perf_counter()
         for i, chunk_path in enumerate(audio_chunks, 1):
             t_start = (i - 1) * chunk_s
             t_end = min(i * chunk_s, duration)
-            logger.info("多模态总结：段落 %d/%d (%.0fs–%.0fs) …", i, total, t_start, t_end)
+            chunk_kb = chunk_path.stat().st_size // 1024
+            logger.info(
+                "📦 分块 %d/%d: %.0fs–%.0fs (%d KB mp3) → vLLM …",
+                i, total, t_start, t_end, chunk_kb,
+            )
 
             # 更新实时进度（覆盖旧段落内容）
             progress_header = (
@@ -601,7 +641,6 @@ def _summarize_multimodal_chunked(
                 f"{'─' * 40}\n\n"
             )
             if chunk_summaries:
-                # 已完成的段落保持可见
                 done_text = "\n\n".join(
                     f"**段落 {j+1}** ({j*chunk_s:.0f}s–{min((j+1)*chunk_s, duration):.0f}s)：\n{s[:200]}…"
                     for j, s in enumerate(chunk_summaries)
@@ -610,6 +649,7 @@ def _summarize_multimodal_chunked(
             else:
                 _live_summary.set(progress_header + f"⏳ 段落 {i} 分析中…")
 
+            t0_chunk = time.perf_counter()
             summary = _summarize_chunk(
                 chunk_mp3=chunk_path,
                 chunk_index=i, total_chunks=total,
@@ -617,10 +657,15 @@ def _summarize_multimodal_chunked(
                 metadata=metadata, frames=all_frames,
                 base_url=base_url, api_key=api_key, model=model,
             )
+            chunk_elapsed = time.perf_counter() - t0_chunk
             chunk_summaries.append(summary)
+            logger.info(
+                "✅ 分块 %d/%d 完成: %.1fs (%d 字)",
+                i, total, chunk_elapsed, len(summary),
+            )
 
-        # 合并段落摘要
-        logger.info("长音频分块总结完成，合并 %d 段摘要…", total)
+        chunks_total = time.perf_counter() - t0_chunks
+        logger.info("分块总结全部完成: %d 段 / %.1fs，开始合并…", total, chunks_total)
         return _merge_summaries(
             chunk_summaries, metadata,
             base_url=base_url, api_key=api_key, model=model,

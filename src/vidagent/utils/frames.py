@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import logging
 import subprocess
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
@@ -120,12 +121,18 @@ def extract_frames(
     if output_dir.exists():
         existing = sorted(output_dir.glob("frame_*.jpg"))
         if len(existing) >= MIN_FRAMES:
-            logger.info("帧缓存命中：%d 帧 → %s", len(existing), output_dir)
+            total_kb = sum(f.stat().st_size for f in existing) // 1024
+            logger.info(
+                "🖼️ 帧缓存命中: %d 帧 / %d KB → %s",
+                len(existing), total_kb, output_dir.name,
+            )
             return existing
 
     # ── 时长 ──
     if duration is None:
+        t0_dur = time.perf_counter()
         duration = get_duration(video_path)
+        logger.debug("ffprobe 时长: %.1fs (%.2fs)", duration, time.perf_counter() - t0_dur)
     if duration <= 0:
         logger.warning("视频时长为 0，跳过帧抽取")
         return []
@@ -138,6 +145,7 @@ def extract_frames(
     # ── 并行 seek：N 次独立 ffmpeg 在 ThreadPool 中并发 ──
     interval = duration / (num_frames + 1)
     frames: list[Path] = []
+    t0 = time.perf_counter()
 
     with ThreadPoolExecutor(max_workers=min(num_frames, 6)) as pool:
         futures = {}
@@ -151,9 +159,12 @@ def extract_frames(
             if result:
                 frames.append(result)
 
+    elapsed = time.perf_counter() - t0
     frames.sort()
+    total_kb = sum(f.stat().st_size for f in frames) // 1024
     logger.info(
-        "帧抽取完成：%d/%d 帧（视频 %s，时长 %.0fs，并行 seek）",
-        len(frames), num_frames, video_path.name, duration,
+        "🖼️ 帧抽取完成: %d/%d 帧 / %d KB / %.1fs (视频 %s, %.0fs, %d workers)",
+        len(frames), num_frames, total_kb, elapsed,
+        video_path.name, duration, min(num_frames, 6),
     )
     return frames

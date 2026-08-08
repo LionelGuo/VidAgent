@@ -9,11 +9,15 @@ v2 优化：
 
 from __future__ import annotations
 
+import logging
 import shutil
 import subprocess
+import time
 from pathlib import Path
 
 from vidagent.utils import storage
+
+logger = logging.getLogger(__name__)
 
 
 def ffmpeg_available() -> bool:
@@ -35,8 +39,15 @@ def extract_audio(video_path: str | Path, mp3_name: str | None = None) -> Path:
     base = storage.sanitize(mp3_name or video_path.stem)
     out = storage.media_path(base, ".mp3")
 
+    video_size_mb = video_path.stat().st_size / 1024 / 1024
+
     # ── 缓存：mp3 已存在且比视频新 → 跳过提取 ──
     if out.exists() and out.stat().st_mtime >= video_path.stat().st_mtime:
+        out_size_kb = out.stat().st_size // 1024
+        logger.info(
+            "🎵 音频缓存命中: %s (%d KB, 视频 %.1f MB) — 跳过提取",
+            out.name, out_size_kb, video_size_mb,
+        )
         return out
 
     # 16kHz 单声道：两个消费者（whisper / Qwen3-Omni via _ensure_wav）均内部重采样至此
@@ -47,8 +58,17 @@ def extract_audio(video_path: str | Path, mp3_name: str | None = None) -> Path:
         "-acodec", "libmp3lame", "-q:a", "7",
         str(out),
     ]
+    t0 = time.perf_counter()
     res = subprocess.run(cmd, capture_output=True)
+    elapsed = time.perf_counter() - t0
+
     if res.returncode != 0 or not out.exists():
         tail = res.stderr.decode(errors="ignore")[-400:]
         raise RuntimeError(f"ffmpeg 抽音失败（可能无音频轨）: {tail}")
+
+    out_size_kb = out.stat().st_size // 1024
+    logger.info(
+        "🎵 音频提取完成: %s (%d KB / %.1fs, 视频 %.1f MB)",
+        out.name, out_size_kb, elapsed, video_size_mb,
+    )
     return out
