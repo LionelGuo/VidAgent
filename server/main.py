@@ -71,7 +71,8 @@ VLLM_URL = os.getenv("VLLM_URL", "http://127.0.0.1:6006/v1")
 VLLM_API_KEY = os.getenv("OPENAI_API_KEY", "not-needed")
 
 # Thread pool for sync tools (downloader, summarizer)
-_executor = ThreadPoolExecutor(max_workers=3)
+# 5 workers 支持并行下载 + 总结
+_executor = ThreadPoolExecutor(max_workers=5)
 
 # 总结任务追踪：{task_id: {"status": str, "result": str, "partial": str}}
 _summarize_tasks: dict[str, dict[str, Any]] = {}

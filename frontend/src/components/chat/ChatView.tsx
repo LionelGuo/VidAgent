@@ -5,7 +5,7 @@ import { type Message } from "@ai-sdk/react";
 import { cn } from "@/lib/utils";
 import { useLayoutStore, useVideoStore, type VideoInfo } from "@/lib/stores";
 import { MarkdownRenderer } from "@/components/ui/MarkdownRenderer";
-import { createSummaryStreamByVideo } from "@/lib/api";
+import { streamSummaryByVideo, type SSEController } from "@/lib/api";
 import {
   CheckCircle,
   Loader2,
@@ -294,8 +294,8 @@ export function ChatView({
     }
   }, [messages]);
 
-  // 总结流式进度 → VideoStore（浏览器端 EventSource 独立连接）
-  const activeStreamsRef = useRef<Map<string, EventSource>>(new Map());
+  // 总结流式进度 → VideoStore（fetch-SSE 独立连接，无自动重连）
+  const activeStreamsRef = useRef<Map<string, SSEController>>(new Map());
 
   useEffect(() => {
     for (const msg of messages) {
@@ -307,46 +307,46 @@ export function ChatView({
         const videoId: string | undefined = ti.args?.metadata?.video_id;
         if (!videoId) continue;
 
-        // 工具被调用 → 打开 SSE 连接（避免重复）
+        // 工具被调用 → 打开 fetch-SSE 连接（避免重复）
         if (ti.state === "call" && !activeStreamsRef.current.has(videoId)) {
-          const es = createSummaryStreamByVideo(videoId);
+          const controller = streamSummaryByVideo(
+            videoId,
+            // onProgress：流式更新
+            (text) => {
+              useVideoStore.getState().setSummary(videoId, text);
+            },
+            // onDone：最终结果 + 清理
+            (result) => {
+              useVideoStore.getState().setSummary(videoId, result);
+              activeStreamsRef.current.delete(videoId);
+            },
+            // onError：保留部分文本 + 清理
+            (err) => {
+              console.warn("总结 SSE 错误:", err.message);
+              activeStreamsRef.current.delete(videoId);
+            },
+          );
 
-          es.onmessage = (event) => {
-            try {
-              const data = JSON.parse(event.data);
-              if (data.type === "progress" && data.stage === "summary") {
-                useVideoStore.getState().setSummary(videoId, data.message);
-              } else if (data.type === "done") {
-                useVideoStore.getState().setSummary(videoId, data.result || "");
-                es.close();
-                activeStreamsRef.current.delete(videoId);
-              } else if (data.type === "error") {
-                console.warn("总结 SSE 错误:", data.message);
-                es.close();
-                activeStreamsRef.current.delete(videoId);
-              }
-            } catch {
-              // 忽略 parse 错误（如 [DONE]）
-            }
-          };
+          activeStreamsRef.current.set(videoId, controller);
+        }
 
-          es.onerror = () => {
-            // SSE 连接异常 → 保留已有部分文本，清理连接
-            es.close();
+        // 工具已完成 → 确保 SSE 连接已清理
+        if (ti.state === "result") {
+          const ctrl = activeStreamsRef.current.get(videoId);
+          if (ctrl) {
+            ctrl.close();
             activeStreamsRef.current.delete(videoId);
-          };
-
-          activeStreamsRef.current.set(videoId, es);
+          }
         }
       }
     }
   }, [messages]);
 
-  // 卸载时清理所有 SSE 连接
+  // 卸载时清理所有 fetch-SSE 连接
   useEffect(() => {
     return () => {
-      for (const es of activeStreamsRef.current.values()) {
-        es.close();
+      for (const ctrl of activeStreamsRef.current.values()) {
+        ctrl.close();
       }
       activeStreamsRef.current.clear();
     };

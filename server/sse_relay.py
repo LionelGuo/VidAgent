@@ -274,36 +274,51 @@ async def relay_stream(
                         elif state == "BUFFERING":
                             buffer += content
                             if "</tool_call>" in buffer:
-                                logger.debug(
-                                    "收到完整 </tool_call> | buffer=%d chars",
-                                    len(buffer),
-                                )
-                                tool_call = _extract_tool_call(buffer)
-                                if tool_call and tool_call["name"]:
-                                    tool_id = f"call_{uuid.uuid4().hex[:24]}"
-                                    logger.info(
-                                        "提取 tool_call: %s(%s)",
-                                        tool_call["name"],
-                                        json.dumps(
+                                # 可能含多个 <tool_call>：循环提取，保留剩余
+                                while "</tool_call>" in buffer:
+                                    end_tag_pos = buffer.find("</tool_call>")
+                                    block_end = end_tag_pos + len("</tool_call>")
+                                    block = buffer[:block_end]
+
+                                    tool_call = _extract_tool_call(block)
+                                    if tool_call and tool_call["name"]:
+                                        tool_id = f"call_{uuid.uuid4().hex[:24]}"
+                                        logger.info(
+                                            "提取 tool_call: %s(%s)",
+                                            tool_call["name"],
+                                            json.dumps(
+                                                tool_call["arguments"],
+                                                ensure_ascii=False,
+                                            )[:120],
+                                        )
+                                        for sse_line in _format_sse_tool_call(
+                                            tool_call["name"],
                                             tool_call["arguments"],
-                                            ensure_ascii=False,
-                                        )[:120],
-                                    )
-                                    for sse_line in _format_sse_tool_call(
-                                        tool_call["name"],
-                                        tool_call["arguments"],
-                                        tool_id,
-                                    ):
-                                        yield sse_line
-                                    sent_tool_calls = True
+                                            tool_id,
+                                        ):
+                                            yield sse_line
+                                        sent_tool_calls = True
+                                    else:
+                                        logger.warning(
+                                            "tool_call 提取失败，回退为纯文本 | block=%r",
+                                            block[:200],
+                                        )
+                                        yield _format_sse_content(block)
+
+                                    # 保留 </tool_call> 之后的文本，继续检测
+                                    buffer = buffer[block_end:]
+
+                                # 所有 tool_call 处理完 → 检查剩余 buffer
+                                if _TOOL_CALL_START in buffer:
+                                    # 还有未闭合的 <tool_call，继续缓冲
+                                    state = "BUFFERING"
                                 else:
-                                    logger.warning(
-                                        "tool_call 提取失败，回退为纯文本 | buffer=%r",
-                                        buffer[:200],
-                                    )
-                                    yield _format_sse_content(buffer)
-                                buffer = ""
-                                state = "PASSTHROUGH"
+                                    # 剩余是纯文本，透传
+                                    if buffer:
+                                        yield _format_sse_content(buffer)
+                                        yielded_text += buffer
+                                    buffer = ""
+                                    state = "PASSTHROUGH"
 
             # 正常结束（没有 data: [DONE] 行）
             if buffer:
