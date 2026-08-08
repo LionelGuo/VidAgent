@@ -130,10 +130,10 @@ _MERGE_SYS = (
     "请确保覆盖视频全貌，不要遗漏重要信息。"
 )
 
-# 长音频分块阈值：超过此时长按段落分片处理（每段独立请求 + 最终合并）
+# 长音频分块阈值：base64 超过此大小按段落分片处理（每段独立请求 + 最终合并）
 # vLLM-Omni multimodal cache 有大小限制，单段过大会触发 AssertionError
-# 480s (8min) 每段 ≈ 7MB mp3 / 9MB base64，cache 稳定
-_MAX_AUDIO_CHUNK_SECONDS = 480  # 8 分钟
+# 16kHz mono -q:a 7 下：1h ≈ 15MB mp3 ≈ 20MB base64，单请求可处理
+_MAX_AUDIO_B64_KB = 20 * 1024  # 20 MB base64 ≈ 15 MB mp3（约 1h 16kHz mono）
 
 
 def _chat_completion(
@@ -515,10 +515,16 @@ def _summarize_multimodal(
         except Exception as e:
             logger.warning("关键帧抽取失败，降级为纯音频: %s", e)
 
-    # ── 时长：优先用视频帧数推算，省一次 ffprobe ──
+    # ── 时长 + 分块决策：基于 base64 大小而非时长 ──
     duration = _get_audio_duration(mp3_path)
-    if duration > _MAX_AUDIO_CHUNK_SECONDS:
-        logger.info("长音频检测：%.0fs → 按 %ds 分块处理", duration, _MAX_AUDIO_CHUNK_SECONDS)
+    mp3_size = mp3_path.stat().st_size
+    b64_estimate = int(mp3_size * 4 / 3) // 1024  # base64 ≈ 133% of binary
+
+    if b64_estimate > _MAX_AUDIO_B64_KB:
+        logger.info(
+            "长音频检测：%.0fs / %d KB mp3 → ~%d KB base64 → 分块处理",
+            duration, mp3_size // 1024, b64_estimate,
+        )
         return _summarize_multimodal_chunked(
             mp3_path=mp3_path, duration=duration,
             metadata=metadata, all_frames=all_frames,
@@ -575,8 +581,10 @@ def _summarize_multimodal_chunked(
 
     work_dir = P(tempfile.mkdtemp(prefix="vidagent_chunks_"))
     try:
-        # 自适应分块大小：≤10 分钟，至少 2 段
-        chunk_s = min(_MAX_AUDIO_CHUNK_SECONDS, max(300, duration / 6))
+        # 基于文件大小的自适应分块：每段目标 ~8MB mp3（~10.6MB base64）
+        mp3_size = mp3_path.stat().st_size
+        target_per_chunk = 8 * 1024 * 1024  # 8 MB mp3 per chunk
+        chunk_s = max(300, int(duration * target_per_chunk / max(mp3_size, 1)))
         audio_chunks = _split_audio(mp3_path, int(chunk_s), work_dir)
         total = len(audio_chunks)
         logger.info("长音频分块完成：%d 段（每段 ~%ds）", total, chunk_s)
