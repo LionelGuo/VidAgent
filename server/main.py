@@ -307,6 +307,7 @@ async def tool_summarize_stream(task_id: str):
         last_partial = ""
         last_summary = ""
         last_summary_stage = ""
+        last_local_path_sent = False
         last_asr_active = False
         last_summary_active_flag = False
 
@@ -324,6 +325,11 @@ async def tool_summarize_stream(task_id: str):
                     yield f"data: {json.dumps({'type': 'error', 'message': task['result']}, ensure_ascii=False)}\n\n"
                 yield "data: [DONE]\n\n"
                 return
+
+            # ★ 下载完成即推送 local_path（不等总结完成）
+            if not last_local_path_sent and task.get("local_path"):
+                last_local_path_sent = True
+                yield f"data: {json.dumps({'type': 'progress', 'stage': 'downloaded', 'local_path': task['local_path']}, ensure_ascii=False)}\n\n"
 
             # 轮询 per-task progress（优先）或全局进度（回退）
             progress = get_progress(task_id)

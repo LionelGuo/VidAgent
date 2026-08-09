@@ -315,6 +315,12 @@ function _connectSSE(
     videoId,
     (data) => {
       const store = useVideoStore.getState();
+      // 下载完成 → 立即可播放
+      if (data.stage === "downloaded" && data.local_path) {
+        store.setLocalPath(videoId, data.local_path);
+        store.updateProgress(videoId, { task_status: "extracting" });
+        return;
+      }
       // stage 事件
       if (data.stage) {
         store.updateProgress(videoId, { task_status: data.stage, download_progress: data.download_pct });
