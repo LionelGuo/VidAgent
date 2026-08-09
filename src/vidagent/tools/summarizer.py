@@ -59,10 +59,13 @@ class _LiveSummary:
     def __init__(self) -> None:
         self.active = False
         self.partial = ""
+        self.stage = ""         # 当前阶段: downloading | extracting | summarizing
+        self.download_pct = 0   # 下载进度 0-100
 
     def begin(self, label: str = "🎵 多模态总结中…") -> None:
         self.active = True
         self.partial = label + "\n\n"
+        self.stage = "summarizing"
 
     def append(self, text: str) -> None:
         self.partial += text
@@ -74,6 +77,7 @@ class _LiveSummary:
     def reset(self) -> None:
         self.active = False
         self.partial = ""
+        self.stage = ""
 
 
 _live = _LiveASR()

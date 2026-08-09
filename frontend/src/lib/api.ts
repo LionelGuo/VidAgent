@@ -78,7 +78,41 @@ export function fetchSSE(
 
       if (!res.ok) {
         if (res.status === 404 && !closed) {
-          // 任务不存在（正常的延迟竞态）
+          // mapping 尚未注册（AI SDK 时序：SSE 可能在 POST 之前到达），重试等待
+          for (let attempt = 0; attempt < 15 && !closed; attempt++) {
+            await new Promise((r) => setTimeout(r, 200));
+            const retryRes = await fetch(url, {
+              signal: abort.signal,
+              headers: { Accept: "text/event-stream" },
+            }).catch(() => null);
+            if (retryRes && retryRes.ok) {
+              // 重试成功，继续用新的 response 处理
+              const retryReader = retryRes.body?.getReader();
+              if (!retryReader) break;
+              // 解析 SSE（内联处理）
+              const processRetry = async () => {
+                const dec = new TextDecoder();
+                let buf = "";
+                try {
+                  while (!closed) {
+                    const { done: d, value: v } = await retryReader.read();
+                    if (d) break;
+                    buf += dec.decode(v, { stream: true });
+                    const ls = buf.split("\n");
+                    buf = ls.pop() || "";
+                    for (const l of ls) {
+                      if (!l.startsWith("data: ") || l === "data: [DONE]") continue;
+                      try { if (!closed) onEvent(JSON.parse(l.slice(6))); } catch {}
+                    }
+                  }
+                } catch {}
+              };
+              processRetry();
+              return;
+            }
+          }
+          // 重试耗尽，通知错误
+          if (!closed) onError?.(new Error("总结任务超时未就绪"));
           return;
         }
         throw new Error(`SSE HTTP ${res.status}`);
@@ -130,17 +164,18 @@ export function fetchSSE(
  */
 export function streamSummaryByVideo(
   videoId: string,
-  onProgress: (text: string) => void,
-  onDone: (result: string) => void,
+  onProgress: (data: any) => void,
+  onDone: (result: string, extra?: any) => void,
   onError?: (err: Error) => void,
 ): SSEController {
   return fetchSSE(
     `${apiBaseUrl}/api/tools/summarize/by-video/${videoId}/stream`,
     (data) => {
-      if (data.type === "progress" && data.stage === "summary") {
-        onProgress(data.message);
+      if (data.type === "progress") {
+        // 传递完整 data 对象（含 stage / download_pct / message）
+        onProgress(data);
       } else if (data.type === "done") {
-        onDone(data.result || "");
+        onDone(data.result || "", { local_path: data.local_path });
       } else if (data.type === "error") {
         onError?.(new Error(data.message || "总结失败"));
       }

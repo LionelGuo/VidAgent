@@ -180,13 +180,14 @@ function extractVideoResults(toolInvocations: any[]): VideoInfo[] {
       }
     }
 
-    // 批量总结 → 提取 videos[] 元数据写入 VideoStore
+    // 批量总结 → 提取 videos[] 元数据 + 完成时写入 summary
     if (ti.toolName === "batch_summarize_videos") {
       const batchVideos: any[] = ti.args?.videos ?? [];
       for (const v of batchVideos) {
-        if (v.video_id) {
+        const vid = v.video_id || (v.video_url?.match(/BV[\w]+/)?.[0]);
+        if (vid) {
           videos.push({
-            video_id: v.video_id,
+            video_id: vid,
             title: v.title ?? "未知标题",
             desc: v.desc ?? "",
             author: v.author ?? "",
@@ -196,12 +197,19 @@ function extractVideoResults(toolInvocations: any[]): VideoInfo[] {
           });
         }
       }
-      // 批量工具完成时从 result.tasks 获取 final 状态
-      if (ti.state === "result" && ti.result?.tasks) {
-        for (const t of ti.result.tasks) {
-          if (t.status === "error") {
-            console.warn("批量总结失败:", t.video_id, t.error || "未知错误");
+      // 批量完成 → 写入 summary + local_path + task_status
+      if (ti.state === "result" && ti.result?.results) {
+        for (const r of ti.result.results) {
+          if (!r.video_id) continue;
+          if (r.status === "done" && r.summary) {
+            useVideoStore.getState().setSummary(r.video_id, r.summary);
           }
+          if (r.local_path) {
+            useVideoStore.getState().setLocalPath(r.video_id, r.local_path);
+          }
+          useVideoStore.getState().updateProgress(r.video_id, {
+            task_status: r.status === "done" ? "done" : "error",
+          });
         }
       }
     }
@@ -305,11 +313,22 @@ function _connectSSE(
 ): SSEController {
   return streamSummaryByVideo(
     videoId,
-    (text) => {
-      useVideoStore.getState().setSummary(videoId, text);
+    (data) => {
+      const store = useVideoStore.getState();
+      // stage 事件
+      if (data.stage) {
+        store.updateProgress(videoId, { task_status: data.stage, download_progress: data.download_pct });
+      }
+      // 流式文本
+      if (data.message) {
+        store.setSummary(videoId, data.message);
+      }
     },
-    (result) => {
-      useVideoStore.getState().setSummary(videoId, result);
+    (result, extra) => {
+      const store = useVideoStore.getState();
+      store.setSummary(videoId, result);
+      if (extra?.local_path) store.setLocalPath(videoId, extra.local_path);
+      store.updateProgress(videoId, { task_status: "done" });
       activeStreamsRef.current.delete(videoId);
     },
     (err) => {
@@ -380,18 +399,36 @@ export function ChatView({
 
         // ── batch_summarize_videos（批量）──
         if (ti.toolName === "batch_summarize_videos") {
-          const videos: any[] = ti.args?.videos ?? [];
+          const batchVideos: any[] = ti.args?.videos ?? [];
 
           if (ti.state === "call") {
-            for (const v of videos) {
-              const vid: string | undefined = v?.video_id;
-              if (!vid || activeStreamsRef.current.has(vid)) continue;
-              activeStreamsRef.current.set(vid, _connectSSE(vid, activeStreamsRef));
+            // 预填 VideoStore 元数据（DetailPanel 必须在总结开始前就知道视频信息）
+            const videoInfos: VideoInfo[] = [];
+            for (const v of batchVideos) {
+              const vid: string = v.video_id || (v.video_url?.match(/BV[\w]+/)?.[0]);
+              if (!vid) continue;
+              videoInfos.push({
+                video_id: vid,
+                title: v.title ?? "未知标题",
+                desc: v.desc ?? "",
+                author: v.author ?? "",
+                duration_text: v.duration_text ?? "",
+                video_url: v.video_url ?? "",
+                view_count: 0,
+              });
+              // 打开 SSE 流
+              if (!activeStreamsRef.current.has(vid)) {
+                activeStreamsRef.current.set(vid, _connectSSE(vid, activeStreamsRef));
+              }
+            }
+            if (videoInfos.length > 0) {
+              useVideoStore.getState().upsertResults(videoInfos);
             }
           }
           if (ti.state === "result") {
-            for (const v of videos) {
-              _closeSSE(v?.video_id, activeStreamsRef);
+            for (const v of batchVideos) {
+              const vid: string = v.video_id || (v.video_url?.match(/BV[\w]+/)?.[0]);
+              _closeSSE(vid, activeStreamsRef);
             }
           }
         }

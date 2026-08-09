@@ -33,6 +33,10 @@ export interface VideoInfo {
   local_path?: string;
   /** 总结后填充 */
   summary?: string;
+  /** 任务状态 */
+  task_status?: "downloading" | "extracting" | "summarizing" | "done" | "error";
+  /** 下载进度 0-100 */
+  download_progress?: number;
 }
 
 interface VideoStore {
@@ -43,6 +47,8 @@ interface VideoStore {
   setLocalPath: (id: string, path: string) => void;
   /** 设置总结内容 */
   setSummary: (id: string, summary: string) => void;
+  /** 更新进度字段 */
+  updateProgress: (id: string, data: Partial<Pick<VideoInfo, "task_status" | "download_progress">>) => void;
 }
 
 export const useVideoStore = create<VideoStore>((set) => ({
@@ -67,6 +73,12 @@ export const useVideoStore = create<VideoStore>((set) => ({
       const existing = s.videos[id];
       if (!existing) return s;
       return { videos: { ...s.videos, [id]: { ...existing, summary } } };
+    }),
+  updateProgress: (id, data) =>
+    set((s) => {
+      const existing = s.videos[id];
+      if (!existing) return s;
+      return { videos: { ...s.videos, [id]: { ...existing, ...data } } };
     }),
 }));
 

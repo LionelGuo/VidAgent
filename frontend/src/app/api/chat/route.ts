@@ -26,9 +26,11 @@ const SYSTEM_PROMPT = `你是 VidAgent，一个自媒体视频采集与总结助
 - search_videos(platform, keyword, limit, date_filter)：按关键词搜索视频。
 - get_creator_videos(platform, creator, limit, date_filter)：获取指定创作者(UP主)的视频；
   creator 可为昵称(如「老番茄」，自动解析为 UID)或数字 UID。
-- download_video(video_url, file_name)：下载视频到本地，返回 local_path。
-- extract_and_summarize(local_path, metadata)：对本地视频生成结构化总结（多模态模型直接
-  理解音频或 ASR 转写后总结，取决于配置）。
+- batch_summarize_videos(videos)：**【主要总结工具】** 批量并行下载+总结视频。
+  传入视频对象数组，每项必须含 video_url 和 title。video_id 可选（后端自动从 URL 提取）。
+  也可附带 desc/author/duration_text（推荐）。优先使用此工具。
+- download_video(video_url, file_name)：仅下载不总结（单独使用时）。
+- extract_and_summarize(local_path, metadata)：旧版单视频总结（batch_summarize_videos 的备用方案）。
 
 【工具调用格式】
 当需要使用工具时，请用以下格式输出（不要用 markdown 代码块包裹）：
@@ -50,19 +52,21 @@ const SYSTEM_PROMPT = `你是 VidAgent，一个自媒体视频采集与总结助
   **不要**先 download_video 再判断时长。download_video 仅在用户明确要「总结/下载某个
   具体视频」时才调用。
 
+【视频总结（最重要）】
+- 用户要「总结」视频时，**必须调用 batch_summarize_videos**——无论几个视频。
+  单视频也用它（传 1 个元素的数组），多视频传完整列表。
+  从检索结果中提取每个视频的 video_url / video_id / title / desc / author / duration_text，
+  组装为 videos 数组一次传入。不要先 download_video 再 extract_and_summarize。
+- download_video 仅在用户**只想下载、不需要总结**时调用。
+- extract_and_summarize 是旧版单视频工具，仅在 batch_summarize_videos 不可用时作为回退。
+
 【其它】
 - 平台默认且仅支持 "bilibili"；用户未指定时按 bilibili 处理。
-- 用户想「看/总结」视频时，按序调用：检索工具 → download_video → extract_and_summarize。
-  file_name 用 video_id；metadata 传检索返回的该视频字典（含 title/desc/video_id）。
 - **工具调用策略：收到工具结果后，先判断用户任务是否已完成。**
   如果用户仅需检索/列表（如"搜索xx教程，介绍一下"），检索完成后直接生成文本回复，不要继续下载或总结。
-  如果用户明确要求"总结视频"或"下载并总结"，才按序执行：检索 → download_video → extract_and_summarize。
   不要在任务完成后调用无关工具。
 - **date_filter 参数：默认不传。** 热榜/搜索本身反映当前热门内容，不需要按发布日期过滤。仅在用户明确说「只看今天/今日发布的」时才传 "today"。
-- **批量总结（很重要）**：当用户要求总结多个视频（≥2）时，**必须使用 batch_summarize_videos**，
-	  一次性传入所有视频，后端会自动并行下载+总结。不要逐个调用 download_video + extract_and_summarize。
-	  单视频时可用 extract_and_summarize。
-- 工具返回 status=error 或抛异常时：简要说明原因，最多重试 3 次；仍失败则如实告知，绝不编造内容。
+- 工具返回 status=error 或抛异常时：简要说明原因；仍失败则如实告知，绝不编造内容。
 - 全程中文；总结用 Markdown，分「核心观点」与「主要内容梳理」。
 `;
 
@@ -220,18 +224,18 @@ export async function POST(req: Request) {
       // ── 批量总结工具（并行下载 + 总结多个视频）──
       batch_summarize_videos: {
         description:
-          "【推荐】批量并行总结多个视频。传入视频列表，后端自动并行处理，比逐个调用 extract_and_summarize 更快。每个视频独立重试、独立错误。总结结果在右侧详情面板实时显示。",
+          "【推荐】批量并行总结多个视频。传入视频列表，后端并行处理并等待全部完成（无需额外查询状态）。返回所有视频的完整总结文本。每个视频独立重试、独立错误。",
         parameters: z.object({
           videos: z
             .array(
               z.object({
                 video_url: z.string().describe("视频播放页地址"),
-                video_id: z.string().describe("视频 ID，如 BVxxx"),
+                video_id: z.string().optional().describe("视频 ID（如 BVxxx，缺失时从 video_url 自动提取）"),
                 title: z.string().describe("视频标题"),
-                desc: z.string().optional().describe("视频简介"),
-                author: z.string().optional().describe("作者/UP 主"),
-                duration_text: z.string().optional().describe("时长文本"),
-                platform: z.string().optional().describe("平台（默认从 URL 自动检测）"),
+                desc: z.string().nullable().optional().describe("视频简介"),
+                author: z.string().nullable().optional().describe("作者/UP 主"),
+                duration_text: z.string().nullable().optional().describe("时长文本"),
+                platform: z.string().nullable().optional().describe("平台（默认从 URL 自动检测）"),
               })
             )
             .describe("要总结的视频列表"),
@@ -243,10 +247,27 @@ export async function POST(req: Request) {
             body: JSON.stringify({ videos }),
           });
           if (!res.ok) {
-            const err = await res.json().catch(() => ({}));
-            throw new Error(err.detail || `批量总结失败: HTTP ${res.status}`);
+            const text = await res.text().catch(() => "");
+            throw new Error(`批量总结失败 HTTP ${res.status}: ${text.slice(0, 200)}`);
           }
-          return res.json();
+          const data = await res.json();
+          console.log("[batch_summarize_videos] response:", JSON.stringify(data).slice(0, 300));
+          const results: any[] = data.results || [];
+          const summaries = results
+            .filter((r: any) => r.status === "done")
+            .map((r: any) => `【${r.title}】\n${r.summary}`)
+            .join("\n\n---\n\n");
+          const errors = results.filter((r: any) => r.status === "error");
+          const errorNote = errors.length > 0
+            ? `\n\n⚠️ ${errors.length} 个视频处理失败：${errors.map((e: any) => e.video_id).join(", ")}`
+            : "";
+          return {
+            batch_id: data.batch_id,
+            done: summaries.length,
+            failed: errors.length,
+            result: summaries + errorNote,
+            results: data.results,  // 保留原始 results 供前端 VideoStore 使用
+          };
         },
       },
 
