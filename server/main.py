@@ -453,10 +453,8 @@ async def tool_batch_summarize(req: BatchSummarizeRequest):
                     time.sleep(delay)
 
             if not local_path:
-                _summarize_tasks[task_id] = {
-                    "status": "error",
-                    "result": f"下载失败(已重试{MAX_RETRIES}次): {last_err}",
-                }
+                _summarize_tasks[task_id]["status"] = "error"
+                _summarize_tasks[task_id]["result"] = f"下载失败(已重试{MAX_RETRIES}次): {last_err}"
                 cleanup_progress(task_id)
                 _video_task_map.pop(video_id, None)
                 tasks[-1]["status"] = "error"
@@ -478,10 +476,8 @@ async def tool_batch_summarize(req: BatchSummarizeRequest):
                         summary = extract_and_summarize(
                             local_path, metadata, task_id=task_id,
                         )
-                        _summarize_tasks[task_id] = {
-                            "status": "done",
-                            "result": summary,
-                        }
+                        _summarize_tasks[task_id]["status"] = "done"
+                        _summarize_tasks[task_id]["result"] = summary
                         tasks[-1]["status"] = "done"
                         logger.info(
                             "批量总结完成: %s (%s)", video_id, video.get("title", "")
@@ -498,10 +494,8 @@ async def tool_batch_summarize(req: BatchSummarizeRequest):
                             time.sleep(delay)
 
                 # 重试耗尽
-                _summarize_tasks[task_id] = {
-                    "status": "error",
-                    "result": f"总结失败(已重试{MAX_RETRIES}次): {last_err}",
-                }
+                _summarize_tasks[task_id]["status"] = "error"
+                _summarize_tasks[task_id]["result"] = f"总结失败(已重试{MAX_RETRIES}次): {last_err}"
                 tasks[-1]["status"] = "error"
 
         finally:
