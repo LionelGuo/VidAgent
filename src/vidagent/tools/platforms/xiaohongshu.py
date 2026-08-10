@@ -132,7 +132,10 @@ async def _ensure_client():
         playwright_page=_page, cookie_dict=cookie_dict,
     )
     _client_initialized = True
-    logger.info("XiaoHongShuClient 已就绪")
+    if login_needed:
+        logger.warning("小红书未登录，搜索功能可能受限。请在浏览器中手动登录后重试。")
+
+    logger.info("XiaoHongShuClient 已就绪 (登录=%s)", not login_needed)
     return _client
 
 
@@ -198,7 +201,11 @@ async def _search_via_cdp(keyword: str, limit: int = 10) -> list[dict]:
     try:
         resp = await client.get_note_by_keyword(keyword, page=1, page_size=limit)
     except Exception as e:
-        logger.warning("小红书搜索失败: %s", e)
+        err_msg = str(e)
+        if "DataFetchError" in err_msg:
+            logger.warning("小红书搜索失败（API 拒接，可能未登录或风控）: %s", err_msg[:120])
+        else:
+            logger.warning("小红书搜索失败: %s", e)
         return []
 
     items = resp.get("items", []) if isinstance(resp, dict) else []
