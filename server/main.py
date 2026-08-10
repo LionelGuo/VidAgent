@@ -73,7 +73,7 @@ app.mount("/workspace", StaticFiles(directory=str(_workspace_dir)), name="worksp
 
 from vidagent.config import settings
 
-VLLM_URL = os.getenv("VLLM_URL", "http://127.0.0.1:6006/v1")
+VLLM_URL = os.getenv("VLLM_URL") or settings.openai_base_url
 VLLM_API_KEY = os.getenv("OPENAI_API_KEY", "not-needed")
 
 # Thread pool for sync tools (downloader, summarizer)

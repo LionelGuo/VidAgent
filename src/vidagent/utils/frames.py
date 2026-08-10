@@ -10,11 +10,16 @@ v2 优化：
 - 帧缓存：已存在的 keyframes 目录直接复用
 - 可传入已知 duration（来自爬虫元数据），省一次 ffprobe
 - 图片缩放至 512px 宽度（模型内部进一步下采样，全分辨率无意义）
+
+v3 新增：
+- detect_boundaries()：混合边界检测（scene detection + silence detection）
+- extract_frames() 支持 timestamps 参数，按指定时间点抽帧
 """
 
 from __future__ import annotations
 
 import logging
+import re
 import subprocess
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -38,6 +43,149 @@ def get_duration(video_path: str | Path) -> float:
     except ValueError:
         logger.warning("无法解析视频时长: %s", video_path)
         return 0.0
+
+
+def detect_boundaries(
+    video_path: str | Path,
+    duration: float | None = None,
+    vad_boundaries: list[float] | None = None,
+) -> list[int]:
+    """混合边界检测：scene detection + silence/VAD → 候选章节边界。
+
+    优化：两遍 ffmpeg 并行执行，scene 缩小到 320px 宽度加速。
+    vad_boundaries 传入时替代 ffmpeg silence detection（Whisper VAD 语义停顿）。
+
+    Args:
+        video_path: 视频文件路径。
+        duration: 已知时长（秒），省一次 ffprobe。
+        vad_boundaries: Whisper VAD 语音段起始时间戳。传入时跳过 ffmpeg silence detect。
+
+    Returns:
+        候选章节边界时间戳列表（秒，整数，升序），始终包含 0。
+        相邻边界约束：>=30s 且 <=120s。
+    """
+    video_path = Path(video_path)
+    if duration is None:
+        duration = get_duration(video_path)
+    if duration <= 0:
+        return [0]
+
+    scene_times: set[float] = set()
+    silence_times: set[float] = set()
+
+    def _run_scene_detect() -> None:
+        """场景检测：缩小分辨率 → 跳过音频解码。"""
+        try:
+            r = subprocess.run(
+                ["ffmpeg", "-an", "-i", str(video_path),
+                 "-vf", "scale=320:-1,select='gt(scene,0.3)',showinfo",
+                 "-vsync", "vfr", "-f", "null", "-"],
+                capture_output=True, text=True, timeout=max(30, int(duration * 0.3)),
+            )
+            for line in r.stderr.splitlines():
+                m = re.search(r"pts_time:([\d.]+)", line)
+                if m:
+                    t = float(m.group(1))
+                    if 0 < t < duration:
+                        scene_times.add(t)
+            logger.info("🎬 场景检测: %d 个候选点 (scale=320px, threshold=0.3)", len(scene_times))
+        except Exception as e:
+            logger.warning("场景检测失败: %s", e)
+
+    def _run_silence_detect() -> None:
+        """静音检测：跳过视频解码（只需要音频）。"""
+        try:
+            r = subprocess.run(
+                ["ffmpeg", "-vn", "-i", str(video_path),
+                 "-af", "silencedetect=noise=-30dB:d=1.0",
+                 "-f", "null", "-"],
+                capture_output=True, text=True, timeout=max(30, int(duration * 0.3)),
+            )
+            for line in r.stderr.splitlines():
+                m = re.search(r"silence_end:\s*([\d.]+)", line)
+                if m:
+                    t = float(m.group(1))
+                    if 0 < t < duration:
+                        silence_times.add(t)
+            logger.info("🔇 静音检测: %d 个候选点 (threshold=-30dB, min=1.0s)", len(silence_times))
+        except Exception as e:
+            logger.warning("静音检测失败: %s", e)
+
+    # ── 并行执行两遍检测 ──
+    t0 = time.perf_counter()
+    if vad_boundaries is not None:
+        # VAD 模式：直接用传入的语音段边界，只跑场景检测
+        for t in vad_boundaries:
+            if 0 < t < duration:
+                silence_times.add(t)
+        logger.info("🔇 Whisper VAD: %d 个候选点", len(silence_times))
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            f1 = pool.submit(_run_scene_detect)
+            f1.result()
+    else:
+        # 回退：ffmpeg scene + silence 并行
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            f1 = pool.submit(_run_scene_detect)
+            f2 = pool.submit(_run_silence_detect)
+            f1.result()
+            f2.result()
+    elapsed = time.perf_counter() - t0
+    logger.info("⏱️ 边界检测耗时: %.1fs (视频 %.0fs)", elapsed, duration)
+
+    # ── 3. 合并 + 去重 + 约束 ──
+    all_times = sorted(scene_times | silence_times)
+
+    # 去重：<3s 视为重复，保留较晚的
+    deduped: list[float] = []
+    for t in all_times:
+        if deduped and t - deduped[-1] < 3:
+            deduped[-1] = t  # 替换为较晚的时间
+        else:
+            deduped.append(t)
+
+    # 约束：合并 <10s 间隔（细粒度分段），在 >120s 间隔处强制插入兜底切点
+    MERGE_THRESHOLD = 10   # 更细粒度：30s → 10s
+    MAX_GAP = 120
+    FALLBACK_INTERVAL = 60  # 更密兜底：90s → 60s
+
+    merged: list[float] = []
+    for t in deduped:
+        if merged and t - merged[-1] < MERGE_THRESHOLD:
+            merged[-1] = t  # 合并到较晚的边界
+        else:
+            merged.append(t)
+
+    # 强制插入兜底切点（确保无超长间隔）
+    result: list[int] = [0]  # 始终从 0 开始
+
+    for boundary in merged:
+        boundary_int = int(boundary)
+        if boundary_int <= result[-1]:
+            continue
+        # 如果间隔超过 MAX_GAP，插入兜底切点
+        while boundary_int - result[-1] > MAX_GAP:
+            fallback = result[-1] + FALLBACK_INTERVAL
+            if fallback >= boundary_int:
+                break
+            result.append(fallback)
+        result.append(boundary_int)
+
+    # 处理最后一个边界到视频结尾的间隔
+    while int(duration) - result[-1] > MAX_GAP:
+        fallback = result[-1] + FALLBACK_INTERVAL
+        if fallback >= int(duration):
+            break
+        result.append(fallback)
+    # 确保视频结尾作为最后一个边界
+    dur_int = int(duration)
+    if result[-1] != dur_int:
+        result.append(dur_int)
+
+    logger.info(
+        "📐 候选章节边界: %d 个 → (去重+合并+兜底) → %d 个 | 视频 %.0fs",
+        len(all_times), len(result), duration,
+    )
+    return result
 
 
 def adaptive_frame_count(
@@ -97,14 +245,18 @@ def extract_frames(
     num_frames: int | None = None,
     output_dir: Path | None = None,
     duration: float | None = None,
+    timestamps: list[float] | None = None,
 ) -> list[Path]:
-    """从视频均匀抽取关键帧（jpg），返回按时间排序的路径列表。
+    """从视频抽取关键帧（jpg），返回按时间排序的路径列表。
 
     Args:
         video_path: 视频文件路径。
         num_frames: 帧数。None 时自动根据时长决定（adaptive_frame_count）。
+                    仅在 timestamps=None 时生效。
         output_dir: 输出目录。None 时创建 video_path 同目录下的 keyframes_{stem}/。
         duration: 视频时长（秒）。已知时可传入，跳过 ffprobe。
+        timestamps: 指定抽帧时间点（秒）。传入时 num_frames 参数被忽略，
+                    在每个时间点各抽一帧。不传入时按均匀采样。
 
     Returns:
         jpg 文件路径列表（按时间先后排列）。失败返回空列表。
@@ -137,22 +289,30 @@ def extract_frames(
         logger.warning("视频时长为 0，跳过帧抽取")
         return []
 
-    if num_frames is None:
-        num_frames = adaptive_frame_count(duration)
-
     output_dir.mkdir(parents=True, exist_ok=True)
 
+    # ── 确定要抽帧的时间点 ──
+    if timestamps is not None:
+        # 按指定时间戳抽帧
+        points = [(i, t) for i, t in enumerate(timestamps, 1)]
+        num_to_extract = len(points)
+    else:
+        # 均匀采样
+        if num_frames is None:
+            num_frames = adaptive_frame_count(duration)
+        interval = duration / (num_frames + 1)
+        points = [(i, interval * i) for i in range(1, num_frames + 1)]
+        num_to_extract = num_frames
+
     # ── 并行 seek：N 次独立 ffmpeg 在 ThreadPool 中并发 ──
-    interval = duration / (num_frames + 1)
     frames: list[Path] = []
     t0 = time.perf_counter()
 
-    with ThreadPoolExecutor(max_workers=min(num_frames, 6)) as pool:
+    with ThreadPoolExecutor(max_workers=min(num_to_extract, 6)) as pool:
         futures = {}
-        for i in range(1, num_frames + 1):
-            t = interval * i
-            fut = pool.submit(_extract_one_frame, video_path, t, i, output_dir)
-            futures[fut] = i
+        for idx, timestamp in points:
+            fut = pool.submit(_extract_one_frame, video_path, timestamp, idx, output_dir)
+            futures[fut] = idx
 
         for fut in as_completed(futures):
             result = fut.result()
@@ -164,7 +324,7 @@ def extract_frames(
     total_kb = sum(f.stat().st_size for f in frames) // 1024
     logger.info(
         "🖼️ 帧抽取完成: %d/%d 帧 / %d KB / %.1fs (视频 %s, %.0fs, %d workers)",
-        len(frames), num_frames, total_kb, elapsed,
-        video_path.name, duration, min(num_frames, 6),
+        len(frames), num_to_extract, total_kb, elapsed,
+        video_path.name, duration, min(num_to_extract, 6),
     )
     return frames

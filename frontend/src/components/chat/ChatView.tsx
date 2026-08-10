@@ -171,6 +171,7 @@ function extractVideoResults(toolInvocations: any[]): VideoInfo[] {
             desc: v.desc ?? "",
             author: v.author ?? "",
             duration_text: v.duration_text ?? "",
+            duration: v.duration,  // 数字时长（秒）
             video_url: v.video_url ?? "",
             view_count: v.view_count ?? 0,
             platform: v.platform,
@@ -192,6 +193,7 @@ function extractVideoResults(toolInvocations: any[]): VideoInfo[] {
             desc: v.desc ?? "",
             author: v.author ?? "",
             duration_text: v.duration_text ?? "",
+            duration: v.duration,  // 数字时长（秒）
             video_url: v.video_url ?? "",
             view_count: 0,
           });
@@ -249,6 +251,7 @@ function AssistantContent({
   onVideoClick: (id: string) => void;
 }) {
   const toolInvocations = (message as any).toolInvocations ?? [];
+  const reasoning = (message as any).reasoning as string | undefined;
 
   // 从所有检索工具中提取视频卡片
   const videoCards = toolInvocations
@@ -288,6 +291,19 @@ function AssistantContent({
             );
           })}
         </div>
+      )}
+
+      {/* 推理过程（可折叠，模型思考内容） */}
+      {reasoning && (
+        <details className="group" open={!message.content}>
+          <summary className="text-xs text-muted-foreground/60 cursor-pointer hover:text-muted-foreground transition-colors select-none">
+            🤔 思考过程{reasoning.length > 0 ? `（${reasoning.length} 字）` : ""}
+          </summary>
+          <div className="mt-2 text-xs text-muted-foreground/50 whitespace-pre-wrap leading-relaxed border-l-2 border-muted pl-3">
+            {reasoning.slice(0, 2000)}
+            {reasoning.length > 2000 && <span className="text-muted-foreground/30">…（已截断）</span>}
+          </div>
+        </details>
       )}
 
       {/* 文本内容（Markdown 渲染） */}
@@ -334,6 +350,9 @@ function _connectSSE(
       const store = useVideoStore.getState();
       store.setSummary(videoId, result);
       if (extra?.local_path) store.setLocalPath(videoId, extra.local_path);
+      if (extra?.chapters && extra.chapters.length > 0) {
+        store.setChapters(videoId, extra.chapters);
+      }
       store.updateProgress(videoId, { task_status: "done" });
       activeStreamsRef.current.delete(videoId);
     },
@@ -419,6 +438,7 @@ export function ChatView({
                 desc: v.desc ?? "",
                 author: v.author ?? "",
                 duration_text: v.duration_text ?? "",
+                duration: v.duration,  // 数字时长（秒）
                 video_url: v.video_url ?? "",
                 view_count: 0,
               });
@@ -432,10 +452,13 @@ export function ChatView({
             }
           }
           if (ti.state === "result") {
-            for (const v of batchVideos) {
-              const vid: string = v.video_id || (v.video_url?.match(/BV[\w]+/)?.[0]);
-              _closeSSE(vid, activeStreamsRef);
-            }
+            // 延迟关闭 SSE：给 done 事件留出传输时间，避免竞争
+            setTimeout(() => {
+              for (const v of batchVideos) {
+                const vid: string = v.video_id || (v.video_url?.match(/BV[\w]+/)?.[0]);
+                _closeSSE(vid, activeStreamsRef);
+              }
+            }, 800);
           }
         }
       }
@@ -471,7 +494,16 @@ export function ChatView({
       {messages.map((m) => (
         <ChatMessage key={m.id} message={m} onVideoClick={onVideoClick} />
       ))}
-      {status === "submitted" && !messages.some((m) => m.role === "assistant") && (
+      {/* 思考/加载指示器：流式进行中，最后一条 assistant 消息尚未完成 */}
+      {(status === "submitted" || status === "streaming") && (() => {
+        const lastAssistant = [...messages].reverse().find((m) => m.role === "assistant");
+        // 首轮：没有 assistant 消息 → 显示加载
+        if (!lastAssistant) return true;
+        // 后续轮次：最后一条有 reasoning 但无 content → 仍在思考
+        const reasoning = (lastAssistant as any).reasoning;
+        const content = lastAssistant.content;
+        return (reasoning && !content);
+      })() && (
         <div className="flex items-center gap-2 text-muted-foreground text-sm animate-fade-in">
           <Loader2 className="w-4 h-4 animate-spin" />
           思考中…

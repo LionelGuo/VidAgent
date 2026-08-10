@@ -19,6 +19,12 @@ export const useLayoutStore = create<LayoutState>((set) => ({
 // Video Store — 视频元数据（从工具结果中提取，驱动 DetailPanel）
 // ---------------------------------------------------------------------------
 
+export interface VideoChapter {
+  start: number;
+  end: number;
+  title: string;
+}
+
 export interface VideoInfo {
   video_id: string;
   title: string;
@@ -29,14 +35,18 @@ export interface VideoInfo {
   view_count: number;
   platform?: string;
   publish_time?: string;
+  /** 视频时长（秒），用于时间轴渲染 */
+  duration?: number;
   /** 下载后填充 */
   local_path?: string;
   /** 总结后填充 */
   summary?: string;
   /** 任务状态 */
-  task_status?: "downloading" | "extracting" | "summarizing" | "done" | "error";
+  task_status?: "downloading" | "analyzing" | "extracting" | "summarizing" | "done" | "error";
   /** 下载进度 0-100 */
   download_progress?: number;
+  /** 章节时间轴 */
+  chapters?: VideoChapter[];
 }
 
 interface VideoStore {
@@ -49,6 +59,10 @@ interface VideoStore {
   setSummary: (id: string, summary: string) => void;
   /** 更新进度字段 */
   updateProgress: (id: string, data: Partial<Pick<VideoInfo, "task_status" | "download_progress">>) => void;
+  /** 设置章节列表 */
+  setChapters: (id: string, chapters: VideoChapter[]) => void;
+  /** 设置视频时长 */
+  setDuration: (id: string, duration: number) => void;
 }
 
 export const useVideoStore = create<VideoStore>((set) => ({
@@ -79,6 +93,18 @@ export const useVideoStore = create<VideoStore>((set) => ({
       const existing = s.videos[id];
       if (!existing) return s;
       return { videos: { ...s.videos, [id]: { ...existing, ...data } } };
+    }),
+  setChapters: (id, chapters) =>
+    set((s) => {
+      const existing = s.videos[id];
+      if (!existing) return s;
+      return { videos: { ...s.videos, [id]: { ...existing, chapters } } };
+    }),
+  setDuration: (id, duration) =>
+    set((s) => {
+      const existing = s.videos[id];
+      if (!existing) return s;
+      return { videos: { ...s.videos, [id]: { ...existing, duration } } };
     }),
 }));
 

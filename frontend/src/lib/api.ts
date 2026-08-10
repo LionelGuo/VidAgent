@@ -175,7 +175,7 @@ export function streamSummaryByVideo(
         // 传递完整 data 对象（含 stage / download_pct / message）
         onProgress(data);
       } else if (data.type === "done") {
-        onDone(data.result || "", { local_path: data.local_path });
+        onDone(data.result || "", { local_path: data.local_path, chapters: data.chapters });
       } else if (data.type === "error") {
         onError?.(new Error(data.message || "总结失败"));
       }

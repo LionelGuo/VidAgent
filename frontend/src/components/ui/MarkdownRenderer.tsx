@@ -1,5 +1,6 @@
 "use client";
 
+import { memo } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { cn } from "@/lib/utils";
@@ -9,6 +10,7 @@ import { cn } from "@/lib/utils";
 //
 // 封装 react-markdown + remark-gfm（GFM 表格/删除线/任务列表）。
 // 使用 Tailwind prose 排版，统一聊天区和详情面板的渲染效果。
+// React.memo：避免相同 children 时重复解析 Markdown（流式场景关键优化）。
 // ---------------------------------------------------------------------------
 
 interface MarkdownRendererProps {
@@ -16,7 +18,10 @@ interface MarkdownRendererProps {
   className?: string;
 }
 
-export function MarkdownRenderer({ children, className }: MarkdownRendererProps) {
+export const MarkdownRenderer = memo(function MarkdownRenderer({
+  children,
+  className,
+}: MarkdownRendererProps) {
   return (
     <div
       className={cn(
@@ -46,4 +51,4 @@ export function MarkdownRenderer({ children, className }: MarkdownRendererProps)
       </ReactMarkdown>
     </div>
   );
-}
+});

@@ -86,7 +86,7 @@ async def main():
     args = parser.parse_args()
 
     payload = {
-        "model": "/root/autodl-tmp/Qwen3-Omni-30B-AWQ",
+        "model": "/root/autodl-tmp/Qwen3-Omni-Thinking-AWQ-4bit",
         "messages": [
             {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content": args.prompt},

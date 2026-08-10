@@ -5,7 +5,7 @@ import time
 import json
 
 BASE = "https://u805822-pmbb-c2867d57.westd.seetacloud.com:8443/v1"
-MODEL = "/root/autodl-tmp/Qwen3-Omni-30B-AWQ"
+MODEL = "/root/autodl-tmp/Qwen3-Omni-Thinking-AWQ-4bit"
 
 payload = {
     "model": MODEL,

@@ -6,8 +6,8 @@
        └────── 提取完成，发送 tool_calls ────┘
 
 vLLM 以 bare mode 运行（无 --enable-auto-tool-choice，无 --tool-call-parser），
-模型自由输出文本（可能包含 <tool_call> XML）。本模块逐 SSE chunk 流式处理：
-- 纯文本 → 直接透传
+模型自由输出文本（可能包含 <think> 推理 + <tool_call> XML）。本模块逐 SSE chunk 流式处理：
+- 纯文本（含 <think>…</think>）→ 直接透传（AI SDK 的 extractReasoningMiddleware 负责解析推理）
 - <tool_call> → 缓冲完整 XML → 提取 JSON → 构造 OpenAI tool_calls delta SSE
 """
 
@@ -23,7 +23,7 @@ import httpx
 
 logger = logging.getLogger(__name__)
 
-# 前缀扫描：缓冲首段内容以检测 tool_call
+# 前缀扫描：缓冲首段内容以检测 tool_call / think
 _SCAN_BUFFER_SIZE = 20
 
 # <tool_call> XML 标签模式
@@ -31,8 +31,9 @@ _TOOL_CALL_START = "<tool_call"
 _TOOL_CALL_PATTERN = re.compile(r"<tool_call>\s*(.*?)\s*</tool_call>", re.DOTALL)
 
 
+
 def _extract_tool_call(text: str) -> dict | None:
-    """从文本中提取单个 tool_call，使用大括号计数处理嵌套 JSON。
+    """从文本中提取单个 tool_call，多层容错解析。
 
     Returns:
         {"name": str, "arguments": dict} | None
@@ -42,8 +43,10 @@ def _extract_tool_call(text: str) -> dict | None:
         return None
 
     json_str = match.group(1).strip()
+    if not json_str:
+        return None
 
-    # 尝试直接解析
+    # ── 方法 1：直接 json.loads ──
     try:
         data = json.loads(json_str)
         return {
@@ -53,34 +56,60 @@ def _extract_tool_call(text: str) -> dict | None:
     except json.JSONDecodeError:
         pass
 
-    # 大括号计数：找到第一个完整 JSON 对象
+    # ── 方法 2：大括号计数 ──
     brace_start = json_str.find("{")
-    if brace_start == -1:
+    if brace_start != -1:
+        depth = 0
+        for i, ch in enumerate(json_str[brace_start:], brace_start):
+            if ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    try:
+                        data = json.loads(json_str[brace_start : i + 1])
+                        return {
+                            "name": data.get("name", ""),
+                            "arguments": data.get("arguments", {}),
+                        }
+                    except json.JSONDecodeError:
+                        break  # 方法 2 失败，继续方法 3
+
+    # ── 方法 3：正则宽松提取（最后兜底）──
+    import re as _re
+    name_m = _re.search(r'"name"\s*:\s*"([^"]*)"', json_str)
+    if not name_m:
         return None
 
-    depth = 0
-    for i, ch in enumerate(json_str[brace_start:], brace_start):
-        if ch == "{":
-            depth += 1
-        elif ch == "}":
-            depth -= 1
-            if depth == 0:
-                try:
-                    data = json.loads(json_str[brace_start : i + 1])
-                    return {
-                        "name": data.get("name", ""),
-                        "arguments": data.get("arguments", {}),
-                    }
-                except json.JSONDecodeError:
-                    return None
+    name = name_m.group(1)
+    # 尝试提取 arguments（用大括号计数，从 "arguments" 后的 { 开始）
+    args_keyword = _re.search(r'"arguments"\s*:\s*', json_str)
+    if args_keyword:
+        args_start = args_keyword.end()
+        if args_start < len(json_str) and json_str[args_start] == "{":
+            depth = 0
+            for i, ch in enumerate(json_str[args_start:], args_start):
+                if ch == "{":
+                    depth += 1
+                elif ch == "}":
+                    depth -= 1
+                    if depth == 0:
+                        try:
+                            arguments = json.loads(json_str[args_start : i + 1])
+                            return {"name": name, "arguments": arguments}
+                        except json.JSONDecodeError:
+                            break
 
-    return None  # 括号不闭合
+    # 至少返回 name
+    return {"name": name, "arguments": {}}
 
 
 def _format_sse_content(text: str) -> str:
     """格式化纯文本内容为 SSE data 行。"""
     payload = {"choices": [{"delta": {"content": text}, "index": 0}]}
     return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+
+
 
 
 def _format_sse_tool_call(tool_name: str, arguments: dict, tool_id: str) -> list[str]:
@@ -300,8 +329,8 @@ async def relay_stream(
                                         sent_tool_calls = True
                                     else:
                                         logger.warning(
-                                            "tool_call 提取失败，回退为纯文本 | block=%r",
-                                            block[:200],
+                                            "tool_call 提取失败，回退为纯文本 | len=%d head=%r tail=%r",
+                                            len(block), block[:100], block[-100:],
                                         )
                                         yield _format_sse_content(block)
 

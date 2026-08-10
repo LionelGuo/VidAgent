@@ -1,4 +1,4 @@
-import { streamText } from "ai";
+import { streamText, extractReasoningMiddleware, wrapLanguageModel } from "ai";
 import { createOpenAI } from "@ai-sdk/openai";
 import { z } from "zod";
 
@@ -136,7 +136,10 @@ export async function POST(req: Request) {
   const { messages } = await req.json();
 
   const result = streamText({
-    model: vidagent("/root/autodl-tmp/Qwen3-Omni-30B-AWQ"),
+    model: wrapLanguageModel({
+      model: vidagent("/root/autodl-tmp/Qwen3-Omni-Thinking-AWQ-4bit"),
+      middleware: extractReasoningMiddleware({ tagName: "think" }),
+    }),
     system: SYSTEM_PROMPT,
     messages,
     maxSteps: 10,
@@ -310,5 +313,5 @@ export async function POST(req: Request) {
     },
   });
 
-  return result.toDataStreamResponse();
+  return result.toDataStreamResponse({ sendReasoning: true });
 }

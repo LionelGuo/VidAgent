@@ -11,6 +11,7 @@ from __future__ import annotations
 import base64
 import json
 import logging
+import re
 import time
 from pathlib import Path
 
@@ -155,6 +156,23 @@ _MERGE_SYS = (
     "请确保覆盖视频全貌，不要遗漏重要信息。"
 )
 
+_SUMMARY_SYS_CHAPTER = (
+    "你是一个专业的视频内容分析师。你会收到视频的完整音频和关键帧画面。\n"
+    "请聆听音频、观察画面，然后将视频划分为 3-8 个话题段落。\n\n"
+    "输出格式（每个段落以 ## 开头）：\n"
+    "## 开场介绍\n"
+    "主持人介绍本期主题和嘉宾背景，现场气氛轻松...\n\n"
+    "## 核心讨论\n"
+    "三位嘉宾围绕AI伦理展开激烈辩论，主要观点包括...\n\n"
+    "## 总结展望\n"
+    "主持人对讨论要点进行总结并展望未来趋势...\n\n"
+    "关键规则：\n"
+    "- **绝对不要输出任何时间戳、秒数或 MM:SS 格式的时间**\n"
+    "- 画面标注 [画面 @ Xs] 仅供你理解时间顺序，不要在输出中引用这些数字\n"
+    "- 段落按时间先后顺序排列\n"
+    "- 描述要包含实际内容和关键观点，而非泛泛而谈"
+)
+
 # 长音频分块阈值：base64 超过此大小按段落分片处理（每段独立请求 + 最终合并）
 # vLLM-Omni multimodal cache 有大小限制，单段过大会触发 AssertionError
 # 16kHz mono -q:a 7 下：1h ≈ 15MB mp3 ≈ 20MB base64，单请求可处理
@@ -164,7 +182,7 @@ _MAX_AUDIO_B64_KB = 20 * 1024  # 20 MB base64 ≈ 15 MB mp3（约 1h 16kHz mono�
 def _chat_completion(
     base_url: str, api_key: str, payload: dict, timeout: int = 300,
 ) -> str:
-    """非流式 chat completion，返回完整响应文本。"""
+    """非流式 chat completion，返回完整响应文本（自动剥离 <think> 块）。"""
     resp = httpx.post(
         f"{base_url}/chat/completions",
         json=payload,
@@ -173,7 +191,108 @@ def _chat_completion(
     )
     if resp.status_code != 200:
         raise RuntimeError(f"LLM 调用失败 HTTP {resp.status_code}: {resp.text[:300]}")
-    return resp.json()["choices"][0]["message"]["content"]
+    raw = resp.json()["choices"][0]["message"]["content"]
+    return _strip_think_blocks(raw)
+
+
+def _strip_think_blocks(text: str) -> str:
+    """从完整文本中剥离所有 <think>…</think> 块。"""
+    import re as _re
+    # 处理可能跨行的 think 块
+    result = _re.sub(r"<think>.*?</think>", "", text, flags=_re.DOTALL)
+    return result.strip()
+
+
+class _ThinkStripper:
+    """流式 <think> 块过滤器：逐 token 输入，自动分离推理和实际内容。
+
+    Thinking 模型输出格式：<think>推理过程...</think>实际内容
+    通过 on_thinking 回调流式透传推理过程，降低感知延迟。
+    """
+
+    def __init__(self, on_thinking=None) -> None:
+        self._buffer = ""
+        self._in_think = False
+        self._think_tag_end = 0  # <think> 标签结束位置，用于后续提取推理内容
+        self._on_thinking = on_thinking  # 回调: (text_chunk)
+
+    def feed(self, token: str) -> str | None:
+        """输入一个 token，返回剥离后的纯文本（可能为 None）。
+
+        同时通过 on_thinking 回调逐段推送推理内容。
+        """
+        self._buffer += token
+        output = ""
+
+        if not self._in_think:
+            # 检查是否进入 <think> 块
+            tp = self._buffer.find("<think")
+            if tp != -1:
+                output = self._buffer[:tp]
+                self._buffer = self._buffer[tp:]
+                self._in_think = True
+                # 记录 <think> 标签的结束位置
+                tag_close = self._buffer.find(">")
+                self._think_tag_end = tag_close + 1 if tag_close != -1 else len("<think>")
+            else:
+                # 防止 <think 被截断：保留最后 6 个字符
+                safe = max(0, len(self._buffer) - 6)
+                for i in range(6, 0, -1):
+                    if "<think"[:i] == self._buffer[-i:]:
+                        safe = max(0, len(self._buffer) - i)
+                        break
+                output = self._buffer[:safe]
+                self._buffer = self._buffer[safe:]
+
+        if self._in_think:
+            # 检查是否退出 <think> 块
+            ep = self._buffer.find("</think>")
+            if ep != -1:
+                # 提取推理内容（<think> 标签后、</think> 之前）
+                reasoning = self._buffer[self._think_tag_end:ep]
+                if reasoning and self._on_thinking:
+                    self._on_thinking(reasoning)
+                after = self._buffer[ep + len("</think>"):]
+                self._buffer = after
+                self._in_think = False
+                self._think_tag_end = 0
+                # 递归处理剩余内容
+                if after:
+                    rest = self.feed("")
+                    if rest:
+                        output = (output + rest) if output else rest
+                return output if output else None
+            else:
+                # 仍在 think 内：流式推送推理内容（批量，降低回调频率）
+                if self._think_tag_end > 0 and len(self._buffer) > self._think_tag_end:
+                    safe_end = max(self._think_tag_end, len(self._buffer) - 7)
+                    pending = safe_end - self._think_tag_end
+                    # 批量推送：≥16 字符 或 缓冲区末尾有换行
+                    if pending >= 16 or (pending > 0 and "\n" in self._buffer[self._think_tag_end:safe_end]):
+                        chunk = self._buffer[self._think_tag_end:safe_end]
+                        if chunk and self._on_thinking:
+                            self._on_thinking(chunk)
+                        self._buffer = self._buffer[:self._think_tag_end] + self._buffer[safe_end:]
+
+        return output if output else None
+
+    def flush(self) -> str | None:
+        """流结束时清空缓冲区。"""
+        if self._in_think:
+            # 未闭合的 <think>：作为推理内容推送
+            reasoning = self._buffer[self._think_tag_end:] if self._think_tag_end else self._buffer
+            if reasoning and self._on_thinking:
+                self._on_thinking(reasoning)
+            logger.debug("_ThinkStripper: 未闭合 <think>，已推送 %d chars", len(reasoning))
+            self._buffer = ""
+            self._in_think = False
+            self._think_tag_end = 0
+            return None
+        if self._buffer:
+            out = self._buffer
+            self._buffer = ""
+            return out
+        return None
 
 
 def _chat_completion_stream(
@@ -185,8 +304,23 @@ def _chat_completion_stream(
     accumulated = ""
     token_count = 0
     t0 = time.perf_counter()
-    ttft = None  # time-to-first-token
+    ttft = None  # time-to-first-token (first non-think content token)
     pg = progress or _live_summary  # 默认回退到全局单例，保持向后兼容
+
+    # 思考过程回调：更新进度显示，降低感知延迟
+    thinking_shown = False
+
+    def _on_thinking(text: str) -> None:
+        nonlocal thinking_shown
+        if not thinking_shown:
+            pg.set("🤔 思考中...\n\n")
+            thinking_shown = True
+        # 逐步追加推理内容（限制长度防止 UI 过载）
+        current = pg.partial
+        if len(current) < 2000:
+            pg.append(text)
+
+    stripper = _ThinkStripper(on_thinking=_on_thinking)
 
     with httpx.stream(
         "POST", f"{base_url}/chat/completions",
@@ -203,13 +337,28 @@ def _chat_completion_stream(
                     delta = (chunk.get("choices") or [{}])[0].get("delta") or {}
                     token = delta.get("content", "")
                     if token:
-                        if ttft is None:
-                            ttft = time.perf_counter() - t0
-                        accumulated += token
-                        token_count += len(token)
-                        pg.append(token)
+                        # 分离 <think> 推理块和实际内容
+                        stripped = stripper.feed(token)
+                        if stripped:
+                            if ttft is None:
+                                ttft = time.perf_counter() - t0
+                                # 第一个实际内容 token 到达：清空思考显示
+                                if thinking_shown:
+                                    pg.set("")
+                                    thinking_shown = False
+                            accumulated += stripped
+                            token_count += len(stripped)
+                            pg.append(stripped)
                 except (json.JSONDecodeError, KeyError, IndexError):
                     pass
+
+    # 流结束：清空 stripper 残留
+    flushed = stripper.flush()
+    if flushed:
+        if ttft is None:
+            ttft = time.perf_counter() - t0
+        accumulated += flushed
+        token_count += len(flushed)
 
     elapsed = time.perf_counter() - t0
     logger.info(
@@ -221,8 +370,12 @@ def _chat_completion_stream(
 
 
 def extract_and_summarize(
-    local_path: str, metadata: dict | None = None, task_id: str | None = None,
-) -> str:
+    local_path: str,
+    metadata: dict | None = None,
+    task_id: str | None = None,
+    candidate_boundaries: list[int] | None = None,
+    candidate_frames: list[str] | None = None,
+) -> dict:
     """对本地视频生成结构化中文总结（Markdown）。
 
     多模态模型（LLM_MULTIMODAL=true）：抽取音频 → 直送 LLM，跳过 ASR。
@@ -234,9 +387,11 @@ def extract_and_summarize(
         local_path: 本地视频文件路径（用 download_video 返回的 local_path）。
         metadata: 视频元数据，至少含 title 与 desc。
         task_id: 可选，per-task 进度追踪 ID。传入时创建独立 progress 实例。
+        candidate_boundaries: 可选，候选章节边界列表（秒）。传入时启用章节感知总结。
+        candidate_frames: 可选，候选边界处的帧路径列表（配合 candidate_boundaries 使用）。
 
     Returns:
-        结构化 Markdown 总结（核心观点 + 主要内容梳理）。
+        {"summary": str, "chapters": [{"start": int, "end": int, "title": str}]}
     """
     metadata = metadata or {}
     video_id = metadata.get("video_id", "")
@@ -255,6 +410,39 @@ def extract_and_summarize(
                 _live_summary.begin()
             try:
                 video_path = Path(local_path)
+
+                # ── 章节感知路径：使用预提取的候选帧和边界 ──
+                if candidate_boundaries and candidate_frames:
+                    # 音频提取（只做音频，帧已预提取）
+                    with Timer("音频提取(ffmpeg)"):
+                        mp3 = extract_audio(local_path)
+
+                    mp3_kb = Path(mp3).stat().st_size // 1024
+                    frames_paths = [Path(f) for f in candidate_frames]
+                    frames_kb = sum(f.stat().st_size for f in frames_paths) // 1024
+                    logger.info(
+                        "⚙️ 预处理完成(章节模式): 音频 %d KB + %d 候选帧 / %d KB",
+                        mp3_kb, len(frames_paths), frames_kb,
+                    )
+
+                    base_url = settings.multimodal_base_url or settings.openai_base_url
+                    api_key = settings.openai_api_key
+                    model = settings.multimodal_model or settings.llm_model
+
+                    with Timer("多模态总结(章节感知)"):
+                        chapters, summary = _summarize_multimodal_with_chapters(
+                            mp3_path=Path(mp3),
+                            metadata=metadata,
+                            candidate_boundaries=candidate_boundaries,
+                            candidate_frames=frames_paths,
+                            base_url=base_url,
+                            api_key=api_key,
+                            model=model,
+                            progress=progress,
+                        )
+                    return {"summary": summary, "chapters": chapters}
+
+                # ── 原多模态路径（无章节）──
                 # 并行：音频提取 + 帧抽取（两个独立 ffmpeg 操作）
                 from concurrent.futures import ThreadPoolExecutor
 
@@ -277,16 +465,17 @@ def extract_and_summarize(
                 )
 
                 with Timer("多模态总结(音频直送)"):
-                    return _summarize_multimodal(
+                    summary = _summarize_multimodal(
                         Path(mp3), metadata,
                         video_path=video_path,
                         pre_extracted_frames=all_frames,
                         progress=progress,
                     )
+                    return {"summary": summary, "chapters": []}
             except Exception as e:
                 logger.warning("多模态总结失败，走降级总结（仅元数据）: %s", e)
                 with Timer("LLM 总结(降级)"):
-                    return _summarize("", metadata)
+                    return {"summary": _summarize("", metadata), "chapters": []}
             finally:
                 _live.reset()
                 if not progress:
@@ -325,7 +514,7 @@ def extract_and_summarize(
                 _live.reset()
 
         with Timer("LLM 总结"):
-            return _summarize(transcript, metadata)
+            return {"summary": _summarize(transcript, metadata), "chapters": []}
     finally:
         if progress:
             progress.reset()
@@ -411,7 +600,8 @@ def _summarize(transcript: str, metadata: dict) -> str:
         raise RuntimeError(
             f"LLM 调用失败 HTTP {resp.status_code}: {resp.text[:300]}"
         )
-    return resp.json()["choices"][0]["message"]["content"]
+    raw = resp.json()["choices"][0]["message"]["content"]
+    return _strip_think_blocks(raw)
 
 
 def _get_audio_duration(mp3_path: Path) -> float:
@@ -724,3 +914,695 @@ def _summarize_multimodal_chunked(
         # 清理临时文件
         import shutil
         shutil.rmtree(work_dir, ignore_errors=True)
+
+
+# ---------------------------------------------------------------------------
+# 章节时间轴：候选锚点 + 模型单次约束选择
+# ---------------------------------------------------------------------------
+
+
+def _parse_chapter_response(
+    text: str, candidates: list[int],
+) -> tuple[list[dict], str]:
+    """从模型输出中解析 CHAPTERS JSON 和 SUMMARY Markdown。
+
+    Args:
+        text: 模型输出的原始文本（含 <<<CHAPTERS>>> 和 <<<SUMMARY>>> 标记）。
+        candidates: 候选边界时间戳列表（用于校验和修正）。
+
+    Returns:
+        (chapters: [{start, end, title}], summary_text: str)
+        解析失败时 chapters 为空列表，summary_text 为原始文本。
+    """
+    import json as _json
+
+    chapters: list[dict] = []
+    summary_text = text  # 默认返回原始文本
+
+    # ── 提取 CHAPTERS JSON ──
+    chap_m = re.search(r"<<<CHAPTERS>>>\s*(.*?)\s*<<<END_CHAPTERS>>>", text, re.DOTALL)
+    if chap_m:
+        raw_json = chap_m.group(1).strip()
+        # 去掉可能的 markdown 代码块包裹 (```json ... ```)
+        code_block_m = re.search(r"```(?:json)?\s*\n?(.*?)\n?```", raw_json, re.DOTALL)
+        if code_block_m:
+            raw_json = code_block_m.group(1).strip()
+        try:
+            data = _json.loads(raw_json)
+            # 兼容三种格式：{"chapters": [...]}, [...], 或 {"start":...} 单对象
+            if isinstance(data, list):
+                raw_chapters = data
+            elif isinstance(data, dict):
+                # {"chapters": [...]} 或直接是单个章节对象
+                raw_chapters = data.get("chapters", [])
+                if not raw_chapters and "start" in data:
+                    raw_chapters = [data]  # 单个章节对象
+            else:
+                raw_chapters = []
+        except (_json.JSONDecodeError, AttributeError, TypeError) as e:
+            logger.warning("CHAPTERS JSON 解析失败: %s — 原始: %s", e, raw_json[:200])
+            raw_chapters = []
+
+        # 校验 + 修正
+        for ch in raw_chapters:
+            start = int(ch.get("start", 0))
+            end = int(ch.get("end", 0))
+            title = str(ch.get("title", "")).strip().strip("*").strip()
+
+            # 过滤非法章节
+            if start >= end or (end - start) < 10:
+                continue
+            if not title:
+                continue
+
+            # 修正 start/end 到最近的候选边界（±3s 容差）
+            def _snap(t: int) -> int:
+                for c in candidates:
+                    if abs(c - t) <= 3:
+                        return c
+                # 没匹配到候选值 → 找最近的
+                if candidates:
+                    return min(candidates, key=lambda c: abs(c - t))
+                return t
+
+            start = _snap(start)
+            end = _snap(end)
+
+            # 去重：相邻章节 start 相同 → 跳过
+            if chapters and chapters[-1]["start"] == start:
+                continue
+
+            chapters.append({"start": start, "end": end, "title": title})
+
+        if chapters:
+            logger.info(
+                "📑 解析章节: %d 个 → %s",
+                len(chapters),
+                " → ".join(f"{ch['start']}s {ch['title']}" for ch in chapters),
+            )
+        else:
+            logger.warning("CHAPTERS 校验后无有效章节（原始 %d 条）", len(raw_chapters))
+
+    # ── 提取 SUMMARY Markdown ──
+    summary_m = re.search(r"<<<SUMMARY>>>\s*(.*?)\s*<<<END_SUMMARY>>>", text, re.DOTALL)
+    if summary_m:
+        summary_text = summary_m.group(1).strip()
+
+    # ── 回退：尝试从叙述格式中解析章节（如 "**开场介绍** (0-34s):"）──
+    if not chapters:
+        narrative_pattern = re.findall(
+            r"([^(\n]+?)\s*\((\d+)\s*-\s*(\d+)\s*s\)",
+            text,
+        )
+        if narrative_pattern:
+            for title, start_str, end_str in narrative_pattern:
+                # 清理 markdown 标记和多余空白
+                title = title.strip().strip("*").strip()
+                start = int(start_str)
+                end = int(end_str)
+                if start >= end or (end - start) < 10 or not title:
+                    continue
+                # snap 到候选边界
+                def _snap_fb(t: int) -> int:
+                    if not candidates:
+                        return t
+                    return min(candidates, key=lambda c: abs(c - t))
+                chapters.append({
+                    "start": _snap_fb(start),
+                    "end": _snap_fb(end),
+                    "title": title,
+                })
+            if chapters:
+                logger.info("📑 从叙述格式解析到 %d 个章节", len(chapters))
+
+    return chapters, summary_text
+
+
+def _summarize_multimodal_with_chapters(
+    mp3_path: Path,
+    metadata: dict,
+    candidate_boundaries: list[int],
+    candidate_frames: list[Path],
+    base_url: str,
+    api_key: str,
+    model: str,
+    progress: _LiveSummary | None = None,
+) -> tuple[list[dict], str]:
+    """章节感知的多模态总结：完整音频 + 候选边界帧 → 章节划分 + 时间线总结。
+
+    与 _summarize_multimodal() 的关键区别：
+    - 帧前面插入时间戳标注文本
+    - System prompt 使用 _SUMMARY_SYS_CHAPTER（含候选边界列表约束）
+    - 返回 (chapters, summary_text) 而非纯文本
+
+    长音频（>_MAX_AUDIO_B64_KB）仍走分块路径，但模型在 merge 阶段做章节聚合。
+    """
+    import base64 as b64
+
+    # Phase 1 only 模式：candidate_boundaries 为空 → 只做总结流式输出
+    phase1_only = not candidate_boundaries
+
+    # ── 时长 + 分块决策：基于 base64 大小 ──
+    duration = _get_audio_duration(mp3_path)
+    mp3_size = mp3_path.stat().st_size
+    b64_estimate = int(mp3_size * 4 / 3) // 1024
+
+    if b64_estimate > _MAX_AUDIO_B64_KB:
+        # 长音频 → 走 chunked 路径，但改为章节感知的 merge prompt
+        logger.info(
+            "长音频章节总结：%.0fs / %d KB mp3 → ~%d KB base64 → 分块处理",
+            duration, mp3_size // 1024, b64_estimate,
+        )
+        # 走现有的 chunked 流程，但修改 merge prompt 加入章节约束
+        summary_text = _summarize_multimodal_chunked(
+            mp3_path=mp3_path, duration=duration,
+            metadata=metadata, all_frames=candidate_frames,
+            base_url=base_url, api_key=api_key, model=model,
+            progress=progress,
+        )
+        # 尝试从合并后的文本中解析章节（如果 merge prompt 也加了标记）
+        chapters, summary = _parse_chapter_response(summary_text, candidate_boundaries)
+        if not chapters:
+            # 未解析到章节 → 用候选边界做均匀切分作为回退
+            logger.warning("长音频未解析到章节，回退为均匀切分")
+            chapters = _fallback_chapters(candidate_boundaries, int(duration))
+        return chapters, summary
+
+    # ── 短音频：单次请求（流式输出）──
+    t0_encode = time.perf_counter()
+    mp3_b64 = b64.b64encode(mp3_path.read_bytes()).decode()
+    audio_b64_kb = len(mp3_b64) // 1024
+    encode_elapsed = time.perf_counter() - t0_encode
+
+    # 构建 content_parts：文本提示 + 音频 + 带时间戳标注的帧
+    meta_block = ""
+    if metadata:
+        meta_block = (
+            f"【标题】{metadata.get('title', '')}\n"
+            f"【简介】{metadata.get('desc', '')}\n"
+        )
+
+    prompt_text = (
+        f"{meta_block}"
+        f"请聆听完整音频，结合关键帧画面，将视频划分为几个话题段落。\n"
+        f"每个段落以 ## 标题开头，然后写描述。不要输出任何时间戳。\n"
+    )
+
+    content_parts: list[dict] = [
+        {"type": "text", "text": prompt_text},
+        {"type": "input_audio", "input_audio": {"data": mp3_b64, "format": "mp3"}},
+    ]
+
+    # 帧前面插入时间戳标注（帮助模型关联画面和时点）
+    frames_b64_kb = 0
+    for f in candidate_frames:
+        ts = _frame_timestamp(f)
+        ts_label = f"[画面 @ {int(ts)}s]" if ts is not None else "[画面]"
+        content_parts.append({"type": "text", "text": ts_label})
+
+        img_b64 = b64.b64encode(f.read_bytes()).decode()
+        frames_b64_kb += len(img_b64) // 1024
+        content_parts.append({
+            "type": "image_url",
+            "image_url": {
+                "url": f"data:image/jpeg;base64,{img_b64}",
+                "detail": "low",
+            },
+        })
+
+    # 使用章节专用的 system prompt
+    system_prompt = _SUMMARY_SYS_CHAPTER
+
+    payload = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": content_parts},
+        ],
+        "temperature": 0.3,
+        "max_tokens": 2048,
+    }
+    payload_kb = len(json.dumps(payload, ensure_ascii=False)) // 1024
+
+    logger.info(
+        "📦 发送章节总结请求: 音频 %d KB + %d 帧 / %d KB | "
+        "候选边界 %d 个 | payload %d KB → %s",
+        audio_b64_kb, len(candidate_frames), frames_b64_kb,
+        len(candidate_boundaries), payload_kb, base_url,
+    )
+
+    # ── 阶段一：多模态模型流式输出总结（用户实时看到）──
+    raw_text = _chat_completion_stream(base_url, api_key, payload, timeout=300, progress=progress)
+
+    # Phase 1 only 模式：不做 Phase 2
+    if phase1_only:
+        chapters, summary = _parse_chapter_response(raw_text, candidate_boundaries)
+        return chapters, summary if summary else raw_text
+
+    # 尝试从 Phase 1 输出直接解析（免费，瞬间完成）
+    chapters, summary = _parse_chapter_response(raw_text, candidate_boundaries)
+
+    # ── 阶段二：分段多模态匹配 ──
+    # 将音频在候选边界处切开，每段配中间帧，让模型做离散段落选择
+    if not chapters and len(candidate_boundaries) >= 3:
+        logger.info("📑 阶段二：分段多模态匹配 (%d 段) …", len(candidate_boundaries) - 1)
+        chapters = _match_chapters_segmented(
+            phase1_summary=summary,
+            mp3_path=mp3_path,
+            candidate_boundaries=candidate_boundaries,
+            candidate_frames=candidate_frames,
+            base_url=base_url,
+            api_key=api_key,
+            model=model,
+        )
+
+    # 兜底：均匀切分
+    if not chapters and candidate_boundaries:
+        logger.warning("章节提取失败，回退为均匀切分")
+        chapters = _fallback_chapters(candidate_boundaries, int(duration))
+
+    return chapters, summary
+
+
+def _split_audio_at_boundaries(
+    mp3_path: Path, boundaries: list[int],
+) -> list[Path]:
+    """在边界点切开音频，返回段文件路径列表（按时间顺序）。"""
+    import subprocess as _sp
+    import tempfile
+    seg_dir = Path(tempfile.mkdtemp(prefix="vidagent_segs_"))
+    # ffmpeg segment: -segment_times 接受逗号分隔的秒数（不含 0 和末尾 duration）
+    # 使用 boundaries[1:-1] 确保段数 = len(boundaries) - 1
+    if len(boundaries) <= 2:
+        return []
+    times = ",".join(str(b) for b in boundaries[1:-1])
+    _sp.run(
+        ["ffmpeg", "-y", "-i", str(mp3_path),
+         "-f", "segment", "-segment_times", times,
+         "-c", "copy", str(seg_dir / "seg_%03d.mp3")],
+        capture_output=True, timeout=30,
+    )
+    segs = sorted(seg_dir.glob("seg_*.mp3"))
+    logger.info("✂️ 音频切分为 %d 段 → %s", len(segs), seg_dir)
+    return segs
+
+
+def _match_chapters_segmented(
+    phase1_summary: str,
+    mp3_path: Path,
+    candidate_boundaries: list[int],
+    candidate_frames: list[Path],
+    base_url: str,
+    api_key: str,
+    model: str,
+) -> list[dict]:
+    """阶段二：分段音频 + 帧 + Phase1 总结 → 离散段落选择。
+
+    将问题从"这个事件在第几秒"变为"这个章节对应第几到第几段"。
+    """
+    import base64 as b64
+
+    # ── 切分音频 ──
+    audio_segs = _split_audio_at_boundaries(mp3_path, candidate_boundaries)
+    if len(audio_segs) < 2:
+        return []
+
+    M = len(audio_segs)  # 段数
+
+    # ── 解析 Phase 1 的章节描述 ──
+    segments = _parse_segments_from_summary(phase1_summary)
+    N = len(segments) if segments else 3  # 未解析到就用默认值
+
+    # ── 构建 Phase 2 content_parts ──
+    chapter_desc = "\n".join(
+        f"章节{i+1}: {s['title']} — {s['desc'][:150]}"
+        for i, s in enumerate(segments)
+    ) if segments else phase1_summary[:2000]
+
+    # ── Phase 2 prompt: 逐段自然语言分析（不要求 JSON）──
+    prompt = (
+        f"以下是一个视频的整体描述，仅供你了解背景：\n"
+        f"{phase1_summary[:1500]}\n\n"
+        f"═══════════════════════════════════\n\n"
+        f"现在，请逐段聆听这个视频的 {M} 个片段。每段配有中间帧画面。\n\n"
+        f"对每一段，请描述：\n"
+        f"1. 这段讲了什么内容？\n"
+        f"2. 这段和上一段属于同一个话题吗？\n"
+        f"3. 如果话题变了，标记 →新章节: [章节名称]\n\n"
+        f"格式示例：\n"
+        f"段1: 标题画面，背景音乐 → 属于开场\n"
+        f"段2: 主持人自我介绍，说明本期主题 → 仍属于开场\n"
+        f"段3: 画面切换为街头，主播开始驾驶展示 →新章节: 街头驾驶表演\n"
+        f"段4: 继续漂移，在广场画甜甜圈 → 属于「街头驾驶表演」\n"
+        f"...\n\n"
+        f"要求：\n"
+        f"- 每段必须分析，共 {M} 段\n"
+        f"- 首次出现新话题时用 →新章节: 标记\n"
+        f"- 同一章节的段用 → 属于「章节名」标记\n"
+        f"- 仔细聆听每段内容，不要急着下结论"
+    )
+
+    content_parts: list[dict] = [{"type": "text", "text": prompt}]
+
+    for i in range(M):
+        content_parts.append({
+            "type": "text",
+            "text": f"--- 段{i+1} [{candidate_boundaries[i]}s-{candidate_boundaries[i+1]}s] ---",
+        })
+        seg_b64 = b64.b64encode(audio_segs[i].read_bytes()).decode()
+        content_parts.append({
+            "type": "input_audio",
+            "input_audio": {"data": seg_b64, "format": "mp3"},
+        })
+        if i < len(candidate_frames):
+            img_b64 = b64.b64encode(candidate_frames[i].read_bytes()).decode()
+            content_parts.append({
+                "type": "image_url",
+                "image_url": {"url": f"data:image/jpeg;base64,{img_b64}", "detail": "low"},
+            })
+
+    seg_total_kb = sum(s.stat().st_size for s in audio_segs) // 1024
+    logger.info("📦 Phase 2: %d 段音频 (%d KB) + %d 帧 → %s", M, seg_total_kb, len(candidate_frames), base_url)
+
+    payload = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": (
+                "你是一个视频内容分析器。逐段聆听音频、观察画面，描述每段内容并判断属于哪个话题。"
+                "当话题发生明显变化时，用 →新章节: [名称] 标记。不要输出 JSON。"
+            )},
+            {"role": "user", "content": content_parts},
+        ],
+        "temperature": 0.2,
+        "max_tokens": 1024,
+    }
+    phase2_raw = _chat_completion(base_url, api_key, payload, timeout=120)
+    phase2_raw = phase2_raw.strip()
+    logger.info("📑 Phase 2 输出:\n%s", phase2_raw[:600])
+
+    # ── 清理临时文件 ──
+    import shutil
+    shutil.rmtree(audio_segs[0].parent, ignore_errors=True)
+
+    # ── Phase 3: 纯文本 LLM 格式化 → JSON ──
+    chapters = _phase3_format_json(phase2_raw, M, candidate_boundaries, base_url, api_key, model)
+    return chapters
+
+
+def _phase3_format_json(
+    analysis_text: str,
+    total_segments: int,
+    boundaries: list[int],
+    base_url: str,
+    api_key: str,
+    model: str,
+) -> list[dict]:
+    """Phase 3: 将 Phase 2 的逐段分析文本格式化为 JSON 章节。
+
+    纯文本调用，temperature=0，稳定可靠。
+    """
+    import json as _json
+
+    prompt = (
+        f"从以下逐段视频分析中提取章节划分。视频共 {total_segments} 段。\n\n"
+        f"分析文本：\n{analysis_text[:3000]}\n\n"
+        f"规则：\n"
+        f"1. 找到所有 →新章节: 标记，确定每个章节从第几段开始\n"
+        f"2. 如果某段标注「属于「章节名」」，归入对应章节\n"
+        f"3. 相邻章节的段号必须首尾相接，覆盖 1-{total_segments} 全部段\n"
+        f"4. 如果没有明确的 →新章节 标记，根据内容自行判断 2-4 个章节\n\n"
+        f"输出 JSON 数组（只输出 JSON）：\n"
+        f'[{{"title":"开场介绍","segments":[1,2]}},{{"title":"核心内容","segments":[3,4,5]}}]'
+    )
+
+    payload = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": "只输出 JSON 数组。不输出解释、标记或代码块。"},
+            {"role": "user", "content": prompt},
+        ],
+        "temperature": 0.0,
+        "max_tokens": 512,
+    }
+
+    try:
+        raw = _chat_completion(base_url, api_key, payload, timeout=30)
+        raw = raw.strip()
+        m = re.search(r"```(?:json)?\s*\n?(.*?)\n?```", raw, re.DOTALL)
+        if m:
+            raw = m.group(1).strip()
+        logger.info("📑 Phase 3 输出: %s", raw[:300])
+
+        data = _json.loads(raw)
+        if isinstance(data, dict):
+            data = data.get("chapters", [])
+        if not isinstance(data, list):
+            return []
+
+        chapters: list[dict] = []
+        for i, ch in enumerate(data):
+            segs = ch.get("segments", [])
+            if not segs:
+                continue
+            first = min(segs) - 1
+            last = max(segs) - 1
+            if first < 0 or last >= len(boundaries) - 1:
+                continue
+            title = str(ch.get("title", f"章节{i+1}")).strip()
+            chapters.append({
+                "start": boundaries[first],
+                "end": boundaries[last + 1],
+                "title": title,
+            })
+
+        if chapters:
+            logger.info("📑 Phase 3 完成: %d 个章节", len(chapters))
+            for ch in chapters:
+                logger.info("  %s: %ds-%ds", ch["title"], ch["start"], ch["end"])
+        return chapters
+    except Exception as e:
+        logger.warning("Phase 3 格式化失败: %s", e)
+        return []
+
+
+def _parse_segment_match(
+    raw: str, segments: list[dict], boundaries: list[int],
+) -> list[dict]:
+    """解析 Phase 2 输出的 JSON，转换回时间戳章节。
+
+    支持两种格式：
+    - 新格式: [{"title":"...", "segments":[1,2], ...}]
+    - 旧格式: "1,2|3|4,5" （向后兼容）
+    """
+    import json as _json
+
+    # ── 尝试 JSON 解析 ──
+    # 去掉可能的 markdown 代码块
+    json_m = re.search(r"```(?:json)?\s*\n?(.*?)\n?```", raw, re.DOTALL)
+    if json_m:
+        raw = json_m.group(1).strip()
+    else:
+        # 尝试直接提取 JSON 数组
+        arr_m = re.search(r"\[.*\]", raw, re.DOTALL)
+        if arr_m:
+            raw = arr_m.group(0)
+
+    try:
+        data = _json.loads(raw)
+        if isinstance(data, list) and len(data) > 0 and isinstance(data[0], dict):
+            # 新 JSON 格式
+            chapters: list[dict] = []
+            for ch in data:
+                segs = ch.get("segments", [])
+                if not segs:
+                    continue
+                first = min(segs) - 1
+                last = max(segs) - 1
+                if first < 0 or last >= len(boundaries) - 1:
+                    continue
+                start = boundaries[first]
+                end = boundaries[last + 1]
+                title = str(ch.get("title", "")).strip()
+                reasoning = str(ch.get("reasoning", ""))[:200]
+                chapters.append({
+                    "start": start, "end": end, "title": title,
+                })
+                logger.info("  📑 %s: segs %s → %ds-%ds | %s",
+                           title, segs, start, end, reasoning[:80])
+            if chapters:
+                logger.info("📑 JSON 匹配成功: %d 个章节", len(chapters))
+            return chapters
+    except (_json.JSONDecodeError, ValueError) as e:
+        logger.debug("JSON 解析失败，尝试旧格式: %s", e)
+
+    # ── 回退：旧格式 "1,2|3|4,5" ──
+    cleaned = raw.strip().strip('"').strip("'").strip()
+    m = re.search(r"[\d,\s|]+", cleaned)
+    if not m:
+        logger.warning("无法解析段匹配输出: %s", raw[:100])
+        return []
+    match_str = m.group(0).strip()
+    chapter_parts = [p.strip() for p in match_str.split("|") if p.strip()]
+    if not chapter_parts:
+        return []
+
+    chapters: list[dict] = []
+    for i, part in enumerate(chapter_parts):
+        seg_nums = []
+        for token in part.split(","):
+            token = token.strip()
+            if token.isdigit():
+                seg_nums.append(int(token))
+        if not seg_nums:
+            continue
+        first = min(seg_nums) - 1
+        last = max(seg_nums) - 1
+        if first < 0 or last >= len(boundaries) - 1:
+            continue
+        start = boundaries[first]
+        end = boundaries[last + 1]
+        title = segments[i]["title"] if i < len(segments) else f"章节 {i + 1}"
+        chapters.append({"start": start, "end": end, "title": title})
+
+    if chapters:
+        logger.info("📑 旧格式匹配成功: %d 个章节", len(chapters))
+    return chapters
+
+
+def _extract_chapters_text_only(
+    summary_text: str,
+    candidate_boundaries: list[int],
+    base_url: str,
+    api_key: str,
+    model: str,
+) -> list[dict]:
+    """纯文本 LLM 调用：将 Phase 1 的有序内容段落匹配到候选边界时间戳。
+
+    Phase 1 输出的是无时间戳的纯内容段落（## 标题 + 描述）。
+    此函数让 LLM 按顺序将段落与候选边界做比例匹配，
+    而非依赖 Phase 1 的不准确时间估计做盲目 snap。
+    """
+    import json as _json
+
+    # ── 从 Phase 1 输出中提取有序段落列表 ──
+    segments = _parse_segments_from_summary(summary_text)
+    if len(segments) < 2:
+        logger.info("未检测到足够段落 (%d)，跳过匹配", len(segments))
+        return []
+
+    # ── 让 LLM 做顺序匹配 ──
+    candidate_str = ", ".join(str(c) for c in candidate_boundaries)
+    duration = candidate_boundaries[-1] if candidate_boundaries else 0
+
+    seg_text = "\n".join(
+        f"{i+1}. {s['title']}: {s['desc'][:120]}"
+        for i, s in enumerate(segments)
+    )
+
+    prompt = (
+        f"视频总时长 {duration}s。\n"
+        f"候选时间戳（秒，只能从这里选）：{candidate_str}\n\n"
+        f"视频被分为以下 {len(segments)} 个段落（按时间顺序）：\n"
+        f"{seg_text}\n\n"
+        f"为每个段落分配起止时间戳。规则：\n"
+        f"1. start/end 必须从候选列表中选取\n"
+        f"2. 段落按顺序覆盖整个时间线：第1段 start=0，最后一段 end={duration}\n"
+        f"3. 相邻段落首尾相接（上一段的end = 下一段的start）\n"
+        f"4. 段落时长应与其内容量大致成正比\n\n"
+        f"输出 JSON 数组（只输出 JSON，不要其他）：\n"
+        f'[{{"start":0,"end":74,"title":"开场介绍"}},{{"start":74,"end":215,"title":"核心讨论"}},...]\n'
+        f"共 {len(segments)} 个对象。"
+    )
+
+    payload = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": "你是一个精确的 JSON 输出器。只输出 JSON 数组。"},
+            {"role": "user", "content": prompt},
+        ],
+        "temperature": 0.1,
+        "max_tokens": 1024,
+    }
+
+    try:
+        raw = _chat_completion(base_url, api_key, payload, timeout=60)
+        raw = raw.strip()
+        m = re.search(r"```(?:json)?\s*\n?(.*?)\n?```", raw, re.DOTALL)
+        if m:
+            raw = m.group(1).strip()
+
+        data = _json.loads(raw)
+        if isinstance(data, dict):
+            data = data.get("chapters", [])
+        if not isinstance(data, list):
+            return []
+
+        chapters: list[dict] = []
+        for ch in data:
+            start = int(ch.get("start", 0))
+            end = int(ch.get("end", 0))
+            title = str(ch.get("title", "")).strip().strip("*").strip()
+            if start >= end or (end - start) < 10 or not title:
+                continue
+            # snap 到候选边界
+            def _snap(t: int) -> int:
+                return min(candidate_boundaries, key=lambda c: abs(c - t)) if candidate_boundaries else t
+            start = _snap(start)
+            end = _snap(end)
+            if chapters and chapters[-1]["start"] == start:
+                continue
+            chapters.append({"start": start, "end": end, "title": title})
+
+        if chapters:
+            logger.info("📑 顺序匹配章节成功: %d 个", len(chapters))
+        return chapters
+    except Exception as e:
+        logger.warning("顺序匹配章节失败: %s", e)
+        return []
+
+
+def _parse_segments_from_summary(text: str) -> list[dict]:
+    """从 Phase 1 的无时间戳总结中提取有序段落列表。
+
+    解析 ## 标题 + 描述 格式，返回 [{"title": str, "desc": str}]。
+    """
+    # 按 ## 标题分割
+    parts = re.split(r"\n##\s+", text)
+    segments: list[dict] = []
+    for part in parts:
+        part = part.strip()
+        if not part:
+            continue
+        lines = part.split("\n", 1)
+        title = lines[0].strip().strip("*").strip().lstrip("#").strip()
+        desc = lines[1].strip() if len(lines) > 1 else ""
+        # 过滤太短的或无意义的行
+        if len(title) < 2 or len(title) > 30:
+            continue
+        if any(kw in title for kw in ["视频内容", "时间线", "总结", "内容时间"]):
+            continue
+        segments.append({"title": title, "desc": desc})
+    return segments
+
+
+def _fallback_chapters(candidates: list[int], duration: int) -> list[dict]:
+    """回退：当模型未输出章节时，用候选边界做简单的均匀切分。
+
+    选取候选边界中均匀分布的 3-8 个点作为章节起点。
+    """
+    if len(candidates) <= 2:
+        return []
+
+    target = max(3, min(8, len(candidates) // 2))
+    step = max(1, len(candidates) // target)
+    selected = candidates[::step]
+
+    chapters: list[dict] = []
+    for i, start in enumerate(selected):
+        end = selected[i + 1] if i + 1 < len(selected) else duration
+        chapters.append({
+            "start": start,
+            "end": end,
+            "title": f"段落 {i + 1}",
+        })
+    return chapters

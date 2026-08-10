@@ -8,11 +8,11 @@
 export VLLM_MAX_AUDIO_DECODE_DURATION_S=3600
 
 nohup /root/miniconda3/bin/vllm-omni serve \
-  /root/autodl-tmp/Qwen3-Omni-30B-AWQ \
+  /root/autodl-tmp/Qwen3-Omni-Thinking-AWQ-4bit \
   --port 6006 \
   --gpu-memory-utilization 0.85 \
-  --max-num-batched-tokens 16384 \
-  --max-num-seqs 8 \
+  --max-num-batched-tokens 8192 \
+  --max-num-seqs 4 \
   --enable-prefix-caching \
   > /root/autodl-tmp/server.log 2>&1 &
 
