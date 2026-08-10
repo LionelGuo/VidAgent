@@ -27,20 +27,6 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 _MEDIACRAWLER_ROOT = str(Path.home() / "Code" / "MediaCrawler")
-# 复用 MediaCrawler 的 venv（含 playwright, execjs 等）
-_mc_venv = str(Path(_MEDIACRAWLER_ROOT) / ".venv" / "lib" / f"python{sys.version_info.major}.{sys.version_info.minor}" / "site-packages")
-if not os.path.isdir(_mc_venv):
-    # 回退：搜索实际路径
-    _venv_lib = Path(_MEDIACRAWLER_ROOT) / ".venv" / "lib"
-    if _venv_lib.exists():
-        _candidates = sorted(_venv_lib.glob("python*/site-packages"))
-        if _candidates:
-            _mc_venv = str(_candidates[0])
-if _mc_venv not in sys.path:
-    sys.path.insert(0, _mc_venv)
-if _MEDIACRAWLER_ROOT not in sys.path:
-    sys.path.insert(0, _MEDIACRAWLER_ROOT)
-# help.py 在 import 时执行 execjs.compile(open('libs/douyin.js')) —— 需要 cwd 为仓库根
 _original_cwd = os.getcwd()
 
 # ---------------------------------------------------------------------------

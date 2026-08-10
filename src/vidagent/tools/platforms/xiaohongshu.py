@@ -21,20 +21,7 @@ from vidagent.tools.platforms import Platform, register
 
 logger = logging.getLogger(__name__)
 
-_MEDIACRAWLER_ROOT = str(Path.home() / "Code" / "MediaCrawler")
-_mc_venv = str(Path(_MEDIACRAWLER_ROOT) / ".venv" / "lib" / f"python{sys.version_info.major}.{sys.version_info.minor}" / "site-packages")
-if not os.path.isdir(_mc_venv):
-    _venv_lib = Path(_MEDIACRAWLER_ROOT) / ".venv" / "lib"
-    _candidates = sorted(_venv_lib.glob("python*/site-packages")) if _venv_lib.exists() else []
-    _mc_venv = str(_candidates[0]) if _candidates else ""
-if _mc_venv not in sys.path:
-    sys.path.insert(0, _mc_venv)
-if _MEDIACRAWLER_ROOT not in sys.path:
-    sys.path.insert(0, _MEDIACRAWLER_ROOT)
-_original_cwd = os.getcwd()
-
 _WORKSPACE = Path(settings.workspace_dir).resolve()
-_USER_DATA_DIR = _WORKSPACE / ".xhs_browser"
 
 DEFAULT_HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
@@ -49,93 +36,59 @@ def _get_proxy() -> str | None:
 
 
 # ---------------------------------------------------------------------------
-# 浏览器管理
+# 客户端管理（通过共享 CDP 连接 Windows Chrome）
 # ---------------------------------------------------------------------------
 
-_playwright = None
-_browser_context: BrowserContext | None = None
-_page: Page | None = None
+_client = None
+_client_initialized = False
+
+
 _client = None
 _client_initialized = False
 
 
 async def _ensure_client():
-    global _playwright, _browser_context, _page, _client, _client_initialized
+    global _client, _client_initialized
 
     if _client_initialized and _client is not None:
         return _client
 
-    os.chdir(_MEDIACRAWLER_ROOT)
+    from ._cdp_browser import get_page_for_platform, chdir_mc
+
+    os.chdir(chdir_mc())
     try:
         import config as mc_config
         mc_config.PLATFORM = "xhs"
-        mc_config.ENABLE_CDP_MODE = False
-        mc_config.HEADLESS = False
         mc_config.ENABLE_GET_MEIDAS = False
         mc_config.ENABLE_GET_COMMENTS = False
 
         from media_platform.xhs.client import XiaoHongShuClient
         from tools import utils as mc_utils
     finally:
-        os.chdir(_original_cwd)
+        os.chdir(os.getcwd())  # 恢复
 
-    _playwright = await async_playwright().start()
-    _USER_DATA_DIR.mkdir(parents=True, exist_ok=True)
-    _browser_context = await _playwright.chromium.launch_persistent_context(
-        user_data_dir=str(_USER_DATA_DIR),
-        headless=False,
-        args=["--disable-blink-features=AutomationControlled"],
-    )
-    _page = await _browser_context.new_page()
-    await _page.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
+    _page = await get_page_for_platform("xhs", "https://www.xiaohongshu.com/explore")
 
-    login_needed = True
-    try:
-        await _page.goto("https://www.xiaohongshu.com/", wait_until="domcontentloaded", timeout=15000)
-        await asyncio.sleep(2)
-        cookies = await _browser_context.cookies()
-        if any(c.get("name") == "a1" and c.get("value") for c in cookies):
-            login_needed = False
-            logger.info("小红书登录态有效，跳过登录")
-    except Exception:
-        pass
-
-    if login_needed:
-        print("\n" + "=" * 60)
-        print("  小红书未登录 — 请在弹出的浏览器窗口中扫码登录")
-        print("  (等待最多 120 秒...)")
-        print("=" * 60 + "\n")
-        try:
-            await _page.goto("https://www.xiaohongshu.com/", wait_until="domcontentloaded", timeout=15000)
-            for i in range(120):
-                await asyncio.sleep(1)
-                try:
-                    cookies = await _browser_context.cookies()
-                    if any(c.get("name") == "a1" and c.get("value") for c in cookies):
-                        logger.info("小红书登录成功！")
-                        break
-                except Exception:
-                    pass
-            else:
-                logger.warning("登录超时（120s），将在未登录状态下继续")
-        except Exception as e:
-            logger.warning("小红书登录异常: %s", e)
-
+    user_agent = await _page.evaluate("() => navigator.userAgent")
+    ctx = _page.context
     cookie_str, cookie_dict = await mc_utils.convert_browser_context_cookies(
-        _browser_context, urls=["https://www.xiaohongshu.com"],
+        ctx, urls=["https://www.xiaohongshu.com"],
     )
-    headers = dict(DEFAULT_HEADERS)
-    headers["Cookie"] = cookie_str
+    headers = {
+        "User-Agent": user_agent,
+        "Cookie": cookie_str,
+        "Host": "edith.xiaohongshu.com",
+        "Origin": "https://www.xiaohongshu.com",
+        "Referer": "https://www.xiaohongshu.com/",
+        "Content-Type": "application/json;charset=UTF-8",
+    }
 
     _client = XiaoHongShuClient(
         timeout=30, proxy=_get_proxy(), headers=headers,
         playwright_page=_page, cookie_dict=cookie_dict,
     )
     _client_initialized = True
-    if login_needed:
-        logger.warning("小红书未登录，搜索功能可能受限。请在浏览器中手动登录后重试。")
-
-    logger.info("XiaoHongShuClient 已就绪 (登录=%s)", not login_needed)
+    logger.info("XiaoHongShuClient 已就绪 (CDP)")
     return _client
 
 
