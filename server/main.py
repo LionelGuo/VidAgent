@@ -54,6 +54,19 @@ logger = logging.getLogger(__name__)
 
 app = FastAPI(title="VidAgent Server", version="0.2.0")
 
+# ── 启动时预加载本地模型（避免首次请求冷启动延迟）──
+@app.on_event("startup")
+async def _preload_models():
+    """预加载 TransNetV2 场景检测模型（本机 GPU）。"""
+    try:
+        from vidagent.utils.frames import _get_transnet
+        import time
+        t0 = time.perf_counter()
+        _get_transnet()
+        logger.info("✅ TransNetV2 预加载完成 (%.1fs)", time.perf_counter() - t0)
+    except Exception as e:
+        logger.warning("TransNetV2 预加载失败，将回退 ffmpeg: %s", e)
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -534,30 +547,84 @@ async def tool_batch_summarize(req: BatchSummarizeRequest):
                 return {"summary": summary, "chapters": chapters}
 
             def _do_boundaries():
-                """后台：Whisper VAD + 场景检测 → 候选边界 + 中间帧"""
-                # 提取 Whisper VAD 语义停顿边界
-                vad_times: list[float] = []
-                try:
-                    from faster_whisper import WhisperModel
-                    vad_model = WhisperModel(
-                        settings.whisper_model, device="cpu", compute_type="int8",
-                    )
-                    vad_segs, _ = vad_model.transcribe(
-                        str(mp3), beam_size=1, vad_filter=True,
-                        vad_parameters=dict(
-                            threshold=0.5,
-                            min_silence_duration_ms=2000,   # 2s+ 停顿 = 话题边界
-                            min_speech_duration_ms=500,
-                            max_speech_duration_s=120,      # 长段语音不切断
-                        ),
-                    )
-                    vad_times = [s.start for s in vad_segs]
-                    logger.info("🔇 Whisper VAD: %d 段 → %s", len(vad_times),
-                               [f"{t:.0f}s" for t in vad_times[:10]])
-                except Exception as e:
-                    logger.warning("Whisper VAD 失败，回退 ffmpeg silence: %s", e)
+                """后台：Silero VAD ∥ TransNetV2 场景检测 → 候选边界 + 中间帧"""
+                import subprocess as _sp
 
-                boundaries = detect_boundaries(local_path, vad_boundaries=vad_times or None)
+                # ── 并行：Silero VAD（音频）+ 场景检测（视频），互相独立 ──
+                vad_times: list[float] = []
+                scene_times: set[float] = set()
+
+                def _run_vad() -> list[float]:
+                    try:
+                        import numpy as np
+                        from faster_whisper.vad import (
+                            SileroVADModel, get_speech_timestamps, VadOptions,
+                        )
+                        import faster_whisper
+
+                        fw_dir = Path(faster_whisper.__file__).parent
+                        vad_model = SileroVADModel(
+                            str(fw_dir / "assets" / "silero_vad_v6.onnx")
+                        )
+                        raw = _sp.run(
+                            ["ffmpeg", "-y", "-i", str(mp3), "-f", "s16le",
+                             "-acodec", "pcm_s16le", "-ar", "16000", "-ac", "1", "-"],
+                            capture_output=True, timeout=60,
+                        )
+                        if raw.returncode == 0 and raw.stdout:
+                            audio = (np.frombuffer(raw.stdout, dtype=np.int16)
+                                      .astype(np.float32) / 32768.0)
+                            vad_opts = VadOptions(
+                                threshold=0.5, min_speech_duration_ms=500,
+                                min_silence_duration_ms=2000, max_speech_duration_s=120,
+                            )
+                            speech_ts = get_speech_timestamps(audio, vad_opts, sampling_rate=16000)
+                            result = [s["start"] / 16000.0 for s in speech_ts]
+                            logger.info("🔇 Silero VAD: %d 段", len(result))
+                            return result
+                    except Exception as e:
+                        logger.warning("Silero VAD 失败: %s", e)
+                        return []
+
+                def _run_scene_detect() -> set[float] | None:
+                    try:
+                        from vidagent.utils.frames import _get_transnet
+                        # 缩到 320px + 降至 2fps（场景边界不需要高帧率）
+                        import tempfile
+                        lowres = Path(tempfile.mktemp(suffix=".mp4"))
+                        _sp.run(
+                            ["ffmpeg", "-y", "-an", "-i", str(video_path),
+                             "-vf", "scale=320:-1,fps=4", "-preset", "ultrafast",
+                             "-crf", "28", "-c:v", "libx264", str(lowres)],
+                            capture_output=True, timeout=max(30, int(metadata.get("duration", 30))),
+                        )
+                        model = _get_transnet()
+                        scenes = model.detect_scenes(str(lowres))
+                        lowres.unlink(missing_ok=True)
+                        result = set()
+                        for s in scenes:
+                            t = float(s["start_time"])
+                            if 0 < t < metadata.get("duration", float("inf")):
+                                result.add(t)
+                        logger.info("🎬 TransNetV2: %d 个场景边界", len(result))
+                        return result
+                    except Exception as e:
+                        logger.warning("TransNetV2 失败: %s", e)
+                        return None  # 返回 None 让 detect_boundaries 内部回退
+
+                # 并行执行 VAD + 场景检测
+                with _cf.ThreadPoolExecutor(max_workers=2) as _vpool:
+                    _fv = _vpool.submit(_run_vad)
+                    _fs = _vpool.submit(_run_scene_detect)
+                    vad_times = _fv.result()
+                    scene_times = _fs.result()
+
+                # ── 合并 VAD + 场景边界 → detect_boundaries ──
+                boundaries = detect_boundaries(
+                    local_path,
+                    vad_boundaries=vad_times or None,
+                    scene_boundaries=scene_times if scene_times is not None else None,
+                )
                 if len(boundaries) >= 3:
                     mid_ts = [
                         (boundaries[i] + boundaries[i + 1]) / 2

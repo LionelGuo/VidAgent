@@ -30,6 +30,18 @@ logger = logging.getLogger(__name__)
 MIN_FRAMES = 4
 MAX_FRAMES = 16
 
+# TransNetV2 模型单例：进程内只加载一次（首次 ~0.4s，后续复用）
+_TRANSNET = None
+
+
+def _get_transnet():
+    global _TRANSNET
+    if _TRANSNET is None:
+        from transnetv2_pytorch import TransNetV2
+
+        _TRANSNET = TransNetV2()
+    return _TRANSNET
+
 
 def get_duration(video_path: str | Path) -> float:
     """ffprobe 取视频时长（秒），失败返回 0。"""
@@ -49,8 +61,12 @@ def detect_boundaries(
     video_path: str | Path,
     duration: float | None = None,
     vad_boundaries: list[float] | None = None,
+    scene_boundaries: set[float] | None = None,
 ) -> list[int]:
     """混合边界检测：scene detection + silence/VAD → 候选章节边界。
+
+    scene_boundaries 传入时跳过内部场景检测（外部已并行完成 TransNetV2）。
+    vad_boundaries 传入时跳过 silence detection（外部已并行完成 Silero VAD）。
 
     优化：两遍 ffmpeg 并行执行，scene 缩小到 320px 宽度加速。
     vad_boundaries 传入时替代 ffmpeg silence detection（Whisper VAD 语义停顿）。
@@ -74,7 +90,24 @@ def detect_boundaries(
     silence_times: set[float] = set()
 
     def _run_scene_detect() -> None:
-        """场景检测：缩小分辨率 → 跳过音频解码。"""
+        """场景检测：优先 TransNetV2 神经网络（GPU），回退 ffmpeg 像素差。"""
+        # ── TransNetV2（本机 GPU，~28x 实时）──
+        try:
+            model = _get_transnet()
+            scenes = model.detect_scenes(str(video_path))
+            for s in scenes:
+                t = float(s["start_time"])
+                if 0 < t < duration:
+                    scene_times.add(t)
+            logger.info(
+                "🎬 TransNetV2: %d 个场景边界 (GPU, %.1fs 视频)",
+                len(scene_times), duration,
+            )
+            return
+        except Exception as e:
+            logger.warning("TransNetV2 失败，回退 ffmpeg scene: %s", e)
+
+        # ── 回退：ffmpeg scene detection ──
         try:
             r = subprocess.run(
                 ["ffmpeg", "-an", "-i", str(video_path),
@@ -88,7 +121,7 @@ def detect_boundaries(
                     t = float(m.group(1))
                     if 0 < t < duration:
                         scene_times.add(t)
-            logger.info("🎬 场景检测: %d 个候选点 (scale=320px, threshold=0.3)", len(scene_times))
+            logger.info("🎬 ffmpeg 场景检测: %d 个候选点 (scale=320px, threshold=0.3)", len(scene_times))
         except Exception as e:
             logger.warning("场景检测失败: %s", e)
 
@@ -111,24 +144,23 @@ def detect_boundaries(
         except Exception as e:
             logger.warning("静音检测失败: %s", e)
 
-    # ── 并行执行两遍检测 ──
+    # ── 场景检测：优先用外部传入的结果（已并行完成）──
     t0 = time.perf_counter()
+    if scene_boundaries is not None:
+        scene_times = scene_boundaries
+        logger.info("🎬 外部场景边界: %d 个候选点", len(scene_times))
+    else:
+        _run_scene_detect()
+
+    # ── 静音/VAD 检测：优先用外部传入的结果 ──
     if vad_boundaries is not None:
-        # VAD 模式：直接用传入的语音段边界，只跑场景检测
         for t in vad_boundaries:
             if 0 < t < duration:
                 silence_times.add(t)
-        logger.info("🔇 Whisper VAD: %d 个候选点", len(silence_times))
-        with ThreadPoolExecutor(max_workers=1) as pool:
-            f1 = pool.submit(_run_scene_detect)
-            f1.result()
+        logger.info("🔇 外部 VAD: %d 个候选点", len(silence_times))
     else:
-        # 回退：ffmpeg scene + silence 并行
-        with ThreadPoolExecutor(max_workers=2) as pool:
-            f1 = pool.submit(_run_scene_detect)
-            f2 = pool.submit(_run_silence_detect)
-            f1.result()
-            f2.result()
+        _run_silence_detect()
+
     elapsed = time.perf_counter() - t0
     logger.info("⏱️ 边界检测耗时: %.1fs (视频 %.0fs)", elapsed, duration)
 
