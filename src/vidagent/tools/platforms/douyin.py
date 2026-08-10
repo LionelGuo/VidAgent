@@ -184,6 +184,98 @@ async def fetch_hot_search(client: httpx.AsyncClient, limit: int = 20) -> list[d
 
 
 # ---------------------------------------------------------------------------
+# 下载（P1 — f2）
+# ---------------------------------------------------------------------------
+
+
+def _download_douyin(video_url: str, file_name: str) -> dict:
+    """使用 f2 下载抖音无水印视频。
+
+    内部流程：
+    1. AwemeIdFetcher 从 URL 提取 aweme_id
+    2. DouyinHandler.fetch_one_video() 获取视频元数据 + 下载链接
+    3. DouyinDownloader 下载到本地
+    """
+    import asyncio as _asyncio
+
+    from vidagent.utils import storage as _storage
+    from vidagent.utils.timer import Timer as _Timer
+
+    # 下载缓存
+    target = _storage.media_path(file_name, ".mp4")
+    if target.exists():
+        logger.info("下载命中缓存: %s", target)
+        return {
+            "status": "success",
+            "local_path": str(target),
+            "platform": "douyin",
+            "cached": True,
+        }
+
+    proxy = _get_proxy()
+    kwargs = {
+        "url": video_url,
+        "cookie": settings.douyin_cookie or "",
+        "headers": {
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/130.0.0.0 Safari/537.36 Edg/130.0.0.0"
+            ),
+            "Referer": "https://www.douyin.com/",
+        },
+        "proxies": {
+            "http://": proxy or "",
+            "https://": proxy or "",
+        } if proxy else None,
+        "timeout": 10,          # 单个请求超时（秒）
+        "max_retries": 1,       # 减少重试，快速失败
+        "path": str(_storage.workspace()),
+        "naming": file_name,
+    }
+
+    async def _run():
+        from f2.apps.douyin.handler import DouyinHandler
+
+        handler = DouyinHandler(kwargs)
+        await handler.handle_one_video()
+
+    try:
+        with _Timer("抖音下载(f2)"):
+            _asyncio.run(_run())
+    except Exception as e:
+        logger.warning("f2 下载失败: %s", e)
+        return {"status": "error", "error": f"f2 下载失败: {e}", "video_url": video_url}
+
+    # 查找下载产物
+    local = _find_downloaded(_storage.workspace(), file_name)
+    if not local:
+        return {"status": "error", "error": "下载完成但未找到产物文件", "video_url": video_url}
+
+    # 重命名为标准名称
+    if local != target:
+        import shutil as _shutil
+        _shutil.move(str(local), str(target))
+        local = target
+
+    return {"status": "success", "local_path": str(local), "platform": "douyin"}
+
+
+def _find_downloaded(workspace_dir, file_name: str):
+    """在 workspace 中查找 f2 下载的最新产物。"""
+    from pathlib import Path as _Path
+
+    ws = _Path(workspace_dir)
+    # f2 创建子目录，产物在内部
+    candidates = sorted(ws.glob(f"**/{file_name}*"), key=lambda p: p.stat().st_mtime, reverse=True)
+    if candidates:
+        return candidates[0]
+    # 回退：取最新 mp4
+    mp4s = sorted(ws.glob("**/*.mp4"), key=lambda p: p.stat().st_mtime, reverse=True)
+    return mp4s[0] if mp4s else None
+
+
+# ---------------------------------------------------------------------------
 # Platform 实例
 # ---------------------------------------------------------------------------
 
@@ -228,10 +320,13 @@ class DouyinPlatform(Platform):
 
     @staticmethod
     def download(video_url: str, file_name: str) -> dict:
-        """下载抖音视频（P1 实现，需 f2）。"""
-        raise NotImplementedError(
-            "抖音下载需 f2 支持（P1 计划）。当前可用: 热榜 (get_hot)"
-        )
+        """下载抖音无水印视频（f2）。
+
+        Args:
+            video_url: 抖音视频链接或分享链接。
+            file_name: 保存文件名前缀，通常用 video_id。
+        """
+        return _download_douyin(video_url, file_name)
 
 
 # 注册到全局注册表

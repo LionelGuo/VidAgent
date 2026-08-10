@@ -50,7 +50,10 @@ class Settings(BaseSettings):
     # yt-dlp 使用，可绕过部分风控/年龄限制。Netscape 格式：youtube_cookie=/path/to/cookies.txt
     youtube_cookie: str = ""
 
-    # ----- 网络代理（YouTube 等需要科学上网的平台）-----
+    # 抖音 Cookie（可选；f2 下载公开视频无需，私密/风控内容需要）
+    douyin_cookie: str = ""
+
+    # ----- 网络代理（YouTube / 抖音等需要代理的平台）-----
     # 形如 "http://127.0.0.1:7890"，同时用于 yt-dlp 下载和 API 请求
     youtube_proxy: str = ""
 

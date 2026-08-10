@@ -60,7 +60,7 @@ def section(title: str):
 def skip(desc: str, reason: str = ""):
     global skip_count
     skip_count += 1
-    print(f"  ⏭️  SKIP {desc}: {reason}")
+    print(f"  ⏭️  SKIP {desc}{': ' + reason if reason else ''}")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -475,7 +475,56 @@ def test_douyin_hot_search():
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# 12. Crawler 统一分派
+# 12. 抖音下载 (f2)
+# ══════════════════════════════════════════════════════════════════════════════
+
+def test_douyin_download():
+    section("12. 抖音下载 (f2)")
+
+    from vidagent.tools.platforms.douyin import DouyinPlatform
+    import vidagent.utils.storage as storage_mod
+
+    # 使用一个已知的测试视频 URL
+    test_url = "https://www.douyin.com/video/7413332201901821234"
+    test_id = "TEST_dy_download"
+
+    # 清理缓存
+    cache = storage_mod.media_path(test_id, ".mp4")
+    if cache.exists():
+        cache.unlink()
+
+    try:
+        result = DouyinPlatform.download(test_url, test_id)
+        if result.get("status") == "success":
+            check("下载成功", True)
+            check("平台为 douyin", result.get("platform") == "douyin")
+            check("有 local_path", bool(result.get("local_path")))
+            from pathlib import Path
+            p = Path(str(result.get("local_path", "")))
+            if p.exists():
+                check("产物文件存在", True, f"size={p.stat().st_size/1024:.0f}KB")
+                # 测试缓存
+                r2 = DouyinPlatform.download(test_url, test_id)
+                check("缓存命中: cached=True", r2.get("cached") is True)
+        else:
+            error = str(result.get("error", ""))[:80]
+            # f2 可能因网络/风控失败，不算 hard fail
+            if "超时" in error.lower() or "timeout" in error.lower() or "connect" in error.lower():
+                skip("网络超时（代理或 Douyin API 不可达）", "")
+            else:
+                check("下载完成 (检查网络)", False, error)
+    except NotImplementedError:
+        skip("f2 未安装或配置不完整")
+    except Exception as e:
+        msg = str(e)[:100]
+        if "timeout" in msg.lower() or "connect" in msg.lower():
+            skip(f"网络超时: {msg}")
+        else:
+            check(f"下载异常: {msg}", False)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 13. Crawler 统一分派
 # ══════════════════════════════════════════════════════════════════════════════
 
 def test_crawler_dispatch():
@@ -514,7 +563,7 @@ def test_crawler_dispatch():
 # ══════════════════════════════════════════════════════════════════════════════
 
 def test_downloader_routing():
-    section("13. Downloader 平台路由")
+    section("14. Downloader 平台路由")
 
     from vidagent.tools import downloader as dl
 
@@ -555,7 +604,7 @@ def test_downloader_routing():
 # ══════════════════════════════════════════════════════════════════════════════
 
 def test_server_extract_video_id():
-    section("14. Server _extract_video_id")
+    section("15. Server _extract_video_id")
 
     from server.main import _extract_video_id
 
@@ -579,7 +628,7 @@ def test_server_extract_video_id():
 # ══════════════════════════════════════════════════════════════════════════════
 
 def test_tool_definitions():
-    section("15. Tool Definitions platform enum")
+    section("16. Tool Definitions platform enum")
 
     from server.tool_definitions import TOOL_DEFINITIONS
 
@@ -607,7 +656,7 @@ def test_tool_definitions():
 # ══════════════════════════════════════════════════════════════════════════════
 
 def test_agent_prompt():
-    section("16. Agent Prompt 包含多平台")
+    section("17. Agent Prompt 包含多平台")
 
     from vidagent.agent import SYSTEM_PROMPT as agno_prompt
     check("Agno prompt 含 youtube", "youtube" in agno_prompt.lower())
@@ -631,7 +680,7 @@ def test_agent_prompt():
 # ══════════════════════════════════════════════════════════════════════════════
 
 def test_youtube_download():
-    section("17. YouTube 下载")
+    section("18. YouTube 下载")
 
     from vidagent.tools.downloader import download_video
 
@@ -662,7 +711,7 @@ def test_youtube_download():
 # ══════════════════════════════════════════════════════════════════════════════
 
 def test_config():
-    section("18. 配置检查")
+    section("19. 配置检查")
 
     from vidagent.config import settings
 
@@ -705,6 +754,7 @@ def main():
         ("YouTube 创作者", test_youtube_creator),
         ("抖音 extract+normalize", test_douyin_extract_and_normalize),
         ("抖音热榜", test_douyin_hot_search),
+        ("抖音下载", test_douyin_download),
         ("Crawler 分派", test_crawler_dispatch),
         ("Downloader 路由", test_downloader_routing),
         ("Server _extract_video_id", test_server_extract_video_id),
