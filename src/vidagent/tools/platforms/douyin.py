@@ -1,25 +1,55 @@
-"""抖音平台适配：公开热榜 API + f2 下载 + MediaCrawler 搜索（分期实施）。
+"""抖音平台适配：公开热榜 API + MediaCrawler CDP 搜索/创作者/下载。
 
-P0 (当前): 公开热榜 API — 无需登录、无需 API Key
-P1 (后续): f2 下载 + MediaCrawler 搜索
+P0: 公开热榜 API — 免费、免登录
+P2: MediaCrawler CDP — Playwright 浏览器 → 搜索 + 创作者 + 下载
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
+import os
 import re
-from datetime import datetime, timezone
+import sys
+from pathlib import Path
 from typing import Any, ClassVar
 
 import httpx
+from playwright.async_api import async_playwright, BrowserContext, Page
 
 from vidagent.config import settings
 from vidagent.tools.platforms import Platform, register
 
 logger = logging.getLogger(__name__)
 
-# 抖音热榜公开 API（无需登录）
+# ---------------------------------------------------------------------------
+# 导入 MediaCrawler（本地仓库）
+# ---------------------------------------------------------------------------
+
+_MEDIACRAWLER_ROOT = str(Path.home() / "Code" / "MediaCrawler")
+# 复用 MediaCrawler 的 venv（含 playwright, execjs 等）
+_mc_venv = str(Path(_MEDIACRAWLER_ROOT) / ".venv" / "lib" / f"python{sys.version_info.major}.{sys.version_info.minor}" / "site-packages")
+if not os.path.isdir(_mc_venv):
+    # 回退：搜索实际路径
+    _venv_lib = Path(_MEDIACRAWLER_ROOT) / ".venv" / "lib"
+    if _venv_lib.exists():
+        _candidates = sorted(_venv_lib.glob("python*/site-packages"))
+        if _candidates:
+            _mc_venv = str(_candidates[0])
+if _mc_venv not in sys.path:
+    sys.path.insert(0, _mc_venv)
+if _MEDIACRAWLER_ROOT not in sys.path:
+    sys.path.insert(0, _MEDIACRAWLER_ROOT)
+# help.py 在 import 时执行 execjs.compile(open('libs/douyin.js')) —— 需要 cwd 为仓库根
+_original_cwd = os.getcwd()
+
+# ---------------------------------------------------------------------------
+# 常量
+# ---------------------------------------------------------------------------
+
 _HOT_SEARCH_API = "https://www.douyin.com/aweme/v1/web/hot/search/list/"
+_WORKSPACE = Path(settings.workspace_dir).resolve()
+_USER_DATA_DIR = _WORKSPACE / ".douyin_browser"  # Playwright 持久化目录
 
 DEFAULT_HEADERS = {
     "User-Agent": (
@@ -29,15 +59,155 @@ DEFAULT_HEADERS = {
     "Referer": "https://www.douyin.com/",
 }
 
-# 抖音视频 ID：19 位数字，或短链 v.douyin.com/xxx
 _DY_VIDEO_ID_RE = re.compile(r"/video/(\d{15,20})")
 _DY_SHORT_RE = re.compile(r"v\.douyin\.com/(\w+)")
 
 
 def _get_proxy() -> str | None:
-    """复用 YouTube 代理设置（抖音也需要科学上网或国内代理）。"""
     p = settings.youtube_proxy
     return p if p else None
+
+
+# ---------------------------------------------------------------------------
+# Playwright 浏览器管理（模块级单例）
+# ---------------------------------------------------------------------------
+
+_playwright = None
+_browser_context: BrowserContext | None = None
+_page: Page | None = None
+_client = None  # DouYinClient
+_client_initialized = False
+
+
+async def _ensure_client():
+    """初始化或恢复 MediaCrawler DouYinClient（含 Playwright 浏览器）。"""
+    global _playwright, _browser_context, _page, _client, _client_initialized
+
+    if _client_initialized and _client is not None:
+        return _client
+
+    # 切换 cwd 到 MediaCrawler 根（execjs 需要相对路径 libs/douyin.js）
+    os.chdir(_MEDIACRAWLER_ROOT)
+    try:
+        import config as mc_config  # noqa: F811
+        mc_config.PLATFORM = "dy"
+        mc_config.ENABLE_CDP_MODE = True
+        mc_config.CDP_CONNECT_EXISTING = True
+        mc_config.LOGIN_TYPE = "qrcode"
+        mc_config.SAVE_LOGIN_STATE = True
+        mc_config.HEADLESS = False
+        mc_config.CDP_HEADLESS = False
+        mc_config.ENABLE_GET_MEIDAS = False
+        mc_config.ENABLE_GET_COMMENTS = False
+        mc_config.CRAWLER_MAX_NOTES_COUNT = 20
+
+        from media_platform.douyin.client import DouYinClient
+        from media_platform.douyin.login import DouYinLogin
+    finally:
+        os.chdir(_original_cwd)
+
+    _playwright = await async_playwright().start()
+
+    # 直接启动持久化浏览器（WSL 无法 CDP 连接 Windows Chrome）
+    _USER_DATA_DIR.mkdir(parents=True, exist_ok=True)
+    _browser_context = await _playwright.chromium.launch_persistent_context(
+        user_data_dir=str(_USER_DATA_DIR),
+        headless=False,
+        args=["--disable-blink-features=AutomationControlled"],
+    )
+    _page = await _browser_context.new_page()
+    await _page.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
+    cdp_connected = False
+
+    # 检查登录状态（CDP 连接通常意味着已登录）
+    login_needed = not cdp_connected
+    try:
+        await _page.goto("https://www.douyin.com/", wait_until="domcontentloaded", timeout=15000)
+        await asyncio.sleep(2)
+        if _page.is_closed():
+            pages = _browser_context.pages
+            _page = pages[0] if pages else await _browser_context.new_page()
+        local_storage = await _page.evaluate("() => window.localStorage")
+        if local_storage.get("HasUserLogin", "") == "1":
+            login_needed = False
+            logger.info("抖音登录态有效，跳过登录")
+    except Exception:
+        pass
+
+    if login_needed:
+        print("\n" + "=" * 60)
+        print("  抖音未登录 — 请在弹出的浏览器窗口中扫码登录")
+        print("  (等待最多 120 秒...)")
+        print("=" * 60 + "\n")
+        try:
+            os.chdir(_MEDIACRAWLER_ROOT)
+            try:
+                from media_platform.douyin.login import DouYinLogin
+                # 直接检查登录（QR 码在浏览器窗口中可见，无需额外 display）
+                await _page.goto("https://www.douyin.com/", wait_until="domcontentloaded", timeout=15000)
+
+                # 简化登录：点击登录按钮 → 等待用户扫码
+                try:
+                    login_button = _page.locator("xpath=//p[text() = '登录']")
+                    await login_button.click(timeout=5000)
+                    await asyncio.sleep(1)
+                except Exception:
+                    pass  # 登录弹窗可能已自动出现
+
+                # 轮询等待用户扫码（最多 120s）
+                for i in range(120):
+                    await asyncio.sleep(1)
+                    try:
+                        ls = await _page.evaluate("() => window.localStorage")
+                        if ls.get("HasUserLogin", "") == "1":
+                            logger.info("抖音登录成功！")
+                            break
+                    except Exception:
+                        pass
+                else:
+                    logger.warning("登录超时（120s），将在未登录状态下继续")
+            finally:
+                os.chdir(_original_cwd)
+        except Exception as e:
+            logger.warning("抖音登录异常: %s", e)
+
+    # 提取 cookie 构建 DouYinClient
+    os.chdir(_MEDIACRAWLER_ROOT)
+    try:
+        from tools import utils as mc_utils
+    finally:
+        os.chdir(_original_cwd)
+    cookie_str, cookie_dict = await mc_utils.convert_browser_context_cookies(
+        _browser_context,
+        urls=["https://douyin.com", "https://www.douyin.com"],
+    )
+    headers = dict(DEFAULT_HEADERS)
+    headers["Cookie"] = cookie_str
+
+    _client = DouYinClient(
+        timeout=30,
+        proxy=_get_proxy(),
+        headers=headers,
+        playwright_page=_page,
+        cookie_dict=cookie_dict,
+    )
+    _client_initialized = True
+    logger.info("DouYinClient 已就绪")
+    return _client
+
+
+async def _close_client():
+    """关闭 Playwright 浏览器。"""
+    global _browser_context, _page, _client, _client_initialized
+    if _browser_context:
+        try:
+            await _browser_context.close()
+        except Exception:
+            pass
+        _browser_context = None
+    _page = None
+    _client = None
+    _client_initialized = False
 
 
 # ---------------------------------------------------------------------------
@@ -45,16 +215,12 @@ def _get_proxy() -> str | None:
 # ---------------------------------------------------------------------------
 
 def extract_video_id(url: str) -> str | None:
-    """从抖音 URL 提取视频 ID。
-
-    支持格式:
-    - https://www.douyin.com/video/7123456789012345678
-    - https://v.douyin.com/xxxxx/ （短链，需重定向解析）
-    """
+    """从抖音 URL 提取视频 ID。"""
+    if url.isdigit() and len(url) >= 15:
+        return url
     m = _DY_VIDEO_ID_RE.search(url)
     if m:
         return m.group(1)
-    # 短链：返回短链标识，实际解析在下载时由 f2 完成
     m2 = _DY_SHORT_RE.search(url)
     if m2:
         return f"dy_short_{m2.group(1)}"
@@ -62,93 +228,81 @@ def extract_video_id(url: str) -> str | None:
 
 
 def make_client(timeout: float = 15.0) -> httpx.AsyncClient:
-    """创建抖音 HTTP 客户端。"""
-    proxy = _get_proxy()
     return httpx.AsyncClient(
-        headers=DEFAULT_HEADERS,
-        timeout=timeout,
-        proxy=proxy,
+        headers=DEFAULT_HEADERS, timeout=timeout, proxy=_get_proxy(),
     )
 
 
 def normalize(item: dict) -> dict:
-    """抖音数据 → 统一 schema。
-
-    支持两种来源:
-    - 热榜词条 (trending topic): word, hot_value, video_count, word_cover
-    - 视频详情 (video detail): aweme_id, desc, author, statistics (P1 实现)
-    """
-    # 判断数据来源
     if "word" in item and "hot_value" in item:
         return _normalize_trending(item)
     return _normalize_video(item)
 
 
 def _normalize_trending(item: dict) -> dict:
-    """热榜词条 → 统一 schema。
-
-    热榜返回的是热搜话题，不是具体视频。将其映射为可搜索的条目，
-    Agent 后续可通过 search_videos(keyword=word) 获取该话题下的视频。
-    """
     word = item.get("word", "")
     video_count = item.get("video_count", 0)
     hot_value = item.get("hot_value", 0)
     event_time = item.get("event_time", 0)
     group_id = item.get("group_id", "")
-
-    # 封面图
     cover = item.get("word_cover", {})
     cover_url = ""
     if isinstance(cover, dict):
         urls = cover.get("url_list", [])
         cover_url = urls[0] if urls else ""
-
     return {
         "video_id": group_id or f"dy_trend_{hash(word) & 0xFFFFFFFF:08x}",
         "title": word,
         "desc": f"抖音热搜 · 热度 {hot_value} · {video_count} 个视频",
         "publish_time": event_time,
-        "duration": 0,  # 热搜词条无时长
+        "duration": 0,
         "duration_text": "",
         "video_url": f"https://www.douyin.com/search/{word}" if word else "",
         "platform": "douyin",
         "author": "",
-        "view_count": video_count,  # 相关视频数
-        # 额外信息（非标准字段，供 Agent 参考）
+        "view_count": video_count,
         "hot_value": hot_value,
         "cover_url": cover_url,
-        "is_trending_topic": True,  # 标记：这是热搜词条，不是具体视频
+        "is_trending_topic": True,
     }
 
 
 def _normalize_video(item: dict) -> dict:
-    """视频详情 → 统一 schema（P1 实现）。"""
-    # 抖音视频字段映射（占位，P1 接入 f2 后补充完整映射）
-    aweme_id = item.get("aweme_id") or item.get("video_id", "")
-    desc_text = item.get("desc") or item.get("title", "")
-    author_info = item.get("author") or {}
+    """从 MediaCrawler/Douyin API 响应归一化视频数据。
+
+    支持格式：
+    - Douyin API aweme_detail 返回 (aweme_detail 对象)
+    - 搜索结果的 aweme_info 嵌套格式
+    """
+    # 兼容嵌套格式：搜索结果是 {aweme_info: {...}}
+    aweme = item.get("aweme_info", item) or item
+
+    aweme_id = str(aweme.get("aweme_id", ""))
+    desc = aweme.get("desc", "") or ""
+    author_info = aweme.get("author", {}) or {}
     author_name = author_info.get("nickname", "") if isinstance(author_info, dict) else ""
-    stats = item.get("statistics") or {}
-    duration_ms = item.get("duration", 0)  # 毫秒
-    duration_sec = int(duration_ms / 1000) if duration_ms > 1000 else int(duration_ms)
-    create_time = item.get("create_time", 0)
+    stats = aweme.get("statistics", {}) or {}
+    # duration 在 video.duration 字段中（毫秒）
+    video_info = aweme.get("video", {}) or {}
+    duration_ms = aweme.get("duration") or video_info.get("duration", 0)
+    duration_sec = int(duration_ms / 1000) if duration_ms and duration_ms > 1000 else (int(duration_ms) if duration_ms else 0)
+    create_time = aweme.get("create_time", 0)
 
     return {
-        "video_id": str(aweme_id),
-        "title": desc_text[:200] if desc_text else "",
-        "desc": desc_text[:500] if desc_text else "",
+        "video_id": aweme_id,
+        "title": desc[:200] if desc else "",
+        "desc": desc[:500] if desc else "",
         "publish_time": int(create_time),
         "duration": duration_sec,
         "duration_text": _fmt_duration(duration_sec),
-        "video_url": item.get("share_url", "") or f"https://www.douyin.com/video/{aweme_id}",
+        "video_url": f"https://www.douyin.com/video/{aweme_id}" if aweme_id else "",
         "platform": "douyin",
         "author": author_name,
-        "view_count": int(stats.get("digg_count", 0)),  # 抖音用点赞数近似
+        "view_count": int(stats.get("digg_count", 0)),
     }
 
 
 def _fmt_duration(sec: int) -> str:
-    """秒 → 'MM:SS'。"""
     if sec <= 0:
         return "00:00"
     m, s = divmod(sec, 60)
@@ -156,123 +310,142 @@ def _fmt_duration(sec: int) -> str:
 
 
 # ---------------------------------------------------------------------------
-# 热榜（P0 — 已实现）
+# 热榜（P0）
 # ---------------------------------------------------------------------------
 
 async def fetch_hot_search(client: httpx.AsyncClient, limit: int = 20) -> list[dict]:
-    """获取抖音实时热搜榜。
-
-    公开 API，无需登录/API Key。返回热搜词条列表。
-    """
     try:
         resp = await client.get(_HOT_SEARCH_API)
         resp.raise_for_status()
         data = resp.json()
-    except httpx.HTTPError as e:
-        logger.warning("抖音热榜 API 请求失败: %s", e)
+    except (httpx.HTTPError, ValueError) as e:
+        logger.warning("抖音热榜 API 失败: %s", e)
         return []
-    except ValueError as e:
-        logger.warning("抖音热榜 API 返回非 JSON: %s", e)
-        return []
-
     trending = data.get("data", {}).get("trending_list", [])
-    active_time = data.get("data", {}).get("active_time", "")
-    logger.info("🔥 抖音热榜: %d 条 (更新时间: %s)", len(trending), active_time)
+    logger.info("🔥 抖音热榜: %d 条 (更新时间: %s)", len(trending),
+                data.get("data", {}).get("active_time", ""))
+    return [normalize(it) for it in trending[:limit]]
 
-    results = [normalize(it) for it in trending[:limit]]
+
+# ---------------------------------------------------------------------------
+# 搜索 + 创作者（P2 — MediaCrawler CDP）
+# ---------------------------------------------------------------------------
+
+async def _search_via_cdp(keyword: str, limit: int = 10) -> list[dict]:
+    """通过 MediaCrawler DouYinClient 搜索视频。"""
+    client = await _ensure_client()
+    os.chdir(_MEDIACRAWLER_ROOT)
+    try:
+        from media_platform.douyin.field import SearchChannelType
+    finally:
+        os.chdir(_original_cwd)
+    try:
+        resp = await client.search_info_by_keyword(
+            keyword=keyword,
+            offset=0,
+            search_channel=SearchChannelType.GENERAL,
+        )
+    except Exception as e:
+        logger.warning("抖音搜索失败: %s", e)
+        return []
+
+    # 解析搜索结果
+    data = resp.get("data", []) if isinstance(resp, dict) else []
+    if not data:
+        return []
+
+    results = []
+    for item in data:
+        aweme_info = item.get("aweme_info") or item.get("aweme_detail") or item
+        if aweme_info:
+            results.append(normalize(aweme_info))
+    logger.info("🔍 抖音搜索 '%s': %d 条", keyword, len(results))
+    return results[:limit]
+
+
+async def _get_creator_via_cdp(creator_id: str, limit: int = 10) -> list[dict]:
+    """通过 MediaCrawler DouYinClient 获取创作者视频。"""
+    client = await _ensure_client()
+    try:
+        os.chdir(_MEDIACRAWLER_ROOT)
+        try:
+            from media_platform.douyin.help import parse_creator_info_from_url
+            info = parse_creator_info_from_url(creator_id)
+            sec_user_id = info.sec_user_id
+        finally:
+            os.chdir(_original_cwd)
+    except (ValueError, ImportError):
+        sec_user_id = creator_id
+
+    try:
+        aweme_list = await client.get_all_user_aweme_posts(sec_user_id)
+    except Exception as e:
+        logger.warning("抖音创作者查询失败: %s", e)
+        return []
+
+    results = [normalize(item) for item in aweme_list[:limit]]
+    logger.info("👤 抖音创作者 %s: %d 个视频", sec_user_id, len(results))
     return results
 
 
 # ---------------------------------------------------------------------------
-# 下载（P1 — f2）
+# 下载（P2 — MediaCrawler → httpx 下载视频文件）
 # ---------------------------------------------------------------------------
 
-
-def _download_douyin(video_url: str, file_name: str) -> dict:
-    """使用 f2 下载抖音无水印视频。
-
-    内部流程：
-    1. AwemeIdFetcher 从 URL 提取 aweme_id
-    2. DouyinHandler.fetch_one_video() 获取视频元数据 + 下载链接
-    3. DouyinDownloader 下载到本地
-    """
-    import asyncio as _asyncio
-
+async def _download_via_cdp(video_url: str, file_name: str) -> dict:
+    """通过 MediaCrawler 获取视频下载链接，httpx 下载文件。"""
     from vidagent.utils import storage as _storage
-    from vidagent.utils.timer import Timer as _Timer
 
-    # 下载缓存
     target = _storage.media_path(file_name, ".mp4")
     if target.exists():
         logger.info("下载命中缓存: %s", target)
-        return {
-            "status": "success",
-            "local_path": str(target),
-            "platform": "douyin",
-            "cached": True,
-        }
+        return {"status": "success", "local_path": str(target), "platform": "douyin", "cached": True}
 
-    proxy = _get_proxy()
-    kwargs = {
-        "url": video_url,
-        "cookie": settings.douyin_cookie or "",
-        "headers": {
-            "User-Agent": (
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/130.0.0.0 Safari/537.36 Edg/130.0.0.0"
-            ),
-            "Referer": "https://www.douyin.com/",
-        },
-        "proxies": {
-            "http://": proxy or "",
-            "https://": proxy or "",
-        } if proxy else None,
-        "timeout": 10,          # 单个请求超时（秒）
-        "max_retries": 1,       # 减少重试，快速失败
-        "path": str(_storage.workspace()),
-        "naming": file_name,
-    }
-
-    async def _run():
-        from f2.apps.douyin.handler import DouyinHandler
-
-        handler = DouyinHandler(kwargs)
-        await handler.handle_one_video()
-
+    # 1. 提取 aweme_id
+    os.chdir(_MEDIACRAWLER_ROOT)
     try:
-        with _Timer("抖音下载(f2)"):
-            _asyncio.run(_run())
+        from media_platform.douyin.help import parse_video_info_from_url
+        video_info = parse_video_info_from_url(video_url)
+        aweme_id = video_info.aweme_id
+    finally:
+        os.chdir(_original_cwd)
+        # 回退：内置正则
+        aweme_id = extract_video_id(video_url)
+        if not aweme_id or aweme_id.startswith("dy_short_"):
+            return {"status": "error", "error": f"无法解析视频 ID: {video_url}", "video_url": video_url}
+
+    # 2. 获取视频详情（含下载链接）
+    client = await _ensure_client()
+    try:
+        detail = await client.get_video_by_id(aweme_id)
     except Exception as e:
-        logger.warning("f2 下载失败: %s", e)
-        return {"status": "error", "error": f"f2 下载失败: {e}", "video_url": video_url}
+        return {"status": "error", "error": f"获取视频详情失败: {e}", "video_url": video_url}
 
-    # 查找下载产物
-    local = _find_downloaded(_storage.workspace(), file_name)
-    if not local:
-        return {"status": "error", "error": "下载完成但未找到产物文件", "video_url": video_url}
+    if not detail:
+        return {"status": "error", "error": "视频不存在或已被删除", "video_url": video_url}
 
-    # 重命名为标准名称
-    if local != target:
-        import shutil as _shutil
-        _shutil.move(str(local), str(target))
-        local = target
+    # 3. 提取无水印下载链接
+    video_data = detail.get("video", {}) if isinstance(detail, dict) else {}
+    play_addr = video_data.get("play_addr", {}) or {}
+    download_addr = video_data.get("download_addr", {}) or {}
+    media_url = (
+        download_addr.get("url_list", [""])[0]
+        or play_addr.get("url_list", [""])[0]
+    )
 
-    return {"status": "success", "local_path": str(local), "platform": "douyin"}
+    if not media_url:
+        return {"status": "error", "error": "未找到可下载的视频链接", "video_url": video_url}
 
+    # 4. 下载视频文件
+    try:
+        async with httpx.AsyncClient(proxy=_get_proxy(), timeout=120, follow_redirects=True) as http:
+            resp = await http.get(media_url)
+            resp.raise_for_status()
+            target.write_bytes(resp.content)
+    except Exception as e:
+        return {"status": "error", "error": f"视频文件下载失败: {e}", "video_url": video_url}
 
-def _find_downloaded(workspace_dir, file_name: str):
-    """在 workspace 中查找 f2 下载的最新产物。"""
-    from pathlib import Path as _Path
-
-    ws = _Path(workspace_dir)
-    # f2 创建子目录，产物在内部
-    candidates = sorted(ws.glob(f"**/{file_name}*"), key=lambda p: p.stat().st_mtime, reverse=True)
-    if candidates:
-        return candidates[0]
-    # 回退：取最新 mp4
-    mp4s = sorted(ws.glob("**/*.mp4"), key=lambda p: p.stat().st_mtime, reverse=True)
-    return mp4s[0] if mp4s else None
+    return {"status": "success", "local_path": str(target), "platform": "douyin"}
 
 
 # ---------------------------------------------------------------------------
@@ -297,36 +470,23 @@ class DouyinPlatform(Platform):
 
     @staticmethod
     async def get_hot(client: httpx.AsyncClient, limit: int = 20) -> list[dict]:
-        """抖音实时热搜榜。
-
-        注意：返回的是热搜**词条**，不是具体视频列表。
-        Agent 可据此了解当前热门话题，后续通过 search() 获取话题下的视频。
-        """
         return await fetch_hot_search(client, limit)
 
     @staticmethod
     async def search(client: httpx.AsyncClient, keyword: str, limit: int = 10) -> list[dict]:
-        """关键词搜索视频（P1 实现，需 MediaCrawler CDP）。"""
-        raise NotImplementedError(
-            "抖音搜索需 MediaCrawler 支持（P1 计划）。当前可用: 热榜 (get_hot)"
-        )
+        """关键词搜索（MediaCrawler CDP）。"""
+        return await _search_via_cdp(keyword, limit)
 
     @staticmethod
     async def get_creator(client: httpx.AsyncClient, creator: str, limit: int = 10) -> list[dict]:
-        """获取创作者视频（P1 实现，需 MediaCrawler 或 f2）。"""
-        raise NotImplementedError(
-            "抖音创作者查询需 MediaCrawler 或 f2 支持（P1 计划）。当前可用: 热榜 (get_hot)"
-        )
+        """获取创作者视频（MediaCrawler CDP）。"""
+        return await _get_creator_via_cdp(creator, limit)
 
     @staticmethod
     def download(video_url: str, file_name: str) -> dict:
-        """下载抖音无水印视频（f2）。
-
-        Args:
-            video_url: 抖音视频链接或分享链接。
-            file_name: 保存文件名前缀，通常用 video_id。
-        """
-        return _download_douyin(video_url, file_name)
+        """下载抖音无水印视频（MediaCrawler CDP → httpx）。"""
+        import asyncio as _asyncio
+        return _asyncio.run(_download_via_cdp(video_url, file_name))
 
 
 # 注册到全局注册表

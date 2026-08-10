@@ -20,8 +20,8 @@ asr = ["faster-whisper>=1.0"]
 # Sprint 3：Agent 编排 + UI
 agent = ["agno>=1.0", "openai>=1.40"]
 ui = ["gradio>=4.40"]
-# Sprint 4：抖音/小红书/快手无水印下载
-f2 = ["f2>=0.0.1.6"]
+# Sprint 4：抖音/小红书/快手（MediaCrawler CDP，需本机 Chrome + Node.js）
+douyin = ["playwright>=1.61", "pyexecjs>=1.5"]
 # 后端服务 (FastAPI + SSE Relay)
 server = ["fastapi>=0.115", "uvicorn[standard]>=0.30", "sse-starlette>=2.0"]
 # 开发
