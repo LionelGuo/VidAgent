@@ -42,6 +42,10 @@ from pydantic import BaseModel
 from server.sse_relay import relay_stream
 from server.tool_definitions import TOOL_DEFINITIONS
 
+# 确保 vidagent 模块的 INFO 日志能输出到 uvicorn 控制台
+logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s", force=True)
+logging.getLogger("vidagent").setLevel(logging.INFO)
+
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -320,7 +324,7 @@ async def tool_summarize_stream(task_id: str):
 
             if task["status"] in ("done", "error"):
                 if task["status"] == "done":
-                    yield f"data: {json.dumps({'type': 'done', 'result': task['result'], 'local_path': task.get('local_path', '')}, ensure_ascii=False)}\n\n"
+                    yield f"data: {json.dumps({'type': 'done', 'result': task.get('result', ''), 'chapters': task.get('chapters', []), 'local_path': task.get('local_path', '')}, ensure_ascii=False)}\n\n"
                 else:
                     yield f"data: {json.dumps({'type': 'error', 'message': task['result']}, ensure_ascii=False)}\n\n"
                 yield "data: [DONE]\n\n"
@@ -401,7 +405,20 @@ async def tool_summarize_stream_by_video(video_id: str):
 
 
 def _extract_video_id(video_url: str) -> str | None:
-    """从 bilibili URL 中提取 BV 号，如 BV1R53R6rE7a。"""
+    """从视频 URL 中提取平台原生 video_id。
+
+    支持：B站 BV 号、YouTube video ID 等。
+    """
+    # 确保平台模块已注册
+    import vidagent.tools.platforms.bilibili  # noqa: F401
+    import vidagent.tools.platforms.youtube   # noqa: F401
+    import vidagent.tools.platforms.douyin    # noqa: F401
+    from vidagent.tools.platforms import detect_platform
+
+    platform = detect_platform(video_url)
+    if platform is not None:
+        return platform.extract_video_id(video_url)
+    # 回退：尝试 BV 正则
     import re
     m = re.search(r"(BV[\w]+)", video_url)
     return m.group(1) if m else None
@@ -466,44 +483,148 @@ async def tool_batch_summarize(req: BatchSummarizeRequest):
                 tasks[-1]["status"] = "error"
                 return
 
-            # ── 总结（重试，受 semaphore 控制并发）──
+            # ── 预处理：音频 + 均匀帧（Phase 1 立即启动）──
+            from vidagent.utils.frames import extract_frames, detect_boundaries
+            from vidagent.utils.audio import extract_audio
+            from vidagent.tools.summarizer import _summarize_multimodal_with_chapters, _match_chapters_segmented, create_progress
+
+            # 创建 per-task progress（替代 extract_and_summarize 中的 create_progress 调用）
+            pg = create_progress(task_id)
+            pg.stage = "extracting"
+            pg.begin()  # 激活流式输出 → SSE 端点开始推送
+
+            video_path = Path(local_path)
             metadata = {
                 "title": video.get("title", ""),
                 "desc": video.get("desc", ""),
                 "video_id": video_id,
                 "author": video.get("author"),
                 "duration_text": video.get("duration_text"),
+                "duration": video.get("duration"),
             }
 
-            last_err = None
-            with _llm_semaphore:
-                for retry in range(1, MAX_RETRIES + 1):
-                    try:
-                        summary = extract_and_summarize(
-                            local_path, metadata, task_id=task_id,
-                        )
-                        _summarize_tasks[task_id]["status"] = "done"
-                        _summarize_tasks[task_id]["result"] = summary
-                        tasks[-1]["status"] = "done"
-                        logger.info(
-                            "批量总结完成: %s (%s)", video_id, video.get("title", "")
-                        )
-                        return
-                    except Exception as e:
-                        last_err = str(e)
-                        if retry < MAX_RETRIES:
-                            delay = RETRY_BASE_DELAY ** retry
-                            logger.warning(
-                                "总结重试 %d/%d (%.0fs 后退避): %s — %s",
-                                retry, MAX_RETRIES, delay, video_id, last_err[:100],
-                            )
-                            time.sleep(delay)
+            # Phase 1: 提取音频 + 均匀采样帧（快速，~3s）
+            mp3 = extract_audio(local_path)
+            phase1_frames = extract_frames(video_path, duration=metadata.get("duration"))
 
-                # 重试耗尽
-                _summarize_tasks[task_id]["status"] = "error"
-                _summarize_tasks[task_id]["result"] = f"总结失败(已重试{MAX_RETRIES}次): {last_err}"
-                tasks[-1]["status"] = "error"
+            base_url = settings.multimodal_base_url or settings.openai_base_url
+            api_key = settings.openai_api_key
+            model = settings.multimodal_model or settings.llm_model
 
+            # ── 并行：Phase 1 多模态总结 + 边界检测 ──
+            import concurrent.futures as _cf
+
+            phase1_result: dict = {"summary": "", "chapters": []}
+            candidate_boundaries: list[int] = []
+            candidate_frames: list[str] = []
+
+            def _do_phase1():
+                """Phase 1: 完整音频 + 均匀帧 → 流式总结"""
+                logger.info("📦 Phase 1 开始（%d 帧）…", len(phase1_frames))
+                chapters, summary = _summarize_multimodal_with_chapters(
+                    mp3_path=Path(mp3),
+                    metadata=metadata,
+                    candidate_boundaries=[],  # 空 → Phase 1 only (不触发 Phase 2)
+                    candidate_frames=phase1_frames,
+                    base_url=base_url, api_key=api_key, model=model,
+                    progress=pg,
+                )
+                return {"summary": summary, "chapters": chapters}
+
+            def _do_boundaries():
+                """后台：Whisper VAD + 场景检测 → 候选边界 + 中间帧"""
+                # 提取 Whisper VAD 语义停顿边界
+                vad_times: list[float] = []
+                try:
+                    from faster_whisper import WhisperModel
+                    vad_model = WhisperModel(
+                        settings.whisper_model, device="cpu", compute_type="int8",
+                    )
+                    vad_segs, _ = vad_model.transcribe(
+                        str(mp3), beam_size=1, vad_filter=True,
+                        vad_parameters=dict(
+                            threshold=0.5,
+                            min_silence_duration_ms=2000,   # 2s+ 停顿 = 话题边界
+                            min_speech_duration_ms=500,
+                            max_speech_duration_s=120,      # 长段语音不切断
+                        ),
+                    )
+                    vad_times = [s.start for s in vad_segs]
+                    logger.info("🔇 Whisper VAD: %d 段 → %s", len(vad_times),
+                               [f"{t:.0f}s" for t in vad_times[:10]])
+                except Exception as e:
+                    logger.warning("Whisper VAD 失败，回退 ffmpeg silence: %s", e)
+
+                boundaries = detect_boundaries(local_path, vad_boundaries=vad_times or None)
+                if len(boundaries) >= 3:
+                    mid_ts = [
+                        (boundaries[i] + boundaries[i + 1]) / 2
+                        for i in range(len(boundaries) - 1)
+                    ]
+                    frames = extract_frames(
+                        video_path, timestamps=[float(t) for t in mid_ts],
+                        output_dir=video_path.parent / f"keyframes_{video_id}_chapters",
+                    )
+                    return boundaries, [str(f) for f in frames]
+                return boundaries, []
+
+            with _cf.ThreadPoolExecutor(max_workers=2) as _pool:
+                _f1 = _pool.submit(_do_phase1)
+                _f2 = _pool.submit(_do_boundaries)
+                phase1_result = _f1.result()
+                candidate_boundaries, candidate_frames = _f2.result()
+
+            logger.info(
+                "📐 边界检测完成: %d 边界 → %s",
+                len(candidate_boundaries), candidate_boundaries,
+            )
+
+            # ── 结果处理 ──
+            summary = phase1_result.get("summary", "")
+            chapters = phase1_result.get("chapters", [])
+
+            # Phase 2: 分段多模态匹配（有边界 + Phase 1 无章节时触发）
+            if not chapters and len(candidate_boundaries) >= 3:
+                logger.info("📑 Phase 2: 分段匹配 (%d 段) …", len(candidate_boundaries) - 1)
+                with _llm_semaphore:
+                    chapters = _match_chapters_segmented(
+                        phase1_summary=summary,
+                        mp3_path=Path(mp3),
+                        candidate_boundaries=candidate_boundaries,
+                        candidate_frames=[Path(f) for f in candidate_frames] if candidate_frames else [],
+                        base_url=base_url, api_key=api_key, model=model,
+                    )
+                # 重试一次
+                if not chapters:
+                    logger.warning("Phase 2 首次失败，重试…")
+                    with _llm_semaphore:
+                        chapters = _match_chapters_segmented(
+                            phase1_summary=summary,
+                            mp3_path=Path(mp3),
+                            candidate_boundaries=candidate_boundaries,
+                            candidate_frames=[Path(f) for f in candidate_frames] if candidate_frames else [],
+                            base_url=base_url, api_key=api_key, model=model,
+                        )
+
+            # 兜底
+            if not chapters and len(candidate_boundaries) >= 3:
+                from vidagent.tools.summarizer import _fallback_chapters
+                chapters = _fallback_chapters(candidate_boundaries, int(metadata.get("duration") or 0))
+
+            _summarize_tasks[task_id]["status"] = "done"
+            _summarize_tasks[task_id]["result"] = summary
+            _summarize_tasks[task_id]["chapters"] = chapters
+            tasks[-1]["status"] = "done"
+            logger.info(
+                "✅ 批量总结完成: %s (%s) | chapters=%d",
+                video_id, video.get("title", ""), len(chapters),
+            )
+
+        except Exception as e:
+            logger.exception("批量总结任务 %s 异常", video_id)
+            _summarize_tasks[task_id]["status"] = "error"
+            _summarize_tasks[task_id]["result"] = str(e)
+            tasks[-1]["status"] = "error"
         finally:
             cleanup_progress(task_id)
 

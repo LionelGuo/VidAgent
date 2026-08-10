@@ -40,9 +40,19 @@ class Settings(BaseSettings):
     whisper_model: str = "base"  # tiny / base / small / medium
     asr_device: str = "auto"  # auto / cuda / cpu
 
-    # ----- 平台 Cookie（可选；公开热门/搜索无需，创作者主页等风控接口需要）-----
+    # ----- 平台 Cookie / API Key（可选；公开热门/搜索无需，创作者主页等风控接口需要）-----
     # 形如 "SESSDATA=xxx; bili_jct=xxx; buvid3=xxx"，从浏览器复制
     bili_cookie: str = ""
+    # YouTube Data API v3 key（可选；无 key 时搜索降级为 yt-dlp ytsearch）
+    # 从 https://console.cloud.google.com/apis/credentials 创建，免费配额 10000 units/day
+    youtube_api_key: str = ""
+    # YouTube 登录 Cookie（可选；从浏览器导出为 Netscape 格式文件路径，或直接填 cookie 字符串）
+    # yt-dlp 使用，可绕过部分风控/年龄限制。Netscape 格式：youtube_cookie=/path/to/cookies.txt
+    youtube_cookie: str = ""
+
+    # ----- 网络代理（YouTube 等需要科学上网的平台）-----
+    # 形如 "http://127.0.0.1:7890"，同时用于 yt-dlp 下载和 API 请求
+    youtube_proxy: str = ""
 
     # ----- 运行期 -----
     workspace_dir: Path = Path("workspace")

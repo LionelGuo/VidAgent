@@ -3,13 +3,11 @@
 工具（Agent 使用）：
     get_hot_videos     —— 平台综合热门
     search_videos      —— 关键词搜索
-    get_creator_videos —— 指定创作者（昵称或 UID，昵称自动解析）
+    get_creator_videos —— 指定创作者（昵称或 ID，昵称自动解析）
 
 输出统一 schema（含时长，便于 Agent 直接按时长/播放量筛选，无需下载）：
     [{video_id, title, desc, publish_time, duration, duration_text,
       video_url, platform, author, view_count}]
-
-平台：bilibili（已实现）；抖音/小红书/快手（Sprint4 经 MediaCrawler 接入）。
 """
 
 from __future__ import annotations
@@ -17,20 +15,34 @@ from __future__ import annotations
 import logging
 
 from vidagent.config import settings
-from vidagent.tools import bilibili, hotboard
+from vidagent.tools.platforms import get_platform
 from vidagent.utils.dates import filter_today
 from vidagent.utils.timer import Timer
 
 logger = logging.getLogger(__name__)
 
-_BILI_ALIASES = ("bilibili", "bili", "b站")
+# 延迟导入：避免循环引用（platforms 模块在注册时会导入回来）
+_platforms_loaded = False
 
 
-def _ensure_bili(platform: str) -> str:
-    p = platform.lower()
-    if p not in _BILI_ALIASES:
-        raise NotImplementedError(f"平台暂未接入: {platform}（Sprint4 计划接入抖音/小红书/快手）")
-    return p
+def _ensure_platforms_imported() -> None:
+    """确保所有平台模块已加载并注册。"""
+    global _platforms_loaded
+    if _platforms_loaded:
+        return
+    # 导入平台模块触发 register() 调用
+    import vidagent.tools.platforms.bilibili  # noqa: F401
+    import vidagent.tools.platforms.youtube   # noqa: F401
+    import vidagent.tools.platforms.douyin    # noqa: F401
+    _platforms_loaded = True
+
+
+def _get_client(platform_name: str, **kwargs: object):
+    """创建平台 HTTP 客户端，自动注入已知配置（如 B站 cookie）。"""
+    p = get_platform(platform_name)
+    if p.name == "bilibili" and settings.bili_cookie:
+        return p.make_client(cookie=settings.bili_cookie, **kwargs)
+    return p.make_client(**kwargs)
 
 
 async def get_hot_videos(
@@ -39,7 +51,7 @@ async def get_hot_videos(
     """获取平台综合热门视频（最贴近「今日热榜」）。
 
     Args:
-        platform: 平台，目前支持 "bilibili"。
+        platform: 平台名称，如 "bilibili" / "youtube"。
         limit: 返回条数上限。
         date_filter: 时间过滤，目前支持 "today"。
 
@@ -47,10 +59,14 @@ async def get_hot_videos(
         每项含 video_id/title/desc/publish_time/duration/duration_text/
         video_url/platform/author/view_count。
     """
-    _ensure_bili(platform)
-    with Timer("B站抓取"):
-        async with bilibili.make_client(cookie=settings.bili_cookie or None) as client:
-            return await hotboard.fetch_hot_board(client, "bilibili", date_filter, limit)
+    _ensure_platforms_imported()
+    p = get_platform(platform)
+    with Timer(f"{p.name} 热榜"):
+        async with _get_client(platform) as client:
+            items = await p.get_hot(client, limit)
+    if date_filter == "today":
+        items = filter_today(items)
+    return items[:limit]
 
 
 async def search_videos(
@@ -62,17 +78,18 @@ async def search_videos(
     """按关键词搜索视频。
 
     Args:
-        platform: 平台，目前支持 "bilibili"。
+        platform: 平台名称，如 "bilibili" / "youtube"。
         keyword: 搜索关键词（必填）。
         limit: 返回条数上限。
         date_filter: 时间过滤，目前支持 "today"。
     """
-    _ensure_bili(platform)
+    _ensure_platforms_imported()
     if not keyword:
         raise ValueError("keyword 必填（搜索关键词）")
-    with Timer("B站抓取"):
-        async with bilibili.make_client(cookie=settings.bili_cookie or None) as client:
-            items = await bilibili.search_videos(client, keyword, page_size=max(limit, 20))
+    p = get_platform(platform)
+    with Timer(f"{p.name} 搜索"):
+        async with _get_client(platform) as client:
+            items = await p.search(client, keyword, limit)
     if date_filter == "today":
         items = filter_today(items)
     return items[:limit]
@@ -84,27 +101,25 @@ async def get_creator_videos(
     limit: int = 10,
     date_filter: str | None = None,
 ) -> list[dict]:
-    """获取指定创作者（UP 主）的视频。
+    """获取指定创作者（UP 主 / YouTuber）的视频。
 
-    creator 可为昵称（如「老番茄」，自动解析为 UID）或数字 UID。
-    注意：B站该接口风控较严，需在 .env 配置 BILI_COOKIE（含 SESSDATA）。
+    creator 可为昵称（如「老番茄」）或平台 ID。
+    B站：昵称自动解析为 UID，需在 .env 配置 BILI_COOKIE。
+    YouTube：需要 YOUTUBE_API_KEY 环境变量。
 
     Args:
-        platform: 平台，目前支持 "bilibili"。
-        creator: 创作者昵称 或 数字 UID（必填）。
+        platform: 平台名称，如 "bilibili" / "youtube"。
+        creator: 创作者昵称 或 平台 ID（必填）。
         limit: 返回条数上限。
         date_filter: 时间过滤，目前支持 "today"。
     """
-    _ensure_bili(platform)
+    _ensure_platforms_imported()
     if not creator:
-        raise ValueError("creator 必填（创作者昵称 或 UID）")
-    with Timer("B站抓取"):
-        async with bilibili.make_client(cookie=settings.bili_cookie or None) as client:
-            mid = str(creator)
-            if not mid.isdigit():
-                mid, uname, fans = await bilibili.resolve_creator_mid(client, mid)
-                logger.info("创作者「%s」解析为 mid=%s（%s，粉丝 %s）", creator, mid, uname, fans)
-            items = await bilibili.fetch_user_videos(client, mid, ps=max(limit, 30))
+        raise ValueError("creator 必填（创作者昵称 或 ID）")
+    p = get_platform(platform)
+    with Timer(f"{p.name} 创作者"):
+        async with _get_client(platform) as client:
+            items = await p.get_creator(client, creator, limit)
     if date_filter == "today":
         items = filter_today(items)
     return items[:limit]

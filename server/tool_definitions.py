@@ -17,8 +17,8 @@ TOOL_DEFINITIONS: list[dict] = [
                 "properties": {
                     "platform": {
                         "type": "string",
-                        "enum": ["bilibili"],
-                        "description": "平台，目前支持 bilibili",
+                        "enum": ["bilibili", "youtube", "douyin"],
+                        "description": "平台：bilibili / youtube / douyin（抖音热榜）",
                     },
                     "limit": {
                         "type": "integer",
@@ -46,8 +46,8 @@ TOOL_DEFINITIONS: list[dict] = [
                 "properties": {
                     "platform": {
                         "type": "string",
-                        "enum": ["bilibili"],
-                        "description": "平台，目前支持 bilibili",
+                        "enum": ["bilibili", "youtube", "douyin"],
+                        "description": "平台：bilibili / youtube / douyin（抖音热榜）",
                     },
                     "keyword": {
                         "type": "string",
@@ -79,8 +79,8 @@ TOOL_DEFINITIONS: list[dict] = [
                 "properties": {
                     "platform": {
                         "type": "string",
-                        "enum": ["bilibili"],
-                        "description": "平台，目前支持 bilibili",
+                        "enum": ["bilibili", "youtube", "douyin"],
+                        "description": "平台：bilibili / youtube / douyin（抖音热榜）",
                     },
                     "creator": {
                         "type": "string",
