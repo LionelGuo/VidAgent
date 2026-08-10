@@ -134,13 +134,12 @@ _SUMMARY_SYS = (
 
 _SUMMARY_SYS_MULTIMODAL = (
     "你是一个专业的视频内容总结助手。你会收到视频的音频和关键帧画面，"
-    "请直接聆听音频、观察画面，然后用中文输出结构化总结：\n"
+    "请直接聆听音频、观察画面，然后用中文输出详细的、结构化的总结。\n"
     "1. **核心观点**（1-3 条，最关键的结论或主张）\n"
-    "2. **主要内容梳理**（按逻辑分点，简明扼要）\n"
+    "2. **主要内容梳理**（按逻辑分点，详细展开，尽量覆盖视频中所有重要信息，不要遗漏细节）\n"
     "3. **关键帧画面描述**（简要描述各帧的视觉内容）\n"
     "请优先基于音频内容进行总结（音频通常包含主要信息），"
-    "关键帧作为视觉补充。即使画面质量有限，只要音频可辨识，"
-    "就应基于音频产出完整总结。"
+    "关键帧作为视觉补充。请输出完整、详细的总结，至少800字。"
 )
 
 _CHUNK_SUMMARY_SYS = (
@@ -183,6 +182,7 @@ def _chat_completion(
     base_url: str, api_key: str, payload: dict, timeout: int = 300,
 ) -> str:
     """非流式 chat completion，返回完整响应文本（自动剥离 <think> 块）。"""
+    t0 = time.perf_counter()
     resp = httpx.post(
         f"{base_url}/chat/completions",
         json=payload,
@@ -192,7 +192,17 @@ def _chat_completion(
     if resp.status_code != 200:
         raise RuntimeError(f"LLM 调用失败 HTTP {resp.status_code}: {resp.text[:300]}")
     raw = resp.json()["choices"][0]["message"]["content"]
-    return _strip_think_blocks(raw)
+    usage = resp.json().get("usage", {})
+    stripped = _strip_think_blocks(raw)
+    elapsed = time.perf_counter() - t0
+    think_len = len(raw) - len(stripped)
+    logger.info(
+        "📡 非流式响应: %.1fs, raw=%d stripped=%d (think=%d, %d%%) | completion_tokens=%s",
+        elapsed, len(raw), len(stripped), think_len,
+        int(think_len / max(len(raw), 1) * 100),
+        usage.get("completion_tokens", "?"),
+    )
+    return stripped
 
 
 def _strip_think_blocks(text: str) -> str:
@@ -302,6 +312,7 @@ def _chat_completion_stream(
     """流式 chat completion，返回完整响应文本；同时更新 progress（默认 _live_summary）。"""
     payload = {**payload, "stream": True}
     accumulated = ""
+    accumulated_raw = ""  # 诊断：未过滤的原始内容
     token_count = 0
     t0 = time.perf_counter()
     ttft = None  # time-to-first-token (first non-think content token)
@@ -330,13 +341,19 @@ def _chat_completion_stream(
     ) as resp:
         if resp.status_code != 200:
             raise RuntimeError(f"LLM 流式调用失败 HTTP {resp.status_code}: {resp.text[:300]}")
+        finish_reason = None
         for line in resp.iter_lines():
             if line.startswith("data: ") and line != "data: [DONE]":
                 try:
                     chunk = json.loads(line[6:])
                     delta = (chunk.get("choices") or [{}])[0].get("delta") or {}
+                    # 追踪 finish_reason（诊断截断根因）
+                    fr = (chunk.get("choices") or [{}])[0].get("finish_reason")
+                    if fr:
+                        finish_reason = fr
                     token = delta.get("content", "")
                     if token:
+                        accumulated_raw += token  # 诊断：保留原始内容
                         # 分离 <think> 推理块和实际内容
                         stripped = stripper.feed(token)
                         if stripped:
@@ -352,19 +369,30 @@ def _chat_completion_stream(
                 except (json.JSONDecodeError, KeyError, IndexError):
                     pass
 
-    # 流结束：清空 stripper 残留
+    # 流结束：清空 stripper 残留，同时推送到 progress
     flushed = stripper.flush()
+    flushed_len = len(flushed) if flushed else 0
     if flushed:
         if ttft is None:
             ttft = time.perf_counter() - t0
         accumulated += flushed
         token_count += len(flushed)
+        pg.append(flushed)  # 修复：最后几个字符也要推送到前端
 
     elapsed = time.perf_counter() - t0
+    raw_len = len(accumulated_raw)
+    stripped_len = len(accumulated)
     logger.info(
-        "📡 vLLM 响应: %d tokens / %.1fs (%.0f tok/s), TTFT %.2fs, %d 字符",
+        "📡 vLLM 响应: %d tokens / %.1fs (%.0f tok/s), TTFT %.2fs, raw=%d stripped=%d (flush=%d) chars | finish_reason=%s",
         token_count, elapsed, token_count / max(elapsed, 0.01),
-        ttft or 0, len(accumulated),
+        ttft or 0, raw_len, stripped_len, flushed_len, finish_reason or "?",
+    )
+    if finish_reason == "length":
+        logger.warning("⚠️ vLLM 返回 finish_reason=length，输出被截断！可能需要增大 --max-num-batched-tokens")
+    think_pct = int((1 - stripped_len / max(raw_len, 1)) * 100)
+    logger.info(
+        "  思考占 %d%%（%d chars）| 实际总结 %d chars",
+        think_pct, raw_len - stripped_len, stripped_len,
     )
     return accumulated
 
@@ -698,7 +726,7 @@ def _summarize_chunk(
             {"role": "user", "content": content_parts},
         ],
         "temperature": 0.3,
-        "max_tokens": 512,
+        # max_tokens 由 vLLM --max-num-batched-tokens 统一限制
     }
     # 流式输出段落摘要（用于实时进度）
     return _chat_completion_stream(base_url, api_key, payload, timeout=300, progress=progress)
@@ -735,7 +763,7 @@ def _merge_summaries(
             {"role": "user", "content": prompt},
         ],
         "temperature": 0.3,
-        "max_tokens": 2048,
+        # max_tokens 由 vLLM --max-num-batched-tokens 统一限制
     }
     # 更新 summary 显示合并阶段
     pg = progress or _live_summary
@@ -828,7 +856,6 @@ def _summarize_multimodal(
             {"role": "user", "content": content_parts},
         ],
         "temperature": 0.3,
-        "max_tokens": 2048,
     }
     payload_kb = len(json.dumps(payload, ensure_ascii=False)) // 1024
 
@@ -1140,7 +1167,6 @@ def _summarize_multimodal_with_chapters(
             {"role": "user", "content": content_parts},
         ],
         "temperature": 0.3,
-        "max_tokens": 2048,
     }
     payload_kb = len(json.dumps(payload, ensure_ascii=False)) // 1024
 
@@ -1294,7 +1320,7 @@ def _match_chapters_segmented(
             {"role": "user", "content": content_parts},
         ],
         "temperature": 0.2,
-        "max_tokens": 1024,
+        # max_tokens 由 vLLM --max-num-batched-tokens 统一限制
     }
     phase2_raw = _chat_completion(base_url, api_key, payload, timeout=120)
     phase2_raw = phase2_raw.strip()
@@ -1342,7 +1368,7 @@ def _phase3_format_json(
             {"role": "user", "content": prompt},
         ],
         "temperature": 0.0,
-        "max_tokens": 512,
+        # max_tokens 由 vLLM --max-num-batched-tokens 统一限制
     }
 
     try:
@@ -1521,7 +1547,7 @@ def _extract_chapters_text_only(
             {"role": "user", "content": prompt},
         ],
         "temperature": 0.1,
-        "max_tokens": 1024,
+        # max_tokens 由 vLLM --max-num-batched-tokens 统一限制
     }
 
     try:

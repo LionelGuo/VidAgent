@@ -245,11 +245,14 @@ export async function POST(req: Request) {
             .describe("要总结的视频列表"),
         }),
         execute: async ({ videos }) => {
+          const controller = new AbortController();
+          const timeout = setTimeout(() => controller.abort(), 600_000); // 10 分钟超时
           const res = await fetch(`${API_BASE}/api/tools/batch-summarize`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ videos }),
-          });
+            signal: controller.signal,
+          }).finally(() => clearTimeout(timeout));
           if (!res.ok) {
             const text = await res.text().catch(() => "");
             throw new Error(`批量总结失败 HTTP ${res.status}: ${text.slice(0, 200)}`);
