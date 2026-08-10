@@ -17,8 +17,8 @@ TOOL_DEFINITIONS: list[dict] = [
                 "properties": {
                     "platform": {
                         "type": "string",
-                        "enum": ["bilibili", "youtube", "douyin"],
-                        "description": "平台：bilibili / youtube / douyin（抖音热榜）",
+                        "enum": ["bilibili", "youtube", "douyin", "kuaishou", "xiaohongshu"],
+                        "description": "平台：bilibili / youtube / douyin / kuaishou / xiaohongshu",
                     },
                     "limit": {
                         "type": "integer",
@@ -46,8 +46,8 @@ TOOL_DEFINITIONS: list[dict] = [
                 "properties": {
                     "platform": {
                         "type": "string",
-                        "enum": ["bilibili", "youtube", "douyin"],
-                        "description": "平台：bilibili / youtube / douyin（抖音热榜）",
+                        "enum": ["bilibili", "youtube", "douyin", "kuaishou", "xiaohongshu"],
+                        "description": "平台：bilibili / youtube / douyin / kuaishou / xiaohongshu",
                     },
                     "keyword": {
                         "type": "string",
@@ -79,8 +79,8 @@ TOOL_DEFINITIONS: list[dict] = [
                 "properties": {
                     "platform": {
                         "type": "string",
-                        "enum": ["bilibili", "youtube", "douyin"],
-                        "description": "平台：bilibili / youtube / douyin（抖音热榜）",
+                        "enum": ["bilibili", "youtube", "douyin", "kuaishou", "xiaohongshu"],
+                        "description": "平台：bilibili / youtube / douyin / kuaishou / xiaohongshu",
                     },
                     "creator": {
                         "type": "string",

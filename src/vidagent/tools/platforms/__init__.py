@@ -144,7 +144,7 @@ def detect_platform(url: str) -> Platform | None:
     # 抖音
     if "douyin.com" in u:
         return _registry.get("douyin")
-    # 小红书
+    # 小红书 (must check before kuaishou since xhslink is not kuaishou)
     if "xiaohongshu.com" in u or "xhslink.com" in u:
         return _registry.get("xiaohongshu")
     # 快手

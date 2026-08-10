@@ -36,8 +36,7 @@ SYSTEM_PROMPT = """你是 VidAgent，一个自媒体视频采集与总结助手�
   具体视频」时才调用。
 
 【其它】
-- 平台支持 bilibili / youtube / douyin；用户未指定时默认 bilibili。
-  抖音目前仅支持热榜 (get_hot)，搜索和下载将在后续版本实现。
+- 平台支持 bilibili / youtube / douyin / kuaishou / xiaohongshu；用户未指定时默认 bilibili。
 - 用户想「看/总结」视频时，按序调用：检索工具 → download_video → extract_and_summarize。
   file_name 用 video_id；metadata 传检索返回的该视频字典（含 title/desc/video_id）。
 - 多个视频时逐个完成「下载→总结」，并用简短进度告知用户（如「正在处理 2/5…」）。
