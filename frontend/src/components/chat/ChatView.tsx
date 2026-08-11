@@ -1,6 +1,23 @@
 "use client";
 
 import { memo, useEffect, useRef, type MutableRefObject, type ReactNode } from "react";
+
+/** 从 video_url 提取平台原生 video_id（支持 B站/抖音/YouTube 等） */
+function extractVideoId(videoUrl: string): string | null {
+  // B站: BVxxx
+  const bv = videoUrl.match(/BV[\w]+/);
+  if (bv) return bv[0];
+  // 抖音: /video/数字ID
+  const dy = videoUrl.match(/douyin\.com\/video\/(\d+)/);
+  if (dy) return "dy_" + dy[1];
+  // YouTube: v=xxx
+  const yt = videoUrl.match(/[?&]v=([\w-]{11})/);
+  if (yt) return "yt_" + yt[1];
+  // 短链接
+  const short = videoUrl.match(/v\.douyin\.com\/(\w+)/);
+  if (short) return "dys_" + short[1];
+  return null;
+}
 import { type Message } from "@ai-sdk/react";
 import { cn } from "@/lib/utils";
 import { useLayoutStore, useVideoStore, type VideoInfo } from "@/lib/stores";
@@ -185,7 +202,7 @@ function extractVideoResults(toolInvocations: any[]): VideoInfo[] {
     if (ti.toolName === "batch_summarize_videos") {
       const batchVideos: any[] = ti.args?.videos ?? [];
       for (const v of batchVideos) {
-        const vid = v.video_id || (v.video_url?.match(/BV[\w]+/)?.[0]);
+        const vid = v.video_id || extractVideoId(v.video_url ?? "");
         if (vid) {
           videos.push({
             video_id: vid,
@@ -203,6 +220,18 @@ function extractVideoResults(toolInvocations: any[]): VideoInfo[] {
       if (ti.state === "result" && ti.result?.results) {
         for (const r of ti.result.results) {
           if (!r.video_id) continue;
+          // 确保 VideoStore 有该条目（搜索 URL 可能在预填时被跳过）
+          if (!useVideoStore.getState().videos[r.video_id]) {
+            useVideoStore.getState().upsertResults([{
+              video_id: r.video_id,
+              title: r.title ?? r.video_id,
+              desc: "",
+              author: "",
+              duration_text: "",
+              video_url: "",
+              view_count: 0,
+            }]);
+          }
           if (r.status === "done" && r.summary) {
             useVideoStore.getState().setSummary(r.video_id, r.summary);
           }
