@@ -586,10 +586,10 @@ async def tool_batch_summarize(req: BatchSummarizeRequest):
                         logger.warning("Silero VAD 失败: %s", e)
                         return []
 
-                def _run_scene_detect() -> set[float] | None:
+                def _run_scene_detect() -> list[tuple[float, float]] | None:
+                    """TransNetV2 场景检测 → [(timestamp, probability), ...]"""
                     try:
                         from vidagent.utils.frames import _get_transnet
-                        # 缩到 320px + 降至 2fps（场景边界不需要高帧率）
                         import tempfile
                         lowres = Path(tempfile.mktemp(suffix=".mp4"))
                         _sp.run(
@@ -601,23 +601,43 @@ async def tool_batch_summarize(req: BatchSummarizeRequest):
                         model = _get_transnet()
                         scenes = model.detect_scenes(str(lowres))
                         lowres.unlink(missing_ok=True)
-                        result = set()
-                        for s in scenes:
-                            t = float(s["start_time"])
-                            if 0 < t < metadata.get("duration", float("inf")):
-                                result.add(t)
+                        result = [
+                            (float(s["start_time"]), s["probability"])
+                            for s in scenes
+                            if 0 < float(s["start_time"]) < metadata.get("duration", float("inf"))
+                        ]
                         logger.info("🎬 TransNetV2: %d 个场景边界", len(result))
                         return result
                     except Exception as e:
                         logger.warning("TransNetV2 失败: %s", e)
-                        return None  # 返回 None 让 detect_boundaries 内部回退
+                        return None
 
                 # 并行执行 VAD + 场景检测
                 with _cf.ThreadPoolExecutor(max_workers=2) as _vpool:
                     _fv = _vpool.submit(_run_vad)
                     _fs = _vpool.submit(_run_scene_detect)
                     vad_times = _fv.result()
-                    scene_times = _fs.result()
+                    scene_probs = _fs.result()
+
+                # ── 动态阈值：取满足 ≤ 8/min 的最低阈值（最多候选点）──
+                video_minutes = metadata.get("duration", 60) / 60
+                scene_times: set[float] = set()
+                if scene_probs is not None:
+                    chosen = 0.70
+                    for threshold in [0.95, 0.90, 0.85, 0.80, 0.75, 0.70]:
+                        filtered = {t for t, p in scene_probs if p > threshold}
+                        if len(filtered) / max(video_minutes, 0.1) <= 8:
+                            scene_times = filtered
+                            chosen = threshold
+                        else:
+                            break  # 更高阈值已超限
+                    logger.info(
+                        "🎬 动态阈值: >%.2f → %d 个场景边界 (%.1f/min)",
+                        chosen, len(scene_times),
+                        len(scene_times) / max(video_minutes, 0.1),
+                    )
+                else:
+                    scene_times = None  # 让 detect_boundaries 内部回退
 
                 # ── 合并 VAD + 场景边界 → detect_boundaries ──
                 boundaries = detect_boundaries(

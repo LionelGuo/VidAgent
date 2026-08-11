@@ -175,31 +175,23 @@ def detect_boundaries(
         else:
             deduped.append(t)
 
-    # 约束：合并 <10s 间隔（细粒度分段），在 >120s 间隔处强制插入兜底切点
-    MERGE_THRESHOLD = 10   # 更细粒度：30s → 10s
+    # 约束：仅去重（<3s 视为同一边界），不做合并（动态阈值已控制密度）
     MAX_GAP = 120
-    FALLBACK_INTERVAL = 60  # 更密兜底：90s → 60s
-
-    merged: list[float] = []
-    for t in deduped:
-        if merged and t - merged[-1] < MERGE_THRESHOLD:
-            merged[-1] = t  # 合并到较晚的边界
-        else:
-            merged.append(t)
+    FALLBACK_INTERVAL = 60
 
     # 强制插入兜底切点（确保无超长间隔）
     result: list[int] = [0]  # 始终从 0 开始
 
-    for boundary in merged:
-        boundary_int = int(boundary)
+    for t in deduped:
+        boundary_int = int(t)
         if boundary_int <= result[-1]:
             continue
-        # 如果间隔超过 MAX_GAP，插入兜底切点
-        while boundary_int - result[-1] > MAX_GAP:
+        if boundary_int - result[-1] > MAX_GAP:
             fallback = result[-1] + FALLBACK_INTERVAL
-            if fallback >= boundary_int:
-                break
-            result.append(fallback)
+            while fallback < boundary_int:
+                result.append(fallback)
+                fallback += FALLBACK_INTERVAL
+        result.append(boundary_int)
         result.append(boundary_int)
 
     # 处理最后一个边界到视频结尾的间隔
@@ -214,7 +206,7 @@ def detect_boundaries(
         result.append(dur_int)
 
     logger.info(
-        "📐 候选章节边界: %d 个 → (去重+合并+兜底) → %d 个 | 视频 %.0fs",
+        "📐 候选章节边界: %d 个 → (去重+兜底) → %d 个 | 视频 %.0fs",
         len(all_times), len(result), duration,
     )
     return result

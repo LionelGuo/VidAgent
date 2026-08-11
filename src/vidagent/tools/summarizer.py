@@ -1242,11 +1242,13 @@ def _match_chapters_segmented(
     api_key: str,
     model: str,
 ) -> list[dict]:
-    """阶段二：分段音频 + 帧 + Phase1 总结 → 离散段落选择。
+    """阶段二：分段音频 + 帧 → 直接输出 JSON 章节。
 
-    将问题从"这个事件在第几秒"变为"这个章节对应第几到第几段"。
+    Thinking 模型的 <think> 推理过程替代了旧的自然语言逐段描述，
+    最终答案直接是结构化 JSON。
     """
     import base64 as b64
+    import json as _json
 
     # ── 切分音频 ──
     audio_segs = _split_audio_at_boundaries(mp3_path, candidate_boundaries)
@@ -1255,37 +1257,16 @@ def _match_chapters_segmented(
 
     M = len(audio_segs)  # 段数
 
-    # ── 解析 Phase 1 的章节描述 ──
-    segments = _parse_segments_from_summary(phase1_summary)
-    N = len(segments) if segments else 3  # 未解析到就用默认值
-
-    # ── 构建 Phase 2 content_parts ──
-    chapter_desc = "\n".join(
-        f"章节{i+1}: {s['title']} — {s['desc'][:150]}"
-        for i, s in enumerate(segments)
-    ) if segments else phase1_summary[:2000]
-
-    # ── Phase 2 prompt: 逐段自然语言分析（不要求 JSON）──
+    # ── Phase 2 prompt: 直接输出 JSON ──
     prompt = (
-        f"以下是一个视频的整体描述，仅供你了解背景：\n"
-        f"{phase1_summary[:1500]}\n\n"
-        f"═══════════════════════════════════\n\n"
-        f"现在，请逐段聆听这个视频的 {M} 个片段。每段配有中间帧画面。\n\n"
-        f"对每一段，请描述：\n"
-        f"1. 这段讲了什么内容？\n"
-        f"2. 这段和上一段属于同一个话题吗？\n"
-        f"3. 如果话题变了，标记 →新章节: [章节名称]\n\n"
-        f"格式示例：\n"
-        f"段1: 标题画面，背景音乐 → 属于开场\n"
-        f"段2: 主持人自我介绍，说明本期主题 → 仍属于开场\n"
-        f"段3: 画面切换为街头，主播开始驾驶展示 →新章节: 街头驾驶表演\n"
-        f"段4: 继续漂移，在广场画甜甜圈 → 属于「街头驾驶表演」\n"
-        f"...\n\n"
-        f"要求：\n"
-        f"- 每段必须分析，共 {M} 段\n"
-        f"- 首次出现新话题时用 →新章节: 标记\n"
-        f"- 同一章节的段用 → 属于「章节名」标记\n"
-        f"- 仔细聆听每段内容，不要急着下结论"
+        f"以下视频被切分为 {M} 个片段。背景：{phase1_summary[:800]}\n\n"
+        f"请逐段聆听音频、观察画面，将片段归并为几个话题章节。\n"
+        f"直接输出 JSON 数组（不要代码块、不要解释）：\n"
+        f'[{{"title": "开场介绍", "segments": [1, 2]}}, {{"title": "核心讨论", "segments": [3, 4, 5]}}]\n\n'
+        f"规则：\n"
+        f"- 段号 1-{M} 必须全部覆盖，相邻章节首尾相接\n"
+        f"- title 简洁（10 字以内）\n"
+        f"- 只输出 JSON 数组，不要任何其他文字"
     )
 
     content_parts: list[dict] = [{"type": "text", "text": prompt}]
@@ -1313,10 +1294,7 @@ def _match_chapters_segmented(
     payload = {
         "model": model,
         "messages": [
-            {"role": "system", "content": (
-                "你是一个视频内容分析器。逐段聆听音频、观察画面，描述每段内容并判断属于哪个话题。"
-                "当话题发生明显变化时，用 →新章节: [名称] 标记。不要输出 JSON。"
-            )},
+            {"role": "system", "content": "只输出 JSON 数组。不输出解释、标记或代码块。"},
             {"role": "user", "content": content_parts},
         ],
         "temperature": 0.2,
@@ -1330,113 +1308,17 @@ def _match_chapters_segmented(
     import shutil
     shutil.rmtree(audio_segs[0].parent, ignore_errors=True)
 
-    # ── Phase 3: 纯文本 LLM 格式化 → JSON ──
-    chapters = _phase3_format_json(phase2_raw, M, candidate_boundaries, base_url, api_key, model)
-    return chapters
-
-
-def _phase3_format_json(
-    analysis_text: str,
-    total_segments: int,
-    boundaries: list[int],
-    base_url: str,
-    api_key: str,
-    model: str,
-) -> list[dict]:
-    """Phase 3: 将 Phase 2 的逐段分析文本格式化为 JSON 章节。
-
-    纯文本调用，temperature=0，稳定可靠。
-    """
-    import json as _json
-
-    prompt = (
-        f"从以下逐段视频分析中提取章节划分。视频共 {total_segments} 段。\n\n"
-        f"分析文本：\n{analysis_text[:3000]}\n\n"
-        f"规则：\n"
-        f"1. 找到所有 →新章节: 标记，确定每个章节从第几段开始\n"
-        f"2. 如果某段标注「属于「章节名」」，归入对应章节\n"
-        f"3. 相邻章节的段号必须首尾相接，覆盖 1-{total_segments} 全部段\n"
-        f"4. 如果没有明确的 →新章节 标记，根据内容自行判断 2-4 个章节\n\n"
-        f"输出 JSON 数组（只输出 JSON）：\n"
-        f'[{{"title":"开场介绍","segments":[1,2]}},{{"title":"核心内容","segments":[3,4,5]}}]'
-    )
-
-    payload = {
-        "model": model,
-        "messages": [
-            {"role": "system", "content": "只输出 JSON 数组。不输出解释、标记或代码块。"},
-            {"role": "user", "content": prompt},
-        ],
-        "temperature": 0.0,
-        # max_tokens 由 vLLM --max-num-batched-tokens 统一限制
-    }
-
+    # ── 解析 JSON ──
     try:
-        raw = _chat_completion(base_url, api_key, payload, timeout=30)
-        raw = raw.strip()
+        # 去掉可能的 markdown 代码块
+        raw = phase2_raw
         m = re.search(r"```(?:json)?\s*\n?(.*?)\n?```", raw, re.DOTALL)
         if m:
             raw = m.group(1).strip()
-        logger.info("📑 Phase 3 输出: %s", raw[:300])
-
         data = _json.loads(raw)
         if isinstance(data, dict):
             data = data.get("chapters", [])
-        if not isinstance(data, list):
-            return []
-
-        chapters: list[dict] = []
-        for i, ch in enumerate(data):
-            segs = ch.get("segments", [])
-            if not segs:
-                continue
-            first = min(segs) - 1
-            last = max(segs) - 1
-            if first < 0 or last >= len(boundaries) - 1:
-                continue
-            title = str(ch.get("title", f"章节{i+1}")).strip()
-            chapters.append({
-                "start": boundaries[first],
-                "end": boundaries[last + 1],
-                "title": title,
-            })
-
-        if chapters:
-            logger.info("📑 Phase 3 完成: %d 个章节", len(chapters))
-            for ch in chapters:
-                logger.info("  %s: %ds-%ds", ch["title"], ch["start"], ch["end"])
-        return chapters
-    except Exception as e:
-        logger.warning("Phase 3 格式化失败: %s", e)
-        return []
-
-
-def _parse_segment_match(
-    raw: str, segments: list[dict], boundaries: list[int],
-) -> list[dict]:
-    """解析 Phase 2 输出的 JSON，转换回时间戳章节。
-
-    支持两种格式：
-    - 新格式: [{"title":"...", "segments":[1,2], ...}]
-    - 旧格式: "1,2|3|4,5" （向后兼容）
-    """
-    import json as _json
-
-    # ── 尝试 JSON 解析 ──
-    # 去掉可能的 markdown 代码块
-    json_m = re.search(r"```(?:json)?\s*\n?(.*?)\n?```", raw, re.DOTALL)
-    if json_m:
-        raw = json_m.group(1).strip()
-    else:
-        # 尝试直接提取 JSON 数组
-        arr_m = re.search(r"\[.*\]", raw, re.DOTALL)
-        if arr_m:
-            raw = arr_m.group(0)
-
-    try:
-        data = _json.loads(raw)
-        if isinstance(data, list) and len(data) > 0 and isinstance(data[0], dict):
-            # 新 JSON 格式
+        if isinstance(data, list) and len(data) > 0:
             chapters: list[dict] = []
             for ch in data:
                 segs = ch.get("segments", [])
@@ -1444,171 +1326,22 @@ def _parse_segment_match(
                     continue
                 first = min(segs) - 1
                 last = max(segs) - 1
-                if first < 0 or last >= len(boundaries) - 1:
+                if first < 0 or last >= len(candidate_boundaries) - 1:
                     continue
-                start = boundaries[first]
-                end = boundaries[last + 1]
                 title = str(ch.get("title", "")).strip()
-                reasoning = str(ch.get("reasoning", ""))[:200]
                 chapters.append({
-                    "start": start, "end": end, "title": title,
+                    "start": candidate_boundaries[first],
+                    "end": candidate_boundaries[last + 1],
+                    "title": title,
                 })
-                logger.info("  📑 %s: segs %s → %ds-%ds | %s",
-                           title, segs, start, end, reasoning[:80])
             if chapters:
-                logger.info("📑 JSON 匹配成功: %d 个章节", len(chapters))
-            return chapters
-    except (_json.JSONDecodeError, ValueError) as e:
-        logger.debug("JSON 解析失败，尝试旧格式: %s", e)
-
-    # ── 回退：旧格式 "1,2|3|4,5" ──
-    cleaned = raw.strip().strip('"').strip("'").strip()
-    m = re.search(r"[\d,\s|]+", cleaned)
-    if not m:
-        logger.warning("无法解析段匹配输出: %s", raw[:100])
-        return []
-    match_str = m.group(0).strip()
-    chapter_parts = [p.strip() for p in match_str.split("|") if p.strip()]
-    if not chapter_parts:
-        return []
-
-    chapters: list[dict] = []
-    for i, part in enumerate(chapter_parts):
-        seg_nums = []
-        for token in part.split(","):
-            token = token.strip()
-            if token.isdigit():
-                seg_nums.append(int(token))
-        if not seg_nums:
-            continue
-        first = min(seg_nums) - 1
-        last = max(seg_nums) - 1
-        if first < 0 or last >= len(boundaries) - 1:
-            continue
-        start = boundaries[first]
-        end = boundaries[last + 1]
-        title = segments[i]["title"] if i < len(segments) else f"章节 {i + 1}"
-        chapters.append({"start": start, "end": end, "title": title})
-
-    if chapters:
-        logger.info("📑 旧格式匹配成功: %d 个章节", len(chapters))
-    return chapters
-
-
-def _extract_chapters_text_only(
-    summary_text: str,
-    candidate_boundaries: list[int],
-    base_url: str,
-    api_key: str,
-    model: str,
-) -> list[dict]:
-    """纯文本 LLM 调用：将 Phase 1 的有序内容段落匹配到候选边界时间戳。
-
-    Phase 1 输出的是无时间戳的纯内容段落（## 标题 + 描述）。
-    此函数让 LLM 按顺序将段落与候选边界做比例匹配，
-    而非依赖 Phase 1 的不准确时间估计做盲目 snap。
-    """
-    import json as _json
-
-    # ── 从 Phase 1 输出中提取有序段落列表 ──
-    segments = _parse_segments_from_summary(summary_text)
-    if len(segments) < 2:
-        logger.info("未检测到足够段落 (%d)，跳过匹配", len(segments))
-        return []
-
-    # ── 让 LLM 做顺序匹配 ──
-    candidate_str = ", ".join(str(c) for c in candidate_boundaries)
-    duration = candidate_boundaries[-1] if candidate_boundaries else 0
-
-    seg_text = "\n".join(
-        f"{i+1}. {s['title']}: {s['desc'][:120]}"
-        for i, s in enumerate(segments)
-    )
-
-    prompt = (
-        f"视频总时长 {duration}s。\n"
-        f"候选时间戳（秒，只能从这里选）：{candidate_str}\n\n"
-        f"视频被分为以下 {len(segments)} 个段落（按时间顺序）：\n"
-        f"{seg_text}\n\n"
-        f"为每个段落分配起止时间戳。规则：\n"
-        f"1. start/end 必须从候选列表中选取\n"
-        f"2. 段落按顺序覆盖整个时间线：第1段 start=0，最后一段 end={duration}\n"
-        f"3. 相邻段落首尾相接（上一段的end = 下一段的start）\n"
-        f"4. 段落时长应与其内容量大致成正比\n\n"
-        f"输出 JSON 数组（只输出 JSON，不要其他）：\n"
-        f'[{{"start":0,"end":74,"title":"开场介绍"}},{{"start":74,"end":215,"title":"核心讨论"}},...]\n'
-        f"共 {len(segments)} 个对象。"
-    )
-
-    payload = {
-        "model": model,
-        "messages": [
-            {"role": "system", "content": "你是一个精确的 JSON 输出器。只输出 JSON 数组。"},
-            {"role": "user", "content": prompt},
-        ],
-        "temperature": 0.1,
-        # max_tokens 由 vLLM --max-num-batched-tokens 统一限制
-    }
-
-    try:
-        raw = _chat_completion(base_url, api_key, payload, timeout=60)
-        raw = raw.strip()
-        m = re.search(r"```(?:json)?\s*\n?(.*?)\n?```", raw, re.DOTALL)
-        if m:
-            raw = m.group(1).strip()
-
-        data = _json.loads(raw)
-        if isinstance(data, dict):
-            data = data.get("chapters", [])
-        if not isinstance(data, list):
-            return []
-
-        chapters: list[dict] = []
-        for ch in data:
-            start = int(ch.get("start", 0))
-            end = int(ch.get("end", 0))
-            title = str(ch.get("title", "")).strip().strip("*").strip()
-            if start >= end or (end - start) < 10 or not title:
-                continue
-            # snap 到候选边界
-            def _snap(t: int) -> int:
-                return min(candidate_boundaries, key=lambda c: abs(c - t)) if candidate_boundaries else t
-            start = _snap(start)
-            end = _snap(end)
-            if chapters and chapters[-1]["start"] == start:
-                continue
-            chapters.append({"start": start, "end": end, "title": title})
-
-        if chapters:
-            logger.info("📑 顺序匹配章节成功: %d 个", len(chapters))
-        return chapters
+                logger.info("📑 Phase 2 解析成功: %d 个章节", len(chapters))
+                return chapters
     except Exception as e:
-        logger.warning("顺序匹配章节失败: %s", e)
-        return []
+        logger.warning("Phase 2 JSON 解析失败: %s", e)
 
-
-def _parse_segments_from_summary(text: str) -> list[dict]:
-    """从 Phase 1 的无时间戳总结中提取有序段落列表。
-
-    解析 ## 标题 + 描述 格式，返回 [{"title": str, "desc": str}]。
-    """
-    # 按 ## 标题分割
-    parts = re.split(r"\n##\s+", text)
-    segments: list[dict] = []
-    for part in parts:
-        part = part.strip()
-        if not part:
-            continue
-        lines = part.split("\n", 1)
-        title = lines[0].strip().strip("*").strip().lstrip("#").strip()
-        desc = lines[1].strip() if len(lines) > 1 else ""
-        # 过滤太短的或无意义的行
-        if len(title) < 2 or len(title) > 30:
-            continue
-        if any(kw in title for kw in ["视频内容", "时间线", "总结", "内容时间"]):
-            continue
-        segments.append({"title": title, "desc": desc})
-    return segments
+    # ── 回退 ──
+    return _fallback_chapters(candidate_boundaries, int(candidate_boundaries[-1]))
 
 
 def _fallback_chapters(candidates: list[int], duration: int) -> list[dict]:
