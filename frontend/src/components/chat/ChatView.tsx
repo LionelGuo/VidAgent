@@ -220,25 +220,36 @@ function extractVideoResults(toolInvocations: any[]): VideoInfo[] {
       if (ti.state === "result" && ti.result?.results) {
         for (const r of ti.result.results) {
           if (!r.video_id) continue;
-          // 确保 VideoStore 有该条目（搜索 URL 可能在预填时被跳过）
-          if (!useVideoStore.getState().videos[r.video_id]) {
+          let vid = r.video_id;
+          // 按 video_url 二次匹配：Agent 可能未透传 video_id，导致后端 ID 与前端不同
+          if (!useVideoStore.getState().videos[vid] && r.video_url) {
+            const store = useVideoStore.getState();
+            const match = Object.values(store.videos).find(
+              (v) => v.video_url === r.video_url,
+            );
+            if (match) {
+              vid = match.video_id;
+            }
+          }
+          // 确保 VideoStore 有该条目
+          if (!useVideoStore.getState().videos[vid]) {
             useVideoStore.getState().upsertResults([{
-              video_id: r.video_id,
-              title: r.title ?? r.video_id,
+              video_id: vid,
+              title: r.title ?? vid,
               desc: "",
               author: "",
               duration_text: "",
-              video_url: "",
+              video_url: r.video_url ?? "",
               view_count: 0,
             }]);
           }
           if (r.status === "done" && r.summary) {
-            useVideoStore.getState().setSummary(r.video_id, r.summary);
+            useVideoStore.getState().setSummary(vid, r.summary);
           }
           if (r.local_path) {
-            useVideoStore.getState().setLocalPath(r.video_id, r.local_path);
+            useVideoStore.getState().setLocalPath(vid, r.local_path);
           }
-          useVideoStore.getState().updateProgress(r.video_id, {
+          useVideoStore.getState().updateProgress(vid, {
             task_status: r.status === "done" ? "done" : "error",
           });
         }
