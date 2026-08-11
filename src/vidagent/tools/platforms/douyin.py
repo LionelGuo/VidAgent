@@ -388,27 +388,42 @@ async def _download_via_cdp(video_url: str, file_name: str) -> dict:
         logger.info("下载命中缓存: %s", target)
         return {"status": "success", "local_path": str(target), "platform": "douyin", "cached": True}
 
+    logger.info("📥 抖音下载开始: url=%s", video_url)
+
     # 1. 提取 aweme_id
     os.chdir(_MEDIACRAWLER_ROOT)
     try:
         from media_platform.douyin.help import parse_video_info_from_url
         video_info = parse_video_info_from_url(video_url)
         aweme_id = video_info.aweme_id
+        logger.info("  MediaCrawler 解析 → aweme_id=%s", aweme_id)
+    except Exception as e:
+        logger.warning("MediaCrawler 解析 URL 失败，回退内置正则: %s", e)
+        aweme_id = extract_video_id(video_url)
+        logger.info("  内置正则解析 → aweme_id=%s", aweme_id)
     finally:
         os.chdir(_original_cwd)
-        # 回退：内置正则
-        aweme_id = extract_video_id(video_url)
-        if not aweme_id or aweme_id.startswith("dy_short_"):
-            return {"status": "error", "error": f"无法解析视频 ID: {video_url}", "video_url": video_url}
+
+    # 统一校验
+    if not aweme_id or (isinstance(aweme_id, str) and aweme_id.startswith("dy_short_")):
+        logger.error("  无法解析视频 ID: url=%s", video_url)
+        return {"status": "error", "error": f"无法解析视频 ID: {video_url}", "video_url": video_url}
+    aweme_id = str(aweme_id)  # 确保是字符串
 
     # 2. 获取视频详情（含下载链接）
+    logger.info("  获取视频详情: aweme_id=%s", aweme_id)
     client = await _ensure_client()
     try:
         detail = await client.get_video_by_id(aweme_id)
+        logger.info("  get_video_by_id → type=%s, has_video=%s",
+                     type(detail).__name__ if detail else "None",
+                     bool(detail.get("video")) if isinstance(detail, dict) else "N/A")
     except Exception as e:
+        logger.error("  获取视频详情失败: %s", e)
         return {"status": "error", "error": f"获取视频详情失败: {e}", "video_url": video_url}
 
     if not detail:
+        logger.error("  视频不存在或已被删除: aweme_id=%s", aweme_id)
         return {"status": "error", "error": "视频不存在或已被删除", "video_url": video_url}
 
     # 3. 提取无水印下载链接
@@ -419,17 +434,33 @@ async def _download_via_cdp(video_url: str, file_name: str) -> dict:
         download_addr.get("url_list", [""])[0]
         or play_addr.get("url_list", [""])[0]
     )
+    logger.info("  下载链接: %s...", media_url[:80] if media_url else "EMPTY")
 
     if not media_url:
+        # 打印 detail 结构帮助调试
+        if isinstance(detail, dict):
+            logger.error("  detail keys: %s", list(detail.keys())[:10])
+            if video_data:
+                logger.error("  video keys: %s", list(video_data.keys())[:10])
         return {"status": "error", "error": "未找到可下载的视频链接", "video_url": video_url}
 
-    # 4. 下载视频文件
+    # 4. 下载视频文件（需要 Referer + UA 模拟正常请求）
+    logger.info("  httpx 下载中…")
     try:
-        async with httpx.AsyncClient(proxy=_get_proxy(), timeout=120, follow_redirects=True) as http:
+        dl_headers = {
+            **DEFAULT_HEADERS,
+            "Referer": "https://www.douyin.com/video/" + aweme_id,
+        }
+        async with httpx.AsyncClient(
+            headers=dl_headers, proxy=_get_proxy(),
+            timeout=120, follow_redirects=True,
+        ) as http:
             resp = await http.get(media_url)
             resp.raise_for_status()
             target.write_bytes(resp.content)
+            logger.info("  ✅ 下载完成: %d KB → %s", len(resp.content) // 1024, target)
     except Exception as e:
+        logger.error("  视频文件下载失败: %s", e)
         return {"status": "error", "error": f"视频文件下载失败: {e}", "video_url": video_url}
 
     return {"status": "success", "local_path": str(target), "platform": "douyin"}
