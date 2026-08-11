@@ -26,8 +26,6 @@ import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-
-import httpx
 from typing import Any
 
 # 确保项目根在 sys.path（server/ 从项目根启动）
@@ -466,36 +464,10 @@ async def tool_batch_summarize(req: BatchSummarizeRequest):
         video_id = video["_video_id"]
 
         try:
-            # ── 话题解析：热搜话题 → 搜索真实视频 URL ──
-            video_url = video.get("video_url", "")
-            if not video_url and video.get("is_trending_topic"):
-                keyword = video.get("search_keyword", "") or video.get("title", "")
-                logger.info("🔍 解析热搜话题: '%s' → 搜索真实视频…", keyword)
-                try:
-                    from vidagent.tools.platforms import detect_platform as _detect
-                    platform_cls = _detect(video.get("platform", ""))
-
-                    async def _search():
-                        async with httpx.AsyncClient() as _c:
-                            return await platform_cls.search(_c, keyword, limit=1)
-
-                    results = asyncio.run(_search())
-                    if results and results[0].get("video_url"):
-                        video_url = results[0]["video_url"]
-                        video["video_url"] = video_url
-                        video["video_id"] = results[0].get("video_id", video_id)
-                        video["title"] = results[0].get("title") or video.get("title", "")
-                        video["duration"] = results[0].get("duration", 0)
-                        video["duration_text"] = results[0].get("duration_text", "")
-                        logger.info("  ✅ 解析为: %s (%s)", video_url, video.get("duration_text"))
-                    else:
-                        logger.warning("  ❌ 搜索 '%s' 无结果", keyword)
-                except Exception as e:
-                    logger.warning("  ❌ 话题解析异常: %s", e)
-
             # ── 下载（重试）──
             local_path = None
             last_err = None
+            video_url = video.get("video_url", "")
             # 更新进度 stage
             pg = get_progress(task_id)
             if pg:

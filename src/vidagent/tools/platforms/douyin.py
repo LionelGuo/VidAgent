@@ -243,14 +243,12 @@ def _normalize_trending(item: dict) -> dict:
         "publish_time": event_time,
         "duration": 0,
         "duration_text": "",
-        "video_url": "",  # 热搜话题不是具体视频，需用 search_keyword 搜索后获取真实视频
+        "video_url": f"https://www.douyin.com/search/{word}" if word else "",
         "platform": "douyin",
         "author": "",
         "view_count": video_count,
         "hot_value": hot_value,
         "cover_url": cover_url,
-        "is_trending_topic": True,
-        "search_keyword": word,  # Agent 应用此关键词搜索获取真实视频列表
     }
 
 
@@ -389,6 +387,43 @@ async def _download_via_cdp(video_url: str, file_name: str) -> dict:
         return {"status": "success", "local_path": str(target), "platform": "douyin", "cached": True}
 
     logger.info("📥 抖音下载开始: url=%s", video_url)
+
+    # 0. 搜索页 URL → 解析为真实视频
+    _SEARCH_URL_RE = re.compile(r"douyin\.com/search/(.+)")
+    search_match = _SEARCH_URL_RE.search(video_url)
+    if search_match:
+        from urllib.parse import unquote
+        keyword = unquote(search_match.group(1))
+        logger.info("  🔍 搜索页 URL，解析关键词: '%s' → 搜索真实视频…", keyword)
+        try:
+            from media_platform.douyin.field import SearchChannelType
+            os.chdir(_MEDIACRAWLER_ROOT)
+            try:
+                client = await _ensure_client()
+                resp = await client.search_info_by_keyword(
+                    keyword=keyword, offset=0,
+                    search_channel=SearchChannelType.GENERAL,
+                )
+            finally:
+                os.chdir(_original_cwd)
+            data = resp.get("data", []) if isinstance(resp, dict) else []
+            if data:
+                # 取第一个有效结果
+                for item in data:
+                    aweme = item.get("aweme_info") or item.get("aweme_detail") or item
+                    if aweme and aweme.get("aweme_id"):
+                        video_url = f"https://www.douyin.com/video/{aweme['aweme_id']}"
+                        logger.info("  ✅ 解析为: %s", video_url)
+                        break
+                else:
+                    logger.error("  ❌ 搜索结果中无有效视频")
+                    return {"status": "error", "error": f"关键词 '{keyword}' 搜索结果无有效视频", "video_url": video_url}
+            else:
+                logger.error("  ❌ 搜索 '%s' 无结果", keyword)
+                return {"status": "error", "error": f"关键词 '{keyword}' 搜索失败：无结果", "video_url": video_url}
+        except Exception as e:
+            logger.error("  ❌ 解析搜索页失败: %s", e)
+            return {"status": "error", "error": f"解析搜索页失败: {e}", "video_url": video_url}
 
     # 1. 提取 aweme_id
     os.chdir(_MEDIACRAWLER_ROOT)
