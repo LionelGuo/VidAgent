@@ -774,14 +774,22 @@ async def tool_batch_summarize(req: BatchSummarizeRequest):
     await loop.run_in_executor(None, lambda: [f.result() for f in futures])
 
     # 汇总结果
+    # 构建 video_id → 原始请求数据 的映射（用于 title + video_url 回填）
+    req_by_id: dict[str, dict] = {}
+    for v in req.videos:
+        rid = v.video_id or _extract_video_id(v.video_url or "")
+        if rid:
+            req_by_id[rid] = v.model_dump()
     results = []
     for t in tasks:
         task_data = _summarize_tasks.get(t["task_id"], {})
         video_id = t["video_id"]
+        req_v = req_by_id.get(video_id, {})
         if task_data.get("status") == "done":
             results.append({
                 "video_id": video_id,
-                "title": next((v.title for v in req.videos if _extract_video_id(v.video_url) == video_id or v.video_id == video_id), video_id),
+                "video_url": req_v.get("video_url", ""),
+                "title": req_v.get("title") or video_id,
                 "status": "done",
                 "summary": task_data.get("result", ""),
                 "local_path": task_data.get("local_path", ""),
