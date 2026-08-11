@@ -43,6 +43,7 @@ DEFAULT_HEADERS = {
         "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
     ),
     "Referer": "https://www.douyin.com/",
+    "Origin": "https://www.douyin.com",
 }
 
 _DY_VIDEO_ID_RE = re.compile(r"/video/(\d{15,20})")
