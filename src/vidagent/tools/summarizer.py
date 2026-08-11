@@ -1253,7 +1253,6 @@ def _prepare_short_video(video_path: Path) -> tuple[Path, Path]:
     """
     work = Path(tempfile.mkdtemp(prefix="vidagent_short_"))
     processed = work / "video.mp4"
-    audio = work / "audio.mp3"
 
     # 1. 剥离音频并转码视频：384px 宽, 4fps, H.264, 无音轨
     r = subprocess.run(
@@ -1267,9 +1266,9 @@ def _prepare_short_video(video_path: Path) -> tuple[Path, Path]:
     if r.returncode != 0 or not processed.exists():
         raise RuntimeError(f"短视频转码失败: {r.stderr.decode()[-300:]}")
 
-    # 2. 提取音频
+    # 2. 提取音频（输出到 workspace，复用缓存）
     from vidagent.utils.audio import extract_audio as _extract_audio
-    audio_result = _extract_audio(str(video_path), output_path=str(audio))
+    audio_result = _extract_audio(str(video_path))
     if not Path(audio_result).exists():
         raise RuntimeError(f"短视频音频提取失败: {video_path}")
 
