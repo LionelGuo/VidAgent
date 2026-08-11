@@ -498,7 +498,7 @@ async def _download_via_cdp(video_url: str, file_name: str) -> dict:
         logger.error("  视频文件下载失败: %s", e)
         return {"status": "error", "error": f"视频文件下载失败: {e}", "video_url": video_url}
 
-    return {"status": "success", "local_path": str(target), "platform": "douyin"}
+    return {"status": "success", "local_path": str(target), "platform": "douyin", "resolved_url": video_url}
 
 
 # ---------------------------------------------------------------------------
