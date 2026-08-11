@@ -528,7 +528,7 @@ async def tool_batch_summarize(req: BatchSummarizeRequest):
             model = settings.multimodal_model or settings.llm_model
 
             # ── 分流：短视频 vs 长视频 ──
-            if duration and duration < 90:
+            if isinstance(duration, (int, float)) and 0 < duration < 90:
                 # ═══════ 短视频管线（<90s）═══════
                 logger.info("🎬 短视频管线: %.0fs", duration)
                 pg.stage = "summarizing"
@@ -639,7 +639,7 @@ async def tool_batch_summarize(req: BatchSummarizeRequest):
                         scene_probs = _fs.result()
 
                     # ── 动态阈值：取满足 ≤ 8/min 的最低阈值（最多候选点）──
-                    video_minutes = metadata.get("duration", 60) / 60
+                    video_minutes = (metadata.get("duration") or 60) / 60
                     scene_times: set[float] = set()
                     if scene_probs is not None:
                         chosen = 0.70

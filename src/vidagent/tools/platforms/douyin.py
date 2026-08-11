@@ -397,16 +397,15 @@ async def _download_via_cdp(video_url: str, file_name: str) -> dict:
         keyword = unquote(search_match.group(1))
         logger.info("  🔍 搜索页 URL，解析关键词: '%s' → 搜索真实视频…", keyword)
         try:
-            from media_platform.douyin.field import SearchChannelType
+            # 搜索需要 MediaCrawler cwd（execjs 依赖 libs/douyin.js）
             os.chdir(_MEDIACRAWLER_ROOT)
-            try:
-                client = await _ensure_client()
-                resp = await client.search_info_by_keyword(
-                    keyword=keyword, offset=0,
-                    search_channel=SearchChannelType.GENERAL,
-                )
-            finally:
-                os.chdir(_original_cwd)
+            client = await _ensure_client()
+            from media_platform.douyin.field import SearchChannelType
+            resp = await client.search_info_by_keyword(
+                keyword=keyword, offset=0,
+                search_channel=SearchChannelType.GENERAL,
+            )
+            # 不恢复 cwd——后续下载逻辑自己管理
             data = resp.get("data", []) if isinstance(resp, dict) else []
             if data:
                 # 取第一个有效结果
