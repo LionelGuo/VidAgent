@@ -11,9 +11,11 @@ nohup /root/miniconda3/bin/vllm-omni serve \
   /root/autodl-tmp/Qwen3-Omni-Thinking-AWQ-4bit \
   --port 6006 \
   --gpu-memory-utilization 0.85 \
-  --max-num-batched-tokens 24576 \
-  --max-num-seqs 4 \
+  --max-num-batched-tokens 49152 \
+  --max-num-seqs 2 \
   --enable-prefix-caching \
+  --allowed-local-media-path /root/autodl-tmp \
+  --limit-mm-per-prompt '{"video": {"count": 1, "num_frames": 10, "width": 512, "height": 512}}' \
   > /root/autodl-tmp/server.log 2>&1 &
 
 echo "vLLM starting... PID=$!"
