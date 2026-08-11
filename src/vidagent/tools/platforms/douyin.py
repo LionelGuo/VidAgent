@@ -243,13 +243,14 @@ def _normalize_trending(item: dict) -> dict:
         "publish_time": event_time,
         "duration": 0,
         "duration_text": "",
-        "video_url": f"https://www.douyin.com/search/{word}" if word else "",
+        "video_url": "",  # 热搜话题不是具体视频，需用 search_keyword 搜索后获取真实视频
         "platform": "douyin",
         "author": "",
         "view_count": video_count,
         "hot_value": hot_value,
         "cover_url": cover_url,
         "is_trending_topic": True,
+        "search_keyword": word,  # Agent 应用此关键词搜索获取真实视频列表
     }
 
 

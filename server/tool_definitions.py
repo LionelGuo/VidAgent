@@ -11,7 +11,7 @@ TOOL_DEFINITIONS: list[dict] = [
         "type": "function",
         "function": {
             "name": "get_hot_videos",
-            "description": "获取平台综合热门视频榜单（最贴近「今日热榜」）。返回视频列表，每项含 video_id/title/desc/publish_time/duration/duration_text/video_url/platform/author/view_count。Agent 可直接按时长/播放量筛选，无需下载。",
+            "description": "获取平台综合热门视频榜单（最贴近「今日热榜」）。返回视频列表，每项含 video_id/title/desc/publish_time/duration/duration_text/video_url/platform/author/view_count。注意：抖音热榜返回的是热搜话题（is_trending_topic=true），含 search_keyword 字段，需先用 search_videos 搜索该关键词获取真实视频后再总结。Agent 可直接按时长/播放量筛选，无需下载。",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -156,7 +156,7 @@ TOOL_DEFINITIONS: list[dict] = [
         "type": "function",
         "function": {
             "name": "batch_summarize_videos",
-            "description": "【推荐】批量并行总结多个视频。后端自动并行下载+总结，比逐个调用 extract_and_summarize 更快。传入视频列表，后台同时处理所有视频（下载→多模态总结），每个视频独立重试、独立错误。总结结果在右侧详情面板实时流式显示。适用于用户要求同时总结多个视频的场景。",
+            "description": "【推荐】批量并行总结多个视频。后端自动并行下载+总结，比逐个调用 extract_and_summarize 更快。传入视频列表，后台同时处理所有视频（下载→多模态总结），每个视频独立重试、独立错误。总结结果在右侧详情面板实时流式显示。适用于用户要求同时总结多个视频的场景。注意：video_url 必须是具体视频的播放页地址（如 /video/xxx），不能是搜索页或话题页 URL。抖音热搜话题需先用 search_videos 搜索获取真实视频。",
             "parameters": {
                 "type": "object",
                 "properties": {
