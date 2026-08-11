@@ -522,6 +522,13 @@ async def tool_batch_summarize(req: BatchSummarizeRequest):
             # 提取音频（短视频和长视频都需要）
             mp3 = extract_audio(local_path)
             duration = metadata.get("duration") or 0
+            # 补充缺失的 duration：从本地文件 ffprobe 获取（热搜/搜索结果常缺 duration）
+            if not duration:
+                from vidagent.utils.frames import get_duration as _get_dur
+                duration = _get_dur(local_path)
+                metadata["duration"] = duration
+                metadata["duration_text"] = f"{int(duration // 60):02d}:{int(duration % 60):02d}"
+                logger.info("📐 补充 duration: %.0fs", duration)
 
             base_url = settings.multimodal_base_url or settings.openai_base_url
             api_key = settings.openai_api_key
