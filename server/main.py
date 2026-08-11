@@ -479,16 +479,6 @@ async def tool_batch_summarize(req: BatchSummarizeRequest):
                     if result.get("status") == "success":
                         local_path = result["local_path"]
                         _summarize_tasks[task_id]["local_path"] = local_path
-                        # 更新 video_id：搜索页 URL 解析后拿到真实视频 ID
-                        resolved = result.get("resolved_url")
-                        if resolved:
-                            new_id = _extract_video_id(resolved) or video_id
-                            if new_id != video_id:
-                                _video_task_map.pop(video_id, None)
-                                _video_task_map[new_id] = task_id
-                                video_id = new_id
-                                video["_video_id"] = new_id
-                                logger.info("  🔄 video_id 更新: %s", new_id)
                         break
                     last_err = result.get("error", "未知下载错误")
                 except Exception as e:
@@ -757,7 +747,11 @@ async def tool_batch_summarize(req: BatchSummarizeRequest):
     video_list = [v.model_dump() for v in req.videos]
     for video in video_list:
         task_id = uuid.uuid4().hex[:12]
-        video_id = video.get("video_id") or _extract_video_id(video.get("video_url", "")) or task_id
+        video_id = (
+            video.get("video_id")
+            or _extract_video_id(video.get("video_url", ""))
+            or f"vid_{abs(hash(video.get('video_url') or video.get('title', task_id))) & 0xFFFFFFFF:08x}"
+        )
         video["_task_id"] = task_id
         video["_video_id"] = video_id
         _video_task_map[video_id] = task_id

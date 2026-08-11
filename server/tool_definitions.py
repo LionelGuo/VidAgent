@@ -172,7 +172,7 @@ TOOL_DEFINITIONS: list[dict] = [
                                 },
                                 "video_id": {
                                     "type": "string",
-                                    "description": "视频 ID，如 BVxxx",
+                                    "description": "视频唯一标识符，来自检索结果（如 B站 BVxxx / 抖音 dy_trend_xxx / 数字ID）。必须原样透传，不可编造",
                                 },
                                 "title": {
                                     "type": "string",
