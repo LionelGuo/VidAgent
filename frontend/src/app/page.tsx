@@ -30,6 +30,8 @@ export default function Home() {
 
   // ── 关闭：切到 off-screen → CSS transition 滑出 → transitionend 后真正 unmount ──
   const handleClose = useCallback(() => {
+    // 全屏状态下关闭：先退出全屏，让 transition 从全屏位置滑出
+    setExpanded(false);
     setClosing(true);
   }, []);
 
@@ -62,7 +64,8 @@ export default function Home() {
             marginLeft: entered && !closing
               ? 0
               : "calc((100% - 48rem) / 2)",
-            transition: "width 0.5s ease-out, margin-left 0.5s ease-out",
+            transition:
+              "width 0.5s cubic-bezier(0.16, 1, 0.3, 1), margin-left 0.5s cubic-bezier(0.16, 1, 0.3, 1)",
           }}
         >
           <header className="shrink-0 px-6 py-4 border-b border-border">
@@ -99,10 +102,11 @@ export default function Home() {
               (!entered || closing) && !expanded && "left-[80%] opacity-0",
             )}
             style={{
-              // 打开时卡片延迟 150ms 跟随对话区，关闭时同步进行
+              // 打开时卡片延迟 75ms 跟随对话区，关闭时同步进行
+              // cubic-bezier(0.16, 1, 0.3, 1) = easeOutExpo，更强的快起慢收
               transition: closing
-                ? "left 0.5s ease-out, opacity 0.5s ease-out, bottom 0.5s ease-out"
-                : "left 0.5s ease-out 150ms, opacity 0.5s ease-out 150ms, bottom 0.5s ease-out 150ms",
+                ? "left 0.5s cubic-bezier(0.16, 1, 0.3, 1), opacity 0.5s cubic-bezier(0.16, 1, 0.3, 1), bottom 0.5s cubic-bezier(0.16, 1, 0.3, 1)"
+                : "left 0.5s cubic-bezier(0.16, 1, 0.3, 1) 75ms, opacity 0.5s cubic-bezier(0.16, 1, 0.3, 1) 75ms, bottom 0.5s cubic-bezier(0.16, 1, 0.3, 1) 75ms",
             }}
           >
             <DetailPanel
