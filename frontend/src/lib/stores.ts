@@ -23,6 +23,7 @@ export interface VideoChapter {
   start: number;
   end: number;
   title: string;
+  summary?: string;
 }
 
 export interface VideoInfo {
@@ -42,7 +43,7 @@ export interface VideoInfo {
   /** 总结后填充 */
   summary?: string;
   /** 任务状态 */
-  task_status?: "downloading" | "analyzing" | "extracting" | "summarizing" | "done" | "error";
+  task_status?: "downloading" | "analyzing" | "extracting" | "summarizing" | "summary" | "asr" | "done" | "error";
   /** 下载进度 0-100 */
   download_progress?: number;
   /** 章节时间轴 */
@@ -72,7 +73,16 @@ export const useVideoStore = create<VideoStore>((set) => ({
       const next = { ...s.videos };
       for (const v of results) {
         if (!v.video_id) continue;
-        next[v.video_id] = { ...next[v.video_id], ...v };
+        const existing = next[v.video_id];
+        // 合并：新值覆盖已有值，但保留非空字段（防 batch args 空 desc 覆盖搜索数据）
+        next[v.video_id] = {
+          ...existing,
+          ...Object.fromEntries(
+            Object.entries(v).filter(([_, val]) => val !== "" && val !== null && val !== undefined)
+          ),
+          // video_id 必须保留（filter 可能过滤空字符串，但 video_id 不应为空）
+          video_id: v.video_id,
+        };
       }
       return { videos: next };
     }),

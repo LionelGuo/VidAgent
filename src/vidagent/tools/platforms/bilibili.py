@@ -9,7 +9,7 @@ import asyncio
 import logging
 import re
 from pathlib import Path
-from typing import ClassVar
+from typing import Callable, ClassVar
 
 import httpx
 import yt_dlp
@@ -281,9 +281,23 @@ async def resolve_creator_mid(client: httpx.AsyncClient, name: str) -> tuple[str
 # 下载
 # ---------------------------------------------------------------------------
 
-def _download_bili(url: str, file_name: str) -> dict:
+def _download_bili(url: str, file_name: str,
+                   progress_callback: Callable[[int], None] | None = None) -> dict:
     storage.random_delay()  # 随机抖动降风控（文档 §5.1）
     target = storage.media_path(file_name, ".mp4")  # 仅用于确定命名前缀
+    progress_hooks = []
+    if progress_callback:
+
+        def _on_progress(d: dict) -> None:
+            if d.get("status") == "finished":
+                progress_callback(100)
+            elif d.get("status") == "downloading":
+                total = d.get("total_bytes") or d.get("total_bytes_estimate")
+                if total and total > 0:
+                    pct = int(d.get("downloaded_bytes", 0) / total * 100)
+                    progress_callback(pct)
+
+        progress_hooks.append(_on_progress)
     opts = {
         "outtmpl": str(target.with_suffix(".%(ext)s")),
         "merge_output_format": "mp4",
@@ -291,6 +305,7 @@ def _download_bili(url: str, file_name: str) -> dict:
         "quiet": True,
         "noprogress": True,
         "no_warnings": True,
+        "progress_hooks": progress_hooks,
     }
     try:
         with Timer("视频下载(yt-dlp)"):
@@ -354,8 +369,9 @@ class BilibiliPlatform(Platform):
         return items[:limit]
 
     @staticmethod
-    def download(video_url: str, file_name: str) -> dict:
-        return _download_bili(video_url, file_name)
+    def download(video_url: str, file_name: str,
+                 progress_callback: Callable[[int], None] | None = None) -> dict:
+        return _download_bili(video_url, file_name, progress_callback=progress_callback)
 
 
 # 注册到全局注册表

@@ -352,7 +352,11 @@ def _chat_completion_stream(
         timeout=timeout,
     ) as resp:
         if resp.status_code != 200:
-            raise RuntimeError(f"LLM 流式调用失败 HTTP {resp.status_code}: {resp.text[:300]}")
+            try:
+                body = resp.read().decode(errors="ignore")[:300]
+            except Exception:
+                body = "(无法读取响应体)"
+            raise RuntimeError(f"LLM 流式调用失败 HTTP {resp.status_code}: {body}")
         finish_reason = None
         for line in resp.iter_lines():
             if line.startswith("data: ") and line != "data: [DONE]":
@@ -1378,10 +1382,12 @@ def _match_chapters_segmented(
         f"以下视频被切分为 {M} 个片段。背景：{phase1_summary[:800]}\n\n"
         f"请逐段聆听音频、观察画面，将片段归并为几个话题章节。\n"
         f"直接输出 JSON 数组（不要代码块、不要解释）：\n"
-        f'[{{"title": "开场介绍", "segments": [1, 2]}}, {{"title": "核心讨论", "segments": [3, 4, 5]}}]\n\n'
+        f'[{{"title": "开场介绍", "start": 1, "end": 2, "summary": "主持人介绍本期主题和嘉宾"}},\n'
+        f' {{"title": "核心讨论", "start": 3, "end": 5, "summary": "嘉宾围绕AI话题展开讨论"}}]\n\n'
         f"规则：\n"
-        f"- 段号 1-{M} 必须全部覆盖，相邻章节首尾相接\n"
+        f"- 段号 1-{M} 必须全部覆盖，相邻章节首尾相接（前一章 end+1 == 后一章 start）\n"
         f"- title 简洁（10 字以内）\n"
+        f"- summary 一句话概括本章核心内容（20 字以内）\n"
         f"- 只输出 JSON 数组，不要任何其他文字"
     )
 
@@ -1437,19 +1443,30 @@ def _match_chapters_segmented(
         if isinstance(data, list) and len(data) > 0:
             chapters: list[dict] = []
             for ch in data:
-                segs = ch.get("segments", [])
-                if not segs:
+                # 新格式: {"start": 1, "end": 3, "title": "...", "summary": "..."}
+                # 旧格式: {"segments": [1, 2, 3], "title": "..."}
+                if "start" in ch and "end" in ch:
+                    first = int(ch["start"]) - 1
+                    last = int(ch["end"]) - 1
+                elif "segments" in ch:
+                    segs = ch["segments"]
+                    if not segs:
+                        continue
+                    first = min(segs) - 1
+                    last = max(segs) - 1
+                else:
                     continue
-                first = min(segs) - 1
-                last = max(segs) - 1
                 if first < 0 or last >= len(candidate_boundaries) - 1:
                     continue
                 title = str(ch.get("title", "")).strip()
-                chapters.append({
+                chapter = {
                     "start": candidate_boundaries[first],
                     "end": candidate_boundaries[last + 1],
                     "title": title,
-                })
+                }
+                if ch.get("summary"):
+                    chapter["summary"] = str(ch["summary"]).strip()
+                chapters.append(chapter)
             if chapters:
                 logger.info("📑 Phase 2 解析成功: %d 个章节", len(chapters))
                 return chapters

@@ -8,6 +8,8 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
+from typing import Callable
+
 from vidagent.tools.platforms import detect_platform
 from vidagent.utils import storage
 
@@ -36,12 +38,14 @@ def _platform_of(url: str) -> str:
     return p.name if p else "unknown"
 
 
-def download_video(video_url: str, file_name: str) -> dict:
+def download_video(video_url: str, file_name: str,
+                   progress_callback: Callable[[int], None] | None = None) -> dict:
     """下载视频（无水印）到本地 workspace 目录。
 
     Args:
         video_url: 视频地址（用检索工具返回的 video_url）。
         file_name: 保存文件名前缀，通常用 video_id。
+        progress_callback: 下载进度回调，参数为 0-100 的百分比整数。
 
     Returns:
         {"status":"success","local_path":...,"platform":...,"cached":bool}，
@@ -53,6 +57,8 @@ def download_video(video_url: str, file_name: str) -> dict:
     target = storage.media_path(file_name, ".mp4")
     if target.exists():
         logger.info("下载命中缓存: %s", target)
+        if progress_callback:
+            progress_callback(100)
         platform_name = detect_platform(video_url)
         return {
             "status": "success",
@@ -68,4 +74,4 @@ def download_video(video_url: str, file_name: str) -> dict:
         )
 
     storage.random_delay()  # 随机抖动降风控
-    return platform.download(video_url, file_name)
+    return platform.download(video_url, file_name, progress_callback=progress_callback)

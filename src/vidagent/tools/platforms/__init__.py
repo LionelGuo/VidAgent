@@ -12,7 +12,7 @@ detect_platform() 从 URL 推断平台。
 from __future__ import annotations
 
 import logging
-from typing import Any, ClassVar
+from typing import Any, Callable, ClassVar
 
 logger = logging.getLogger(__name__)
 
@@ -84,8 +84,14 @@ class Platform:
     # -- 下载（子类必须实现） --
 
     @staticmethod
-    def download(video_url: str, file_name: str) -> dict:
+    def download(video_url: str, file_name: str,
+                 progress_callback: Callable[[int], None] | None = None) -> dict:
         """下载视频到本地。
+
+        Args:
+            video_url: 视频播放页地址。
+            file_name: 保存文件名前缀。
+            progress_callback: 下载进度回调，参数为 0-100 的百分比整数。
 
         Returns:
             {"status":"success","local_path":...,"platform":...,"cached":bool}

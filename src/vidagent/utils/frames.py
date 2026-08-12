@@ -295,13 +295,16 @@ def extract_frames(
 
     if output_dir.exists():
         existing = sorted(output_dir.glob("frame_*.jpg"))
-        if len(existing) >= MIN_FRAMES:
+        need = len(timestamps) if timestamps else (num_frames or adaptive_frame_count(duration or 60))
+        if len(existing) >= need:
             total_kb = sum(f.stat().st_size for f in existing) // 1024
             logger.info(
                 "🖼️ 帧缓存命中: %d 帧 / %d KB → %s",
                 len(existing), total_kb, output_dir.name,
             )
             return existing
+        else:
+            logger.info("🖼️ 帧缓存过期: 需要 %d 帧, 已有 %d → 重新抽取", need, len(existing))
 
     # ── 时长 ──
     if duration is None:

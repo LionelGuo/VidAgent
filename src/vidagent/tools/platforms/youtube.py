@@ -11,7 +11,7 @@ import os
 import re
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, ClassVar
+from typing import Any, Callable, ClassVar
 
 import httpx
 import yt_dlp
@@ -282,7 +282,8 @@ def _apply_ytdlp_opts(opts: dict) -> None:
             pass
 
 
-def _download_yt(url: str, file_name: str) -> dict:
+def _download_yt(url: str, file_name: str,
+                  progress_callback: Callable[[int], None] | None = None) -> dict:
     """yt-dlp 下载 YouTube 视频。
 
     先尝试带 cookie（如有配置）；若因格式不可用失败则自动回退到无 cookie 模式。
@@ -290,6 +291,19 @@ def _download_yt(url: str, file_name: str) -> dict:
     target = storage.media_path(file_name, ".mp4")
 
     def _try_download(extra_opts: dict | None = None) -> bool:
+        progress_hooks = []
+        if progress_callback:
+
+            def _on_progress(d: dict) -> None:
+                if d.get("status") == "finished":
+                    progress_callback(100)
+                elif d.get("status") == "downloading":
+                    total = d.get("total_bytes") or d.get("total_bytes_estimate")
+                    if total and total > 0:
+                        pct = int(d.get("downloaded_bytes", 0) / total * 100)
+                        progress_callback(pct)
+
+            progress_hooks.append(_on_progress)
         opts = {
             "outtmpl": str(target.with_suffix(".%(ext)s")),
             "merge_output_format": "mp4",
@@ -297,6 +311,7 @@ def _download_yt(url: str, file_name: str) -> dict:
             "quiet": True,
             "noprogress": True,
             "no_warnings": True,
+            "progress_hooks": progress_hooks,
         }
         _apply_ytdlp_opts(opts)
         if extra_opts:
@@ -442,8 +457,9 @@ class YoutubePlatform(Platform):
         return [normalize(it) for it in items[:limit]]
 
     @staticmethod
-    def download(video_url: str, file_name: str) -> dict:
-        return _download_yt(video_url, file_name)
+    def download(video_url: str, file_name: str,
+                 progress_callback: Callable[[int], None] | None = None) -> dict:
+        return _download_yt(video_url, file_name, progress_callback=progress_callback)
 
 
 # 注册到全局注册表

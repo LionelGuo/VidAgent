@@ -21,8 +21,22 @@ interface DetailPanelProps {
 
 export function DetailPanel({ videoId, onClose }: DetailPanelProps) {
   const [expanded, setExpanded] = useState(false);
+  const [exitFullscreen, setExitFullscreen] = useState(false);
   const videoRef = useRef<HTMLVideoElement>(null);
   const video = useVideoStore((s) => s.videos[videoId]);
+
+  // 全屏切换：进入直接切，退出先播动画再切
+  const toggleFullscreen = () => {
+    if (expanded) {
+      setExitFullscreen(true);
+      setTimeout(() => {
+        setExpanded(false);
+        setExitFullscreen(false);
+      }, 150);
+    } else {
+      setExpanded(true);
+    }
+  };
 
   // 从 local_path 构造视频 URL
   const videoSrc = video?.local_path
@@ -33,8 +47,10 @@ export function DetailPanel({ videoId, onClose }: DetailPanelProps) {
     <div
       className={cn(
         "h-full flex flex-col bg-card rounded-2xl shadow-xl border border-border",
-        "overflow-hidden transition-all duration-300",
-        expanded && "fixed inset-4 z-50 rounded-2xl shadow-2xl"
+        "overflow-hidden",
+        expanded && "fixed inset-4 z-50 rounded-2xl shadow-2xl",
+        expanded && !exitFullscreen && "animate-scale-in",
+        exitFullscreen && "animate-scale-out"
       )}
     >
       {/* ── 工具栏 ── */}
@@ -44,7 +60,7 @@ export function DetailPanel({ videoId, onClose }: DetailPanelProps) {
         </h2>
         <div className="flex items-center gap-1">
           <button
-            onClick={() => setExpanded(!expanded)}
+            onClick={toggleFullscreen}
             className="p-1.5 rounded-md hover:bg-muted transition-colors"
             title={expanded ? "缩小" : "全屏"}
           >
@@ -88,36 +104,6 @@ export function DetailPanel({ videoId, onClose }: DetailPanelProps) {
                 视频未下载 — 请先通过对话下载
               </span>
             )}
-          </div>
-        )}
-
-        {/* 章节导航 */}
-        {video?.chapters && video.chapters.length > 0 && (
-          <div className="px-5 py-3 border-b border-border">
-            <h3 className="text-xs font-semibold mb-2">📑 章节</h3>
-            <div className="flex flex-wrap gap-1.5">
-              {video.chapters.map((ch, i) => (
-                <button
-                  key={i}
-                  onClick={() => {
-                    const vid = videoRef.current;
-                    if (vid) {
-                      // fastSeek 比直接赋值 currentTime 更快（跳过解码）
-                      if (typeof vid.fastSeek === "function") {
-                        vid.fastSeek(ch.start);
-                      } else {
-                        vid.currentTime = ch.start;
-                      }
-                    }
-                  }}
-                  className="text-xs px-2.5 py-1 rounded-full bg-muted hover:bg-primary/10
-                             hover:text-primary transition-colors"
-                  title={`${formatTime(ch.start)} - ${formatTime(ch.end)}`}
-                >
-                  {ch.title}
-                </button>
-              ))}
-            </div>
           </div>
         )}
 
@@ -165,45 +151,6 @@ export function DetailPanel({ videoId, onClose }: DetailPanelProps) {
                     ? "该视频尚未总结。在对话中要求「总结」即可生成。"
                     : "选中视频后将在此显示详细信息。"}
                 </p>
-              </div>
-            )}
-          </div>
-
-          {/* 内容脉络（章节时间轴的 V1 形态） */}
-          <div className="space-y-2">
-            <h3 className="text-sm font-semibold">🧠 内容脉络</h3>
-            {video?.chapters && video.chapters.length > 0 ? (
-              <div className="space-y-1.5">
-                {video.chapters.map((ch, i) => (
-                  <div
-                    key={i}
-                    className="flex items-center gap-3 rounded-lg border border-border bg-muted/30 px-3 py-2
-                               hover:bg-muted/50 transition-colors cursor-pointer"
-                    onClick={() => {
-                      const vid = videoRef.current;
-                      if (vid) {
-                        if (typeof vid.fastSeek === "function") {
-                          vid.fastSeek(ch.start);
-                        } else {
-                          vid.currentTime = ch.start;
-                        }
-                      }
-                    }}
-                  >
-                    <span className="text-xs font-mono text-muted-foreground shrink-0">
-                      {formatTime(ch.start)}
-                    </span>
-                    <span className="text-sm truncate">{ch.title}</span>
-                  </div>
-                ))}
-              </div>
-            ) : (
-              <div className="rounded-lg border border-border bg-muted/50 p-8 flex items-center justify-center">
-                <span className="text-sm text-muted-foreground">
-                  {video?.summary
-                    ? "该视频无章节数据"
-                    : "总结完成后将自动生成章节时间轴"}
-                </span>
               </div>
             )}
           </div>

@@ -105,24 +105,66 @@ export const VideoCard = memo(function VideoCard({
   summary?: string;
 }) {
   const selectVideo = useLayoutStore((s) => s.selectVideo);
+  const selectedVideoId = useLayoutStore((s) => s.selectedVideoId);
+  // 从 VideoStore 补全元数据（搜索工具预填的数据比 batch args 更完整）
+  const stored = useVideoStore((s) => s.videos[videoId]);
+
+  const isSelected = selectedVideoId === videoId;
+  const displayTitle = title !== "未知标题" ? title : (stored?.title ?? title);
+  const displayAuthor = author || stored?.author;
+  const displayDuration = duration || stored?.duration_text;
+  const displaySummary = summary || stored?.summary;
+  const displayDesc = stored?.desc;
+
+  // 状态指示器
+  const taskStatus = stored?.task_status;
+  const downloadProgress = stored?.download_progress ?? 0;
+  const isDone = taskStatus === "done";
+  const isSummarizing = taskStatus === "extracting" || taskStatus === "summarizing" || taskStatus === "analyzing" || taskStatus === "summary" || taskStatus === "asr";
+  const isDownloading = taskStatus === "downloading";
+
+  // 构建背景样式
+  let statusBgClass = "";
+  let statusInlineStyle: React.CSSProperties = {};
+  if (isDone) {
+    statusBgClass = "card-status-done border-emerald-200";
+  } else if (isSummarizing) {
+    statusBgClass = "card-status-summarizing";
+  } else if (isDownloading) {
+    statusBgClass = "card-status-downloading";
+    // 下载进度条：从左到右蓝色填充，精确跟随 download_progress
+    statusInlineStyle = {
+      background: `linear-gradient(to right, hsl(217 91% 60% / 0.15) ${downloadProgress}%, transparent ${downloadProgress}%)`,
+    };
+  }
 
   return (
     <button
       onClick={() => selectVideo(videoId)}
-      className="w-full text-left rounded-xl border border-border bg-card p-4
-                 hover:shadow-md hover:border-primary/20 transition-all duration-200
-                 active:scale-[0.99] cursor-pointer"
+      className={cn(
+        "w-full text-left rounded-xl border border-border bg-card p-4",
+        "hover:shadow-md hover:border-primary/20 transition-all duration-200",
+        "active:scale-[0.99] cursor-pointer",
+        isSelected && "ring-2 ring-primary ring-offset-2 bg-primary/5",
+        statusBgClass
+      )}
+      style={statusInlineStyle}
     >
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0 flex-1">
-          <h4 className="text-sm font-medium truncate">{title}</h4>
+          <h4 className="text-sm font-medium truncate">{displayTitle}</h4>
           <div className="flex items-center gap-3 mt-1 text-xs text-muted-foreground">
-            {author && <span>{author}</span>}
-            {duration && <span>{duration}</span>}
+            {displayAuthor && <span>@{displayAuthor}</span>}
+            {displayDuration && <span>{displayDuration}</span>}
           </div>
-          {summary && (
+          {displayDesc && !displaySummary && (
+            <p className="text-xs text-muted-foreground mt-2 line-clamp-2">
+              {displayDesc}
+            </p>
+          )}
+          {displaySummary && (
             <p className="text-xs text-muted-foreground mt-2 line-clamp-3">
-              {summary}
+              {displaySummary}
             </p>
           )}
         </div>
@@ -293,21 +335,32 @@ function AssistantContent({
   const toolInvocations = (message as any).toolInvocations ?? [];
   const reasoning = (message as any).reasoning as string | undefined;
 
-  // 从所有检索工具中提取视频卡片
+  // 从 batch_summarize_videos 工具调用中提取视频卡片
+  // （搜索工具不显示卡片——未总结的视频卡片没有意义）
   const videoCards = toolInvocations
-    .filter((ti: any) => ti.state === "result" && SEARCH_TOOLS.has(ti.toolName))
+    .filter((ti: any) => ti.toolName === "batch_summarize_videos")
     .flatMap((ti: any) => {
-      const results = ti.result?.results ?? [];
-      return results.map((v: any, i: number) => (
-        <VideoCard
-          key={v.video_id ?? `${ti.toolName}-${i}`}
-          videoId={v.video_id ?? String(i)}
-          title={v.title ?? "未知标题"}
-          author={v.author}
-          duration={v.duration_text}
-          summary={v.desc}
-        />
-      ));
+      const batchVideos: any[] = ti.args?.videos ?? [];
+      // 查找已完成的结果，用于显示 summary
+      const results: any[] = ti.result?.results ?? [];
+      const resultByUrl = new Map<string, any>();
+      for (const r of results) {
+        if (r.video_url) resultByUrl.set(r.video_url, r);
+      }
+      return batchVideos.map((v: any, i: number) => {
+        const vid = v.video_id || extractVideoId(v.video_url ?? "") || `batch-${i}`;
+        const result = resultByUrl.get(v.video_url);
+        return (
+          <VideoCard
+            key={vid}
+            videoId={vid}
+            title={v.title ?? "未知标题"}
+            author={v.author}
+            duration={v.duration_text}
+            summary={result?.summary}
+          />
+        );
+      });
     });
 
   return (
@@ -470,7 +523,7 @@ export function ChatView({
             // 预填 VideoStore 元数据（DetailPanel 必须在总结开始前就知道视频信息）
             const videoInfos: VideoInfo[] = [];
             for (const v of batchVideos) {
-              const vid: string = v.video_id || (v.video_url?.match(/BV[\w]+/)?.[0]);
+              const vid: string = v.video_id || extractVideoId(v.video_url ?? "");
               if (!vid) continue;
               videoInfos.push({
                 video_id: vid,
@@ -481,6 +534,7 @@ export function ChatView({
                 duration: v.duration,  // 数字时长（秒）
                 video_url: v.video_url ?? "",
                 view_count: 0,
+                task_status: "downloading",
               });
               // 打开 SSE 流
               if (!activeStreamsRef.current.has(vid)) {
@@ -495,7 +549,7 @@ export function ChatView({
             // 延迟关闭 SSE：给 done 事件留出传输时间，避免竞争
             setTimeout(() => {
               for (const v of batchVideos) {
-                const vid: string = v.video_id || (v.video_url?.match(/BV[\w]+/)?.[0]);
+                const vid: string = v.video_id || extractVideoId(v.video_url ?? "");
                 _closeSSE(vid, activeStreamsRef);
               }
             }, 800);

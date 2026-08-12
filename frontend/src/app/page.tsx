@@ -1,6 +1,7 @@
 "use client";
 
 import { useChat } from "@ai-sdk/react";
+import { useState } from "react";
 import { ChatView } from "@/components/chat/ChatView";
 import { DetailPanel } from "@/components/detail/DetailPanel";
 import { useLayoutStore } from "@/lib/stores";
@@ -8,11 +9,23 @@ import { cn } from "@/lib/utils";
 
 export default function Home() {
   const selectedVideoId = useLayoutStore((s) => s.selectedVideoId);
+  const [closingId, setClosingId] = useState<string | null>(null);
 
   const { messages, input, handleInputChange, handleSubmit, status } = useChat({
     api: "/api/chat",
     onError: (err) => console.error("Chat error:", err),
   });
+
+  // 关闭详情卡片：先播放退出动画，动画结束后再真正关闭
+  const handleDetailClose = () => {
+    setClosingId(selectedVideoId);
+  };
+  const handleCloseAnimationEnd = () => {
+    if (closingId) {
+      useLayoutStore.getState().selectVideo(null);
+      setClosingId(null);
+    }
+  };
 
   return (
     <div className="flex flex-col h-screen bg-background">
@@ -23,7 +36,7 @@ export default function Home() {
           className={cn(
             "flex flex-col min-w-0 transition-all duration-300",
             selectedVideoId
-              ? "w-[45%] border-r border-border"
+              ? "w-[42%]"
               : "w-full max-w-3xl mx-auto"
           )}
         >
@@ -36,7 +49,7 @@ export default function Home() {
           </header>
 
           {/* Messages */}
-          <div className="flex-1 overflow-y-auto px-4 py-6">
+          <div className="flex-1 overflow-y-auto pl-8 pr-3 py-6">
             <ChatView
               messages={messages}
               status={status}
@@ -49,13 +62,16 @@ export default function Home() {
         {selectedVideoId && (
           <div
             className={cn(
-              "w-[55%] p-4 bg-muted/30",
-              "animate-slide-in-right"
+              "w-[58%] pl-2 pr-4 bg-background",
+              closingId === selectedVideoId
+                ? "animate-slide-out-right"
+                : "animate-slide-in-right"
             )}
+            onAnimationEnd={closingId === selectedVideoId ? handleCloseAnimationEnd : undefined}
           >
             <DetailPanel
               videoId={selectedVideoId}
-              onClose={() => useLayoutStore.getState().selectVideo(null)}
+              onClose={handleDetailClose}
             />
           </div>
         )}
@@ -66,12 +82,7 @@ export default function Home() {
         onSubmit={handleSubmit}
         className="shrink-0 border-t border-border p-4 bg-background"
       >
-        <div
-          className={cn(
-            "flex gap-2",
-            selectedVideoId ? "max-w-full px-2" : "max-w-3xl mx-auto"
-          )}
-        >
+        <div className="flex gap-2 max-w-3xl mx-auto">
           <input
             value={input}
             onChange={handleInputChange}

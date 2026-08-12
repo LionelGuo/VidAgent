@@ -12,7 +12,7 @@ import os
 import re
 import sys
 from pathlib import Path
-from typing import Any, ClassVar
+from typing import Any, Callable, ClassVar
 
 import httpx
 from playwright.async_api import async_playwright, BrowserContext, Page
@@ -378,7 +378,8 @@ async def _get_creator_via_cdp(creator_id: str, limit: int = 10) -> list[dict]:
 # 下载（P2 — MediaCrawler → httpx 下载视频文件）
 # ---------------------------------------------------------------------------
 
-async def _download_via_cdp(video_url: str, file_name: str) -> dict:
+async def _download_via_cdp(video_url: str, file_name: str,
+                            progress_callback: Callable[[int], None] | None = None) -> dict:
     """通过 MediaCrawler 获取视频下载链接，httpx 下载文件。"""
     from vidagent.utils import storage as _storage
 
@@ -479,7 +480,7 @@ async def _download_via_cdp(video_url: str, file_name: str) -> dict:
                 logger.error("  video keys: %s", list(video_data.keys())[:10])
         return {"status": "error", "error": "未找到可下载的视频链接", "video_url": video_url}
 
-    # 4. 下载视频文件（需要 Referer + UA 模拟正常请求）
+    # 4. 下载视频文件（需要 Referer + UA 模拟正常请求，流式写入 + 进度回调）
     logger.info("  httpx 下载中…")
     try:
         dl_headers = {
@@ -490,14 +491,25 @@ async def _download_via_cdp(video_url: str, file_name: str) -> dict:
             headers=dl_headers, proxy=_get_proxy(),
             timeout=120, follow_redirects=True,
         ) as http:
-            resp = await http.get(media_url)
-            resp.raise_for_status()
-            target.write_bytes(resp.content)
-            logger.info("  ✅ 下载完成: %d KB → %s", len(resp.content) // 1024, target)
+            async with http.stream("GET", media_url) as resp:
+                resp.raise_for_status()
+                total = int(resp.headers.get("content-length", 0))
+                downloaded = 0
+                target.parent.mkdir(parents=True, exist_ok=True)
+                with open(target, "wb") as f:
+                    async for chunk in resp.aiter_bytes(65536):
+                        f.write(chunk)
+                        downloaded += len(chunk)
+                        if total > 0 and progress_callback:
+                            pct = int(downloaded / total * 100)
+                            progress_callback(pct)
+                logger.info("  ✅ 下载完成: %d KB → %s", downloaded // 1024, target)
     except Exception as e:
         logger.error("  视频文件下载失败: %s", e)
         return {"status": "error", "error": f"视频文件下载失败: {e}", "video_url": video_url}
 
+    if progress_callback:
+        progress_callback(100)
     return {"status": "success", "local_path": str(target), "platform": "douyin", "resolved_url": video_url}
 
 
@@ -536,10 +548,11 @@ class DouyinPlatform(Platform):
         return await _get_creator_via_cdp(creator, limit)
 
     @staticmethod
-    def download(video_url: str, file_name: str) -> dict:
+    def download(video_url: str, file_name: str,
+                 progress_callback: Callable[[int], None] | None = None) -> dict:
         """下载抖音无水印视频（MediaCrawler CDP → httpx）。"""
         import asyncio as _asyncio
-        return _asyncio.run(_download_via_cdp(video_url, file_name))
+        return _asyncio.run(_download_via_cdp(video_url, file_name, progress_callback=progress_callback))
 
 
 # 注册到全局注册表

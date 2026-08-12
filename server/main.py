@@ -96,6 +96,9 @@ _executor = ThreadPoolExecutor(max_workers=5)
 # vLLM 并发控制：避免多视频同时 Omni 推理导致显存/队列拥塞
 _llm_semaphore = threading.BoundedSemaphore(2)
 
+# 功能开关：Phase 2 章节匹配（实验性，效果不稳定时关闭）
+_ENABLE_PHASE2 = False
+
 # 总结任务追踪：{task_id: {"status": str, "result": str, "partial": str}}
 _summarize_tasks: dict[str, dict[str, Any]] = {}
 # video_id → task_id 映射（供浏览器按视频 ID 连接 SSE）
@@ -324,6 +327,7 @@ async def tool_summarize_stream(task_id: str):
         last_partial = ""
         last_summary = ""
         last_summary_stage = ""
+        last_download_pct = -1
         last_local_path_sent = False
         last_asr_active = False
         last_summary_active_flag = False
@@ -355,11 +359,13 @@ async def tool_summarize_stream(task_id: str):
                 asr_text = ""
                 summary_active = progress.active
                 summary_text = progress.partial if progress.active else ""
-                # ★ 检测 stage 变化，推送阶段事件
+                # ★ 推送阶段事件：stage 变化 或 download_pct 变化（下载进度实时更新）
                 stage = getattr(progress, 'stage', '') or ''
-                if stage != last_summary_stage:
+                download_pct = getattr(progress, 'download_pct', 0)
+                if stage != last_summary_stage or download_pct != last_download_pct:
                     last_summary_stage = stage
-                    yield f"data: {json.dumps({'type': 'progress', 'stage': stage, 'download_pct': getattr(progress, 'download_pct', 0)}, ensure_ascii=False)}\n\n"
+                    last_download_pct = download_pct
+                    yield f"data: {json.dumps({'type': 'progress', 'stage': stage, 'download_pct': download_pct}, ensure_ascii=False)}\n\n"
             else:
                 # 回退：未传 task_id 的旧调用仍走全局单例
                 from vidagent.tools.summarizer import (
@@ -450,7 +456,7 @@ async def tool_batch_summarize(req: BatchSummarizeRequest):
         { batch_id, tasks: [{ task_id, video_id, status }] }
     前端可立即按 video_id 连接 SSE 获取各视频流式进度。
     """
-    from vidagent.tools.summarizer import extract_and_summarize, cleanup_progress, get_progress
+    from vidagent.tools.summarizer import extract_and_summarize, cleanup_progress, get_progress, create_progress
     from vidagent.tools.downloader import download_video
 
     batch_id = f"batch_{uuid.uuid4().hex[:12]}"
@@ -464,18 +470,25 @@ async def tool_batch_summarize(req: BatchSummarizeRequest):
         video_id = video["_video_id"]
 
         try:
+            # ── 提前创建 progress（下载阶段也需要推送进度）──
+            pg = create_progress(task_id)
+            pg.stage = "downloading"
+
             # ── 下载（重试）──
             local_path = None
             last_err = None
             video_url = video.get("video_url", "")
-            # 更新进度 stage
-            pg = get_progress(task_id)
-            if pg:
-                pg.stage = "downloading"
+
+            # 下载进度回调（pg 已在 try 开头创建）
+            # yt-dlp 分多流下载（video+audio），每条流独立报 0→100%
+            # 因此进度只升不降，避免看到"满→空→满"的视觉回退
+            def _dl_progress(pct: int) -> None:
+                if pct > pg.download_pct:
+                    pg.download_pct = pct
 
             for retry in range(1, MAX_RETRIES + 1):
                 try:
-                    result = download_video(video_url, video_id)
+                    result = download_video(video_url, video_id, progress_callback=_dl_progress)
                     if result.get("status") == "success":
                         local_path = result["local_path"]
                         _summarize_tasks[task_id]["local_path"] = local_path
@@ -502,10 +515,10 @@ async def tool_batch_summarize(req: BatchSummarizeRequest):
             # ── 预处理：音频 + 均匀帧（Phase 1 立即启动）──
             from vidagent.utils.frames import extract_frames, detect_boundaries
             from vidagent.utils.audio import extract_audio
-            from vidagent.tools.summarizer import _summarize_multimodal_with_chapters, _match_chapters_segmented, _summarize_short_video, create_progress
+            from vidagent.tools.summarizer import _summarize_multimodal_with_chapters, _match_chapters_segmented, _summarize_short_video
 
-            # 创建 per-task progress（替代 extract_and_summarize 中的 create_progress 调用）
-            pg = create_progress(task_id)
+            # 获取已创建的 per-task progress（下载阶段已通过 create_progress 创建）
+            pg = get_progress(task_id)
             pg.stage = "extracting"
             pg.begin()  # 激活流式输出 → SSE 端点开始推送
 
@@ -683,23 +696,31 @@ async def tool_batch_summarize(req: BatchSummarizeRequest):
                         return boundaries, [str(f) for f in frames]
                     return boundaries, []
 
-                with _cf.ThreadPoolExecutor(max_workers=2) as _pool:
-                    _f1 = _pool.submit(_do_phase1)
-                    _f2 = _pool.submit(_do_boundaries)
-                    phase1_result = _f1.result()
-                    candidate_boundaries, candidate_frames = _f2.result()
+                if _ENABLE_PHASE2:
+                    with _cf.ThreadPoolExecutor(max_workers=2) as _pool:
+                        _f1 = _pool.submit(_do_phase1)
+                        _f2 = _pool.submit(_do_boundaries)
+                        phase1_result = _f1.result()
+                        candidate_boundaries, candidate_frames = _f2.result()
 
-                logger.info(
-                    "📐 边界检测完成: %d 边界 → %s",
-                    len(candidate_boundaries), candidate_boundaries,
-                )
+                    logger.info(
+                        "📐 边界检测完成: %d 边界 → %s",
+                        len(candidate_boundaries), candidate_boundaries,
+                    )
 
-                # ── 结果处理 ──
-                summary = phase1_result.get("summary", "")
-                chapters = phase1_result.get("chapters", [])
+                    # ── 结果处理 ──
+                    summary = phase1_result.get("summary", "")
+                    chapters = phase1_result.get("chapters", [])
+                else:
+                    # Phase 2 禁用：只做总结，跳过边界检测和章节
+                    phase1_result = _do_phase1()
+                    summary = phase1_result.get("summary", "")
+                    chapters: list[dict] = []
+                    candidate_boundaries = []
+                    candidate_frames = []
 
                 # Phase 2: 分段多模态匹配（有边界 + Phase 1 无章节时触发）
-                if not chapters and len(candidate_boundaries) >= 3:
+                if _ENABLE_PHASE2 and not chapters and len(candidate_boundaries) >= 3:
                     logger.info("📑 Phase 2: 分段匹配 (%d 段) …", len(candidate_boundaries) - 1)
                     with _llm_semaphore:
                         chapters = _match_chapters_segmented(

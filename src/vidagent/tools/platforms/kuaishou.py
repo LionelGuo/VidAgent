@@ -11,7 +11,7 @@ import os
 import re
 import sys
 from pathlib import Path
-from typing import Any, ClassVar
+from typing import Any, Callable, ClassVar
 
 import httpx
 from playwright.async_api import async_playwright, BrowserContext, Page
@@ -209,7 +209,8 @@ async def _get_creator_via_cdp(creator_id: str, limit: int = 10) -> list[dict]:
     return results
 
 
-async def _download_via_cdp(video_url: str, file_name: str) -> dict:
+async def _download_via_cdp(video_url: str, file_name: str,
+                            progress_callback=None) -> dict:
     from vidagent.utils import storage as _storage
 
     target = _storage.media_path(file_name, ".mp4")
@@ -275,9 +276,10 @@ class KuaishouPlatform(Platform):
         return await _get_creator_via_cdp(creator, limit)
 
     @staticmethod
-    def download(video_url: str, file_name: str) -> dict:
+    def download(video_url: str, file_name: str,
+                 progress_callback: Callable[[int], None] | None = None) -> dict:
         import asyncio as _asyncio
-        return _asyncio.run(_download_via_cdp(video_url, file_name))
+        return _asyncio.run(_download_via_cdp(video_url, file_name, progress_callback=progress_callback))
 
 
 register(KuaishouPlatform)
