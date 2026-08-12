@@ -192,7 +192,6 @@ def detect_boundaries(
                 result.append(fallback)
                 fallback += FALLBACK_INTERVAL
         result.append(boundary_int)
-        result.append(boundary_int)
 
     # 处理最后一个边界到视频结尾的间隔
     while int(duration) - result[-1] > MAX_GAP:
