@@ -1,7 +1,7 @@
 "use client";
 
 import { useChat } from "@ai-sdk/react";
-import { useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { ChatView } from "@/components/chat/ChatView";
 import { DetailPanel } from "@/components/detail/DetailPanel";
 import { useLayoutStore } from "@/lib/stores";
@@ -9,38 +9,62 @@ import { cn } from "@/lib/utils";
 
 export default function Home() {
   const selectedVideoId = useLayoutStore((s) => s.selectedVideoId);
-  const [closingId, setClosingId] = useState<string | null>(null);
+  const [closing, setClosing] = useState(false);
+  const [entered, setEntered] = useState(false);
+  const [expanded, setExpanded] = useState(false);
+  const overlayRef = useRef<HTMLDivElement>(null);
 
   const { messages, input, handleInputChange, handleSubmit, status } = useChat({
     api: "/api/chat",
     onError: (err) => console.error("Chat error:", err),
   });
 
-  // 关闭详情卡片：先播放退出动画，动画结束后再真正关闭
-  const handleDetailClose = () => {
-    setClosingId(selectedVideoId);
-  };
-  const handleCloseAnimationEnd = () => {
-    if (closingId) {
-      useLayoutStore.getState().selectVideo(null);
-      setClosingId(null);
+  // ── 打开：mount 帧 → 下一帧 entered=true，CSS transition 驱动卡片的滑入 ──
+  useEffect(() => {
+    if (selectedVideoId) {
+      setEntered(false);
+      const raf = requestAnimationFrame(() => setEntered(true));
+      return () => cancelAnimationFrame(raf);
     }
-  };
+  }, [selectedVideoId]);
+
+  // ── 关闭：切到 off-screen → CSS transition 滑出 → transitionend 后真正 unmount ──
+  const handleClose = useCallback(() => {
+    setClosing(true);
+  }, []);
+
+  const handleTransitionEnd = useCallback((e: React.TransitionEvent) => {
+    // 只等 opacity 淡出完成才卸载（transitionend 对每个属性各触发一次）
+    if (closing && e.propertyName === "opacity") {
+      useLayoutStore.getState().selectVideo(null);
+      setClosing(false);
+      setEntered(false);
+      setExpanded(false);
+    }
+  }, [closing]);
+
+  const showOverlay = selectedVideoId !== null;
+
+  // ── 全屏切换：expanded 改变 → CSS transition 平滑过渡四边 ──
+  const toggleFullscreen = useCallback(() => {
+    setExpanded((p) => !p);
+  }, []);
 
   return (
     <div className="flex flex-col h-screen bg-background">
-      {/* ── 上方区域：聊天（左） + 详情卡片（右，选中视频时出现）── */}
+      {/* ── 上方区域 ── */}
       <div className="flex-1 flex min-h-0">
-        {/* 左侧聊天面板 */}
+        {/* 左侧聊天面板 — width + marginLeft 同步过渡 */}
         <div
-          className={cn(
-            "flex flex-col min-w-0 transition-all duration-300",
-            selectedVideoId
-              ? "w-[42%]"
-              : "w-full max-w-3xl mx-auto"
-          )}
+          className="flex flex-col min-w-0"
+          style={{
+            width: entered && !closing ? "42%" : "48rem",
+            marginLeft: entered && !closing
+              ? 0
+              : "calc((100% - 48rem) / 2)",
+            transition: "width 0.5s ease-out, margin-left 0.5s ease-out",
+          }}
         >
-          {/* Header */}
           <header className="shrink-0 px-6 py-4 border-b border-border">
             <h1 className="text-lg font-semibold">🎬 VidAgent</h1>
             <p className="text-sm text-muted-foreground">
@@ -48,7 +72,6 @@ export default function Home() {
             </p>
           </header>
 
-          {/* Messages */}
           <div className="flex-1 overflow-y-auto pl-8 pr-3 py-6">
             <ChatView
               messages={messages}
@@ -58,26 +81,41 @@ export default function Home() {
           </div>
         </div>
 
-        {/* 右侧详情卡片 */}
-        {selectedVideoId && (
+        {/* ── 详情卡片：始终 fixed 定位，CSS transition 驱动所有动画 ── */}
+        {showOverlay && (
           <div
+            ref={overlayRef}
+            onTransitionEnd={handleTransitionEnd}
             className={cn(
-              "w-[58%] pl-2 pr-4 bg-background",
-              closingId === selectedVideoId
-                ? "animate-slide-out-right"
-                : "animate-slide-in-right"
+              "fixed z-40",
+              "duration-1000 ease-out",
+              // 全屏模式：四边距视口 1rem
+              expanded && "inset-4 opacity-100",
+              // 侧边栏 + 关闭：固定上下 + 右边距，left 动态变化
+              !expanded && "top-4 bottom-24 right-4",
+              // 侧边栏可见：left 对齐对话区右侧 + 3% 间隙
+              entered && !closing && !expanded && "left-[45%] opacity-100",
+              // 进入前 / 关闭滑出：left 跟踪对话区右边界（~80%），保持间隙恒定
+              (!entered || closing) && !expanded && "left-[80%] opacity-0",
             )}
-            onAnimationEnd={closingId === selectedVideoId ? handleCloseAnimationEnd : undefined}
+            style={{
+              // 打开时卡片延迟 150ms 跟随对话区，关闭时同步进行
+              transition: closing
+                ? "left 0.5s ease-out, opacity 0.5s ease-out, bottom 0.5s ease-out"
+                : "left 0.5s ease-out 150ms, opacity 0.5s ease-out 150ms, bottom 0.5s ease-out 150ms",
+            }}
           >
             <DetailPanel
-              videoId={selectedVideoId}
-              onClose={handleDetailClose}
+              videoId={selectedVideoId!}
+              expanded={expanded}
+              onToggleFullscreen={toggleFullscreen}
+              onClose={handleClose}
             />
           </div>
         )}
       </div>
 
-      {/* ── 底部输入框（始终全宽）── */}
+      {/* ── 底部输入框 ── */}
       <form
         onSubmit={handleSubmit}
         className="shrink-0 border-t border-border p-4 bg-background"

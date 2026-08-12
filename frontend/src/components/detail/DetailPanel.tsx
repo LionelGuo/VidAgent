@@ -1,42 +1,28 @@
 "use client";
 
 import { X, Maximize2, Minimize2, Play, Clock, Eye, User } from "lucide-react";
-import { useRef, useState } from "react";
-import { cn } from "@/lib/utils";
+import { useRef } from "react";
 import { useVideoStore } from "@/lib/stores";
 import { apiBaseUrl } from "@/lib/api";
 import { MarkdownRenderer } from "@/components/ui/MarkdownRenderer";
 
 // ---------------------------------------------------------------------------
-// DetailPanel — 右侧视频详情卡片
+// DetailPanel — 视频详情卡片（内容层）
 //
-// 从 VideoStore 读取视频元数据、下载路径、总结内容、章节时间轴。
-// 卡片形态：大圆角 + 阴影 + 浮起感，而非半个网页的扁平分割。
+// 自身不管理定位——定位由父级 fixed overlay 通过 CSS transition 统一驱动。
+// expanded / onToggleFullscreen 由父级传入，DetailPanel 只负责 UI 呈现。
 // ---------------------------------------------------------------------------
 
 interface DetailPanelProps {
   videoId: string;
+  expanded: boolean;
+  onToggleFullscreen: () => void;
   onClose: () => void;
 }
 
-export function DetailPanel({ videoId, onClose }: DetailPanelProps) {
-  const [expanded, setExpanded] = useState(false);
-  const [exitFullscreen, setExitFullscreen] = useState(false);
+export function DetailPanel({ videoId, expanded, onToggleFullscreen, onClose }: DetailPanelProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const video = useVideoStore((s) => s.videos[videoId]);
-
-  // 全屏切换：进入直接切，退出先播动画再切
-  const toggleFullscreen = () => {
-    if (expanded) {
-      setExitFullscreen(true);
-      setTimeout(() => {
-        setExpanded(false);
-        setExitFullscreen(false);
-      }, 150);
-    } else {
-      setExpanded(true);
-    }
-  };
 
   // 从 local_path 构造视频 URL
   const videoSrc = video?.local_path
@@ -44,15 +30,7 @@ export function DetailPanel({ videoId, onClose }: DetailPanelProps) {
     : null;
 
   return (
-    <div
-      className={cn(
-        "h-full flex flex-col bg-card rounded-2xl shadow-xl border border-border",
-        "overflow-hidden",
-        expanded && "fixed inset-4 z-50 rounded-2xl shadow-2xl",
-        expanded && !exitFullscreen && "animate-scale-in",
-        exitFullscreen && "animate-scale-out"
-      )}
-    >
+    <div className="h-full flex flex-col bg-card rounded-2xl shadow-xl border border-border overflow-hidden">
       {/* ── 工具栏 ── */}
       <div className="flex items-center justify-between px-5 py-3 border-b border-border shrink-0 bg-card">
         <h2 className="text-sm font-semibold truncate max-w-[70%]">
@@ -60,7 +38,7 @@ export function DetailPanel({ videoId, onClose }: DetailPanelProps) {
         </h2>
         <div className="flex items-center gap-1">
           <button
-            onClick={toggleFullscreen}
+            onClick={onToggleFullscreen}
             className="p-1.5 rounded-md hover:bg-muted transition-colors"
             title={expanded ? "缩小" : "全屏"}
           >
@@ -108,7 +86,7 @@ export function DetailPanel({ videoId, onClose }: DetailPanelProps) {
         )}
 
         {/* 元数据 */}
-        <div className="px-5 py-4 space-y-3">
+        <div className="px-5 py-5 space-y-3">
           {video && (
             <div className="flex flex-wrap items-center gap-4 text-xs text-muted-foreground">
               {video.author && (
@@ -168,14 +146,4 @@ function formatCount(n: number): string {
   if (n >= 10000) return `${(n / 10000).toFixed(1)}万`;
   if (n >= 1000) return `${(n / 1000).toFixed(1)}k`;
   return String(n);
-}
-
-function formatTime(seconds: number): string {
-  const h = Math.floor(seconds / 3600);
-  const m = Math.floor((seconds % 3600) / 60);
-  const s = Math.floor(seconds % 60);
-  if (h > 0) {
-    return `${h}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
-  }
-  return `${m}:${String(s).padStart(2, "0")}`;
 }

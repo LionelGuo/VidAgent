@@ -77,26 +77,21 @@
 }
 
 /* 视频卡片状态指示 */
+@property --download-pct {
+  syntax: '<percentage>';
+  inherits: false;
+  initial-value: 0%;
+}
 @keyframes shimmer {
   0% { background-position: 200% 0; }
   100% { background-position: -200% 0; }
-}
-.card-status-downloading {
-  background-image: linear-gradient(
-    90deg,
-    hsl(217 91% 60% / 0.06) 0%,
-    hsl(217 91% 60% / 0.12) 50%,
-    hsl(217 91% 60% / 0.06) 100%
-  );
-  background-size: 200% 100%;
-  animation: shimmer 2s ease-in-out infinite;
 }
 .card-status-done {
   background-color: hsl(152 69% 95%);
 }
 .card-status-summarizing {
   background-image: linear-gradient(
-    90deg,
+    120deg,
     transparent 0%,
     hsl(217 91% 60% / 0.08) 25%,
     hsl(217 91% 60% / 0.12) 50%,
@@ -104,5 +99,5 @@
     transparent 100%
   );
   background-size: 200% 100%;
-  animation: shimmer 2s ease-in-out infinite;
+  animation: shimmer 4s ease-in-out infinite;
 }

@@ -125,30 +125,37 @@ export const VideoCard = memo(function VideoCard({
 
   // 构建背景样式
   let statusBgClass = "";
-  let statusInlineStyle: React.CSSProperties = {};
+  let isBgOverride = false;
   if (isDone) {
-    statusBgClass = "card-status-done border-emerald-200";
+    statusBgClass = "bg-blue-400/15 border-blue-400/20";
+    isBgOverride = true;
   } else if (isSummarizing) {
     statusBgClass = "card-status-summarizing";
-  } else if (isDownloading) {
-    statusBgClass = "card-status-downloading";
-    // 下载进度条：从左到右蓝色填充，精确跟随 download_progress
-    statusInlineStyle = {
-      background: `linear-gradient(to right, hsl(217 91% 60% / 0.15) ${downloadProgress}%, transparent ${downloadProgress}%)`,
-    };
   }
+
+  // 下载进度：@property --download-pct 支持 CSS transition 平滑过渡渐变百分比
+  const progressStyle: React.CSSProperties =
+    isDownloading
+      ? {
+          ["--download-pct" as string]: `${downloadProgress}%`,
+          background: `linear-gradient(to right, hsl(217 91% 60% / 0.15) var(--download-pct), transparent var(--download-pct))`,
+          transition: "--download-pct 0.3s ease-out",
+        }
+      : {};
 
   return (
     <button
       onClick={() => selectVideo(videoId)}
       className={cn(
-        "w-full text-left rounded-xl border border-border bg-card p-4",
+        "w-full text-left rounded-xl border border-border p-4",
         "hover:shadow-md hover:border-primary/20 transition-all duration-200",
         "active:scale-[0.99] cursor-pointer",
-        isSelected && "ring-2 ring-primary ring-offset-2 bg-primary/5",
+        // 默认背景：下载/完成态用自己的背景替代
+        !isDownloading && !isBgOverride && "bg-card",
+        isSelected && "shadow-md border-primary/20",
         statusBgClass
       )}
-      style={statusInlineStyle}
+      style={progressStyle}
     >
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0 flex-1">
@@ -157,14 +164,9 @@ export const VideoCard = memo(function VideoCard({
             {displayAuthor && <span>@{displayAuthor}</span>}
             {displayDuration && <span>{displayDuration}</span>}
           </div>
-          {displayDesc && !displaySummary && (
+          {displayDesc && (
             <p className="text-xs text-muted-foreground mt-2 line-clamp-2">
               {displayDesc}
-            </p>
-          )}
-          {displaySummary && (
-            <p className="text-xs text-muted-foreground mt-2 line-clamp-3">
-              {displaySummary}
             </p>
           )}
         </div>
