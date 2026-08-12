@@ -1237,7 +1237,8 @@ def _split_audio_at_boundaries(
     _sp.run(
         ["ffmpeg", "-y", "-i", str(mp3_path),
          "-f", "segment", "-segment_times", times,
-         "-c", "copy", str(seg_dir / "seg_%03d.mp3")],
+         "-c:a", "libmp3lame", "-q:a", "7",  # 重编码避免帧边界损坏
+         str(seg_dir / "seg_%03d.mp3")],
         capture_output=True, timeout=30,
     )
     segs = sorted(seg_dir.glob("seg_*.mp3"))
