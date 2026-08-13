@@ -466,7 +466,15 @@ async def _fetch_hot_list_via_page(limit: int = 10) -> list[dict]:
     """
     from ._cdp_browser import get_page_for_platform
 
-    page = await get_page_for_platform("dy", "https://www.douyin.com/hot")
+    try:
+        page = await get_page_for_platform("dy", "https://www.douyin.com/hot")
+    except RuntimeError:
+        # CDP 连不上 Windows Chrome（与 _search_via_cdp 同款优雅降级：不 500）
+        logger.warning("抖音热搜榜失败: %s", CDP_GUIDE_MSG)
+        return []
+    except Exception as e:
+        logger.warning("抖音热搜榜失败: %s", e)
+        return []
 
     # 等 webmssdk 就绪（XHR hook 生效前发出的请求无签名会被拒）
     for _ in range(24):
@@ -600,24 +608,131 @@ async def _search_via_cdp(keyword: str, limit: int = 10) -> list[dict]:
     return results[:limit]
 
 
-async def _get_creator_via_cdp(creator_id: str, limit: int = 10) -> list[dict]:
-    """通过 MediaCrawler DouYinClient 获取创作者视频。"""
-    try:
-        info = _ParseCreatorInfo(creator_id)
-        sec_user_id = info.sec_user_id
-    except (ValueError, AttributeError):
-        sec_user_id = creator_id
+_SEC_UID_RE = re.compile(r"^MS4wLjABAAAA")  # 纯 sec_user_id 特征前缀
+
+# 「用户」tab 搜索接口（2026-08-14 CDP 抓包定位：douyin.com/search/<kw>?type=user
+# 页面的 discover/search XHR；search_channel=aweme_user_web 不被 general/search/single
+# 认可——那接口返回的还是视频列表）。精简参数即可，webmssdk XHR hook 自动补
+# msToken/a_bogus/verifyFp 等签名（与热搜榜同法，勿用 httpx/DouYinClient 直签）。
+_USER_SEARCH_XHR_JS = """(keyword) => new Promise((resolve) => {
+  const params = new URLSearchParams({
+    device_platform: 'webapp', aid: '6383', channel: 'channel_pc_web',
+    search_channel: 'aweme_user_web', keyword: keyword,
+    search_source: 'normal_search', query_correct_type: '1',
+    is_filter_search: '0', from_group_id: '', disable_rs: '0',
+    offset: '0', count: '10', need_filter_settings: '1',
+    list_type: 'single',
+    pc_search_top_1_params: JSON.stringify({enable_ai_search_top_1: 1}),
+  });
+  const url = 'https://www.douyin.com/aweme/v1/web/discover/search/?' + params.toString();
+  const xhr = new XMLHttpRequest();
+  xhr.open('GET', url, true);
+  xhr.withCredentials = true;
+  xhr.onload = () => resolve({status: xhr.status, body: xhr.responseText});
+  xhr.onerror = () => resolve({status: 0, body: ''});
+  xhr.send();
+})"""
+
+
+async def _resolve_creator_sec_uid(creator_id: str) -> str | None:
+    """把 creator 输入解析为 sec_user_id。
+
+    支持三种输入：
+    1. 创作者主页 URL（douyin.com/user/xxx）→ 官方 parse_creator_info_from_url
+    2. 纯 sec_user_id（MS4wLjABAAAA 前缀）
+    3. 昵称（如「张朝阳」）→ 页面内 XHR 调「用户」tab 的 discover/search
+       （webmssdk 自动补签名，与热搜榜同法），优先精确昵称匹配，
+       否则取第一条（结果通常按相关度排序）
+    """
+    # URL / 纯 sec_user_id 直接解析
+    if "douyin.com" in creator_id or _SEC_UID_RE.match(creator_id):
+        try:
+            return _ParseCreatorInfo(creator_id).sec_user_id
+        except (ValueError, AttributeError):
+            return None
+
+    # 昵称 → 「用户」tab 页面内 XHR
+    from ._cdp_browser import get_page_for_platform
 
     try:
-        aweme_list = await _client_call(
-            lambda c: c.get_all_user_aweme_posts(sec_user_id)
+        page = await get_page_for_platform("dy", "https://www.douyin.com")
+    except RuntimeError:
+        # CDP 连不上（与热榜/搜索同款优雅降级）
+        logger.warning("抖音用户搜索失败: %s", CDP_GUIDE_MSG)
+        return None
+    except Exception as e:
+        logger.warning("抖音用户搜索失败: %s", e)
+        return None
+    # 等 webmssdk 就绪（XHR hook 生效前发出的请求无签名会被拒）
+    for _ in range(24):
+        ready = await page.evaluate("() => !!window.byted_acrawler")
+        if ready:
+            break
+        await asyncio.sleep(0.5)
+
+    for attempt in range(3):
+        try:
+            raw = await page.evaluate(_USER_SEARCH_XHR_JS, creator_id)
+        except Exception as e:
+            logger.warning("抖音用户搜索 XHR 异常(第%d次): %s", attempt + 1, e)
+            raw = {"status": 0, "body": ""}
+        if raw.get("status") == 200 and raw.get("body"):
+            break
+        await asyncio.sleep(1)
+
+    if raw.get("status") != 200 or not raw.get("body"):
+        logger.warning("抖音用户搜索 XHR 失败: status=%s", raw.get("status"))
+        return None
+    try:
+        data = json.loads(raw["body"])
+    except (json.JSONDecodeError, TypeError) as e:
+        logger.warning("抖音用户搜索响应解析失败: %s", e)
+        return None
+    users = data.get("user_list") or []
+    if not users:
+        # 空结果诊断：转储响应键（静默风控/字段变化的典型信号）
+        logger.warning("抖音用户搜索无结果 '%s': resp_keys=%s", creator_id,
+                       sorted(data.keys()) if isinstance(data, dict) else type(data).__name__)
+        return None
+    best = next(
+        (u for u in users
+         if ((u.get("user_info") or {}).get("nickname") or "").strip() == creator_id.strip()),
+        users[0],
+    )
+    ui = best.get("user_info") or {}
+    sec_uid = ui.get("sec_uid")
+    if sec_uid:
+        logger.info("抖音昵称 '%s' → 用户 '%s' (sec_uid=%s)",
+                    creator_id, ui.get("nickname"), sec_uid)
+    else:
+        logger.warning("抖音用户搜索结果无 sec_uid: item_keys=%s",
+                       sorted(best.keys())[:12] if isinstance(best, dict) else type(best).__name__)
+    return sec_uid
+
+
+async def _get_creator_via_cdp(creator_id: str, limit: int = 10) -> list[dict]:
+    """通过 MediaCrawler DouYinClient 获取创作者视频（支持昵称/主页 URL/ID）。
+
+    只取第一页（官方 count=18，够默认 limit=10）：不翻页——翻全页会高频
+    请求触发风控（2026-08-14 实测李佳琦翻到第 4 页被 ArgusSecurityPlugin 拦）。
+    """
+    from media_platform.douyin.exception import DataFetchError
+
+    try:
+        sec_user_id = await _resolve_creator_sec_uid(creator_id)
+        if not sec_user_id:
+            logger.warning("抖音创作者解析失败: '%s'", creator_id)
+            return []
+        resp = await _client_call(
+            lambda c: c.get_user_aweme_posts(sec_user_id, "")
         )
-    except DouyinClientError as e:
+    except (DouyinClientError, DataFetchError) as e:
         logger.warning("抖音创作者查询失败: %s", e)
         return []
 
+    aweme_list = resp.get("aweme_list") or [] if isinstance(resp, dict) else []
     results = [normalize(item) for item in aweme_list[:limit]]
-    logger.info("👤 抖音创作者 %s: %d 个视频", sec_user_id, len(results))
+    logger.info("👤 抖音创作者 %s: %d 个视频（第一页）", sec_user_id, len(results))
     return results
 
 

@@ -234,7 +234,12 @@ def _fmt_duration(sec: int) -> str:
 # ---------------------------------------------------------------------------
 
 async def _search_via_cdp(keyword: str, limit: int = 10) -> list[dict]:
-    client = await _ensure_client()
+    try:
+        client = await _ensure_client()
+    except Exception as e:
+        # CDP 连不上 Windows Chrome（对齐抖音搜索的优雅降级：不 500）
+        logger.warning("小红书搜索失败（无法连接 Windows Chrome 调试端口 9222）: %s", e)
+        return []
     try:
         # 参数对齐 MediaCrawler 官方 search()（core.py:286-297）：
         # 显式 search_id + 默认 page_size=20（不传小 page_size）
