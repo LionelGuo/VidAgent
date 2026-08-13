@@ -114,7 +114,7 @@ export function DetailPanel({ videoId, expanded, onToggleFullscreen, onClose }: 
               <Play className="w-12 h-12 text-white/40" />
             ) : (
               <span className="text-white/40 text-sm">
-                视频未下载 — 请先通过对话下载
+                视频未下载
               </span>
             )}
           </div>

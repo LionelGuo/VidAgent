@@ -466,7 +466,7 @@ async def tool_batch_summarize(req: BatchSummarizeRequest):
     """批量并行总结：接受视频列表，后端并行处理下载+总结。
 
     每个视频独立：下载 → 抽取音频+帧 → Omni 多模态总结。
-    各视频完全独立，一视频失败不影响其他。下载/总结各重试最多 3 次（指数退避）。
+    各视频完全独立，一视频失败不影响其他。下载/总结各重试最多 5 次（指数退避）。
 
     返回：
         { batch_id, tasks: [{ task_id, video_id, status }] }
@@ -478,8 +478,8 @@ async def tool_batch_summarize(req: BatchSummarizeRequest):
     batch_id = f"batch_{uuid.uuid4().hex[:12]}"
     tasks: list[dict] = []
 
-    MAX_RETRIES = 3
-    RETRY_BASE_DELAY = 2  # 秒，指数退避：2s / 4s / 8s
+    MAX_RETRIES = 5
+    RETRY_BASE_DELAY = 2  # 秒，指数退避：2s / 4s / 8s / 16s
 
     def _run_one(video: dict) -> None:
         task_id = video["_task_id"]
@@ -849,6 +849,33 @@ async def tool_batch_summarize(req: BatchSummarizeRequest):
     logger.info("批量总结完成: batch=%s, done=%d/%d", batch_id,
                 sum(1 for r in results if r["status"] == "done"), len(results))
     return {"batch_id": batch_id, "results": results}
+
+
+@app.post("/api/tools/retry-summarize")
+async def tool_retry_summarize(req: BatchSummarizeRequest):
+    """单视频重试（前端失败卡片「重试」按钮调用）。
+
+    立即返回，后台线程执行与 batch-summarize 完全相同的逻辑
+    （注册 video_id→task_id 映射后，前端通过 by-video SSE 读取进度）。
+    复用 batch 端点保证行为一致；SSE 端点有 5s 轮询兜底，无注册竞态。
+    """
+    import threading
+
+    video_ids = [v.video_id or _extract_video_id(v.video_url or "") for v in req.videos]
+    logger.info("单视频重试请求: %s", video_ids)
+
+    def _bg_run():
+        try:
+            asyncio.run(tool_batch_summarize(req))
+        except Exception:
+            logger.exception("单视频重试后台任务异常")
+
+    threading.Thread(target=_bg_run, daemon=True, name="vidagent-retry").start()
+    return {
+        "status": "started",
+        "video_ids": [vid for vid in video_ids if vid],
+        "message": "重试任务已启动，请通过 by-video SSE 读取进度",
+    }
 
 
 # ---------------------------------------------------------------------------

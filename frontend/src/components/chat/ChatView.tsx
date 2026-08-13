@@ -27,7 +27,7 @@ import { type Message } from "@ai-sdk/react";
 import { cn } from "@/lib/utils";
 import { useLayoutStore, useVideoStore, type VideoInfo } from "@/lib/stores";
 import { MarkdownRenderer } from "@/components/ui/MarkdownRenderer";
-import { streamSummaryByVideo, type SSEController } from "@/lib/api";
+import { apiBaseUrl, streamSummaryByVideo, type SSEController } from "@/lib/api";
 import {
   CheckCircle,
   ChevronRight,
@@ -127,6 +127,7 @@ export const VideoCard = memo(function VideoCard({
   const taskStatus = stored?.task_status;
   const downloadProgress = stored?.download_progress ?? 0;
   const isDone = taskStatus === "done";
+  const isError = taskStatus === "error";
   const isSummarizing = taskStatus === "extracting" || taskStatus === "summarizing" || taskStatus === "analyzing" || taskStatus === "summary" || taskStatus === "asr" || taskStatus === "thinking" || taskStatus === "chunking" || taskStatus === "merging";
   const isDownloading = taskStatus === "downloading";
 
@@ -135,6 +136,9 @@ export const VideoCard = memo(function VideoCard({
   let isBgOverride = false;
   if (isDone) {
     statusBgClass = "bg-blue-400/15 border-blue-400/20";
+    isBgOverride = true;
+  } else if (isError) {
+    statusBgClass = "bg-red-400/10 border-red-400/30";
     isBgOverride = true;
   } else if (isSummarizing) {
     statusBgClass = "card-status-summarizing";
@@ -177,6 +181,24 @@ export const VideoCard = memo(function VideoCard({
               <p className="text-xs text-muted-foreground mt-2 line-clamp-2">
                 {displayDesc}
               </p>
+            )}
+            {isError && (
+              <div
+                className="flex items-center gap-2 mt-2 text-xs text-red-500"
+                title={stored?.error || ""}
+              >
+                <span className="truncate min-w-0">❌ 下载失败</span>
+                <span
+                  role="button"
+                  className="shrink-0 ml-auto px-3 py-1 rounded-full border border-red-400/40 hover:bg-red-400/10 cursor-pointer transition-colors"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    void _retryVideo(videoId);
+                  }}
+                >
+                  重试
+                </span>
+              </div>
             )}
           </div>
           <div className="shrink-0 w-24 h-16 rounded-lg bg-muted flex items-center justify-center">
@@ -321,6 +343,7 @@ function extractVideoResults(toolInvocations: any[]): VideoInfo[] {
           }
           useVideoStore.getState().updateProgress(vid, {
             task_status: r.status === "done" ? "done" : "error",
+            error: r.status === "done" ? undefined : (r.error || "处理失败"),
           });
         }
       }
@@ -554,14 +577,64 @@ function _connectSSE(
       if (extra?.chapters && extra.chapters.length > 0) {
         store.setChapters(videoId, extra.chapters);
       }
-      store.updateProgress(videoId, { task_status: "done" });
+      store.updateProgress(videoId, { task_status: "done", error: undefined });
       activeStreamsRef.current.delete(videoId);
     },
     (err) => {
       console.warn("总结 SSE 错误:", err.message);
+      // 失败 → 卡片立即转失败态（不等批量结束），错误原因写入卡片
+      useVideoStore
+        .getState()
+        .updateProgress(videoId, { task_status: "error", error: err.message });
       activeStreamsRef.current.delete(videoId);
     },
   );
+}
+
+// ---------------------------------------------------------------------------
+// 失败卡片重试：调后端单视频重试接口 + 重新挂 by-video SSE
+// ---------------------------------------------------------------------------
+
+// 模块级 SSE 连接表：组件卸载时清理；重试按钮也通过它挂接流
+const activeStreamsRef: MutableRefObject<Map<string, SSEController>> = {
+  current: new Map(),
+};
+
+async function _retryVideo(videoId: string) {
+  const store = useVideoStore.getState();
+  const v = store.videos[videoId];
+  if (!v || !v.video_url) return;
+  // 重置为下载中（进度清零、清错误）
+  store.updateProgress(videoId, {
+    task_status: "downloading",
+    download_progress: 0,
+    error: undefined,
+  });
+  try {
+    const res = await fetch(`${apiBaseUrl}/api/tools/retry-summarize`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        videos: [{
+          video_url: v.video_url,
+          video_id: v.video_id,
+          title: v.title,
+          desc: v.desc,
+          author: v.author,
+          duration_text: v.duration_text,
+          duration: v.duration,
+          platform: v.platform,
+        }],
+      }),
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    _connectSSE(videoId, activeStreamsRef);
+  } catch (e: any) {
+    store.updateProgress(videoId, {
+      task_status: "error",
+      error: `重试失败: ${e?.message || e}`,
+    });
+  }
 }
 
 function _closeSSE(
@@ -602,7 +675,8 @@ export function ChatView({
   }, [messages]);
 
   // 总结流式进度 → VideoStore（fetch-SSE 独立连接，无自动重连）
-  const activeStreamsRef = useRef<Map<string, SSEController>>(new Map());
+  // activeStreamsRef 为模块级（定义见 _connectSSE 上方）：失败卡片
+  // 「重试」按钮（_retryVideo）也需要通过它挂接 SSE 流
 
   useEffect(() => {
     for (const msg of messages) {

@@ -56,6 +56,8 @@ export interface VideoInfo {
   task_status?: "downloading" | "analyzing" | "extracting" | "summarizing" | "summary" | "asr" | "thinking" | "chunking" | "merging" | "done" | "error";
   /** 下载进度 0-100 */
   download_progress?: number;
+  /** 失败原因（task_status=error 时显示） */
+  error?: string;
   /** 章节时间轴 */
   chapters?: VideoChapter[];
   /** 长视频分段总结进度 */
@@ -71,7 +73,7 @@ interface VideoStore {
   /** 设置总结内容 */
   setSummary: (id: string, summary: string) => void;
   /** 更新进度字段 */
-  updateProgress: (id: string, data: Partial<Pick<VideoInfo, "task_status" | "download_progress">>) => void;
+  updateProgress: (id: string, data: Partial<Pick<VideoInfo, "task_status" | "download_progress" | "error">>) => void;
   /** 设置章节列表 */
   setChapters: (id: string, chapters: VideoChapter[]) => void;
   /** 设置视频时长 */
