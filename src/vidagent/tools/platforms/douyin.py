@@ -641,8 +641,7 @@ async def _resolve_creator_sec_uid(creator_id: str) -> str | None:
     1. 创作者主页 URL（douyin.com/user/xxx）→ 官方 parse_creator_info_from_url
     2. 纯 sec_user_id（MS4wLjABAAAA 前缀）
     3. 昵称（如「张朝阳」）→ 页面内 XHR 调「用户」tab 的 discover/search
-       （webmssdk 自动补签名，与热搜榜同法），优先精确昵称匹配，
-       否则取第一条（结果通常按相关度排序）
+       （webmssdk 自动补签名，与热搜榜同法），取第一条（平台相关度排序）
     """
     # URL / 纯 sec_user_id 直接解析
     if "douyin.com" in creator_id or _SEC_UID_RE.match(creator_id):
@@ -694,11 +693,9 @@ async def _resolve_creator_sec_uid(creator_id: str) -> str | None:
         logger.warning("抖音用户搜索无结果 '%s': resp_keys=%s", creator_id,
                        sorted(data.keys()) if isinstance(data, dict) else type(data).__name__)
         return None
-    best = next(
-        (u for u in users
-         if ((u.get("user_info") or {}).get("nickname") or "").strip() == creator_id.strip()),
-        users[0],
-    )
+    # 直接取第一条（平台相关度排序）——勿做精确昵称匹配优先：同名小号会
+    # 覆盖平台排在前面的知名账号（2026-08-14 xhs 张朝阳 教训）
+    best = users[0]
     ui = best.get("user_info") or {}
     sec_uid = ui.get("sec_uid")
     if sec_uid:
@@ -715,9 +712,12 @@ async def _get_creator_via_cdp(creator_id: str, limit: int = 10) -> list[dict]:
 
     只取第一页（官方 count=18，够默认 limit=10）：不翻页——翻全页会高频
     请求触发风控（2026-08-14 实测李佳琦翻到第 4 页被 ArgusSecurityPlugin 拦）。
-    """
-    from media_platform.douyin.exception import DataFetchError
 
+    注意：不可在函数顶部 import media_platform.douyin.*——包 __init__ 链会
+    触发 help.py 模块级 execjs 编译（cwd 依赖 libs/douyin.js），必须在
+    _import_mediacrawler 的 chdir 块内或之后导入（2026-08-14 复现）。
+    因此 DataFetchError（风控拦截）等 MediaCrawler 异常统一走宽泛降级。
+    """
     try:
         sec_user_id = await _resolve_creator_sec_uid(creator_id)
         if not sec_user_id:
@@ -726,8 +726,11 @@ async def _get_creator_via_cdp(creator_id: str, limit: int = 10) -> list[dict]:
         resp = await _client_call(
             lambda c: c.get_user_aweme_posts(sec_user_id, "")
         )
-    except (DouyinClientError, DataFetchError) as e:
+    except DouyinClientError as e:
         logger.warning("抖音创作者查询失败: %s", e)
+        return []
+    except Exception as e:
+        logger.warning("抖音创作者查询失败（MediaCrawler 异常）: %r", e)
         return []
 
     aweme_list = resp.get("aweme_list") or [] if isinstance(resp, dict) else []

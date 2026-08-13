@@ -261,6 +261,35 @@ async def _collect_feed_responses(
     return feeds[:limit]
 
 
+async def _collect_user_responses(page: Any, goto_coro: Any) -> list[dict]:
+    """导航搜索页，监听页面自身的 /rest/v/search/user 响应收集用户列表。
+
+    与 _collect_feed_responses 同法：页面 JS 生成 __NS_hxfalcon 签名自行请求，
+    仅被动读取响应——零自定义请求。
+    """
+    def _pred(resp: Any) -> bool:
+        return "/rest/v/search/user" in resp.url
+
+    try:
+        async with page.expect_response(_pred, timeout=_PAGE_TIMEOUT_MS) as ri:
+            await goto_coro
+        body = await (await ri.value).text()
+        data = json.loads(body)
+    except PWTimeoutError:
+        logger.warning("快手用户搜索响应未捕获（超时）")
+        return []
+    except Exception as e:
+        logger.warning("快手用户搜索响应异常: %s", e)
+        return []
+    if not isinstance(data, dict) or data.get("result") != 1:
+        logger.warning(
+            "快手用户搜索数据异常: result=%s",
+            data.get("result") if isinstance(data, dict) else type(data).__name__,
+        )
+        return []
+    return data.get("users", []) or []
+
+
 # ---------------------------------------------------------------------------
 # 搜索 + 创作者
 # ---------------------------------------------------------------------------
@@ -289,14 +318,58 @@ async def _search_via_cdp(keyword: str, limit: int = 10) -> list[dict]:
         return results
 
 
+_KS_USER_ID_RE = re.compile(r"^[a-zA-Z0-9_-]+$")  # user_id 字符集（官方 URL 正则同款）
+
+
+async def _resolve_creator_user_id(creator: str) -> str | None:
+    """解析 creator 输入为 user_id。
+
+    - URL（kuaishou.com/profile/xxx）→ 官方 parse_creator_info_from_url
+    - 纯 user_id（`[a-zA-Z0-9_-]+`，官方 URL 正则同款字符集）→ 直接使用
+    - 其它（昵称，如中文）→ 按昵称搜索用户（导航搜索页监听页面自身的
+      /rest/v/search/user 响应，取第一条（平台相关度排序））
+    """
+    if "kuaishou.com" in creator or creator.startswith("http"):
+        try:
+            return _ParseCreatorInfo(creator).user_id
+        except (ValueError, AttributeError):
+            return None
+    if _KS_USER_ID_RE.match(creator):
+        return creator
+
+    async with _page_lock:
+        page = await _get_page("https://www.kuaishou.com?isHome=1")
+        users = await _collect_user_responses(
+            page,
+            goto_coro=page.goto(
+                f"https://www.kuaishou.com/search/video?searchKey={quote(creator)}",
+                wait_until="domcontentloaded", timeout=15000,
+            ),
+        )
+    if not users:
+        return creator  # 用户搜索无结果：当作纯 user_id 兜底
+    # 直接取第一条（平台相关度排序）——勿做精确昵称匹配优先：同名小号会
+    # 覆盖平台排在前面的知名账号（2026-08-14 xhs 张朝阳 教训）
+    best = users[0]
+    user_id = best.get("user_id") if isinstance(best, dict) else None
+    if user_id:
+        logger.info("快手昵称 '%s' → 用户 '%s' (%s)", creator, best.get("user_name"), user_id)
+    else:
+        logger.warning(
+            "快手用户搜索条目无 user_id: keys=%s",
+            sorted(best.keys())[:10] if isinstance(best, dict) else type(best).__name__,
+        )
+    return user_id
+
+
 async def _get_creator_via_cdp(creator: str, limit: int = 10) -> list[dict]:
-    """创作者视频：导航主页，监听页面自身的 /rest/v/profile/feed 响应。"""
+    """创作者视频：URL → 官方解析；昵称 → 用户搜索解析 user_id；
+    导航主页监听页面自身的 /rest/v/profile/feed 响应。"""
     _import_mediacrawler()
-    try:
-        info = _ParseCreatorInfo(creator)
-        user_id = info.user_id
-    except (ValueError, AttributeError):
-        user_id = creator
+    user_id = await _resolve_creator_user_id(creator)
+    if not user_id:
+        logger.warning("快手创作者解析失败: '%s'", creator)
+        return []
 
     async with _page_lock:
         page = await _get_page("https://www.kuaishou.com?isHome=1")

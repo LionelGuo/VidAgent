@@ -12,6 +12,7 @@ import random
 import re
 from pathlib import Path
 from typing import Any, Callable, ClassVar
+from urllib.parse import quote
 
 import httpx
 from playwright.async_api import async_playwright, BrowserContext, Page
@@ -344,16 +345,99 @@ async def _search_via_cdp(keyword: str, limit: int = 10) -> list[dict]:
     return results
 
 
-async def _get_creator_via_cdp(creator_id: str, limit: int = 10) -> list[dict]:
-    client = await _ensure_client()
+_creator_lock = asyncio.Lock()
+
+
+async def _resolve_creator_user_id(nickname: str) -> tuple[str, str] | None:
+    """昵称 → (user_id, xsec_token)。
+
+    导航搜索页并点击「用户」tab，监听页面自身的
+    /api/sns/web/v1/search/usersearch 响应（x-s/x-t 签名由页面 JS 生成，
+    零自定义请求——MediaCrawler 官方无昵称搜索，此路径与手动浏览一致）。
+    取第一条（平台相关度排序）。
+    """
+    from ._cdp_browser import get_page_for_platform
+
     try:
-        resp = await client.get_all_notes_by_creator(creator_id)
+        page = await get_page_for_platform("xhs", "https://www.xiaohongshu.com")
+    except Exception as e:
+        logger.warning("小红书用户搜索失败: %s", e)
+        return None
+
+    async with _creator_lock:
+        try:
+            async with page.expect_response(
+                lambda r: "search/usersearch" in r.url, timeout=20000,
+            ) as ri:
+                await page.goto(
+                    f"https://www.xiaohongshu.com/search_result?keyword={quote(nickname)}&source=web_explore_feed",
+                    wait_until="domcontentloaded", timeout=20000,
+                )
+                # 等 tab 渲染后点「用户」（页面 SPA 需交互才发用户搜索请求）
+                for _ in range(20):
+                    try:
+                        await page.locator("text=用户").first.click(timeout=2000)
+                        break
+                    except Exception:
+                        await asyncio.sleep(0.5)
+            body = await (await ri.value).json()
+        except Exception as e:
+            logger.warning("小红书用户搜索失败: %s", e)
+            return None
+
+    users = ((body or {}).get("data") or {}).get("users") or []
+    if not users:
+        logger.warning("小红书用户搜索无结果: '%s'", nickname)
+        return None
+    # 直接取第一条（平台相关度排序）——勿做精确昵称匹配优先：同名小号会
+    # 覆盖平台排在前面的知名账号（2026-08-14 张朝阳 教训：精确匹配选中
+    # 5 篇笔记的同名小号，而平台第一条是 2350 笔记的「张朝阳的物理课」）
+    best = users[0]
+    user_id = best.get("id") if isinstance(best, dict) else None
+    if not user_id:
+        logger.warning(
+            "小红书用户搜索条目无 id: keys=%s",
+            sorted(best.keys())[:10] if isinstance(best, dict) else type(best).__name__,
+        )
+        return None
+    logger.info("小红书昵称 '%s' → 用户 '%s' (%s)", nickname, best.get("name"), user_id)
+    return user_id, best.get("xsec_token", "")
+
+
+async def _get_creator_via_cdp(creator_id: str, limit: int = 10) -> list[dict]:
+    """创作者笔记：URL/纯 user_id → 官方 parse；昵称 → 用户 tab 搜索解析。
+
+    单页取回（page_size=30 ≥ 默认 limit=10），不翻页（防风控，与抖音同策）。
+    """
+    from media_platform.xhs.help import parse_creator_info_from_url
+
+    try:
+        client = await _ensure_client()
+    except Exception as e:
+        logger.warning("小红书创作者查询失败（CDP）: %s", e)
+        return []
+    try:
+        info = parse_creator_info_from_url(creator_id)
+        user_id, xsec_token = info.user_id, info.xsec_token
+        xsec_source = info.xsec_source
+    except (ValueError, AttributeError):
+        resolved = await _resolve_creator_user_id(creator_id)
+        if resolved is None:
+            logger.warning("小红书创作者解析失败: '%s'", creator_id)
+            return []
+        user_id, xsec_token = resolved
+        xsec_source = "pc_feed"
+    try:
+        resp = await client.get_notes_by_creator(
+            user_id, "", page_size=30,
+            xsec_token=xsec_token, xsec_source=xsec_source,
+        )
     except Exception as e:
         logger.warning("小红书创作者查询失败: %s", e)
         return []
-    items = resp.get("notes", resp) if isinstance(resp, dict) else resp
+    items = resp.get("notes", []) if isinstance(resp, dict) else []
     results = [normalize(it) for it in items[:limit]]
-    logger.info("👤 小红书创作者 %s: %d 篇笔记", creator_id, len(results))
+    logger.info("👤 小红书创作者 %s: %d 篇笔记", user_id, len(results))
     return results
 
 
