@@ -269,17 +269,19 @@ class KuaishouPlatform(Platform):
 
     @staticmethod
     async def search(client: httpx.AsyncClient, keyword: str, limit: int = 10) -> list[dict]:
-        return await _search_via_cdp(keyword, limit)
+        from ._cdp_browser import run_on_cdp_loop_async
+        return await run_on_cdp_loop_async(_search_via_cdp(keyword, limit))
 
     @staticmethod
     async def get_creator(client: httpx.AsyncClient, creator: str, limit: int = 10) -> list[dict]:
-        return await _get_creator_via_cdp(creator, limit)
+        from ._cdp_browser import run_on_cdp_loop_async
+        return await run_on_cdp_loop_async(_get_creator_via_cdp(creator, limit))
 
     @staticmethod
     def download(video_url: str, file_name: str,
                  progress_callback: Callable[[int], None] | None = None) -> dict:
-        import asyncio as _asyncio
-        return _asyncio.run(_download_via_cdp(video_url, file_name, progress_callback=progress_callback))
+        from ._cdp_browser import run_on_cdp_loop
+        return run_on_cdp_loop(_download_via_cdp(video_url, file_name, progress_callback=progress_callback))
 
 
 register(KuaishouPlatform)

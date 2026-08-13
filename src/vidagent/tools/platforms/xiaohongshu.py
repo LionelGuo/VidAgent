@@ -7,9 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import os
 import re
-import sys
 from pathlib import Path
 from typing import Any, Callable, ClassVar
 
@@ -30,18 +28,19 @@ DEFAULT_HEADERS = {
 
 _XHS_NOTE_RE = re.compile(r"/explore/(\w+)|/discovery/item/(\w+)")
 
+_LOGIN_POLL_SECONDS = 120   # 扫码登录轮询上限
+
 
 def _get_proxy() -> str | None:
-    return settings.youtube_proxy or None
+    # xhs 为国内平台：直连（不走 youtube_proxy/clash）。
+    # 外国出口 IP + 国内账号 cookie 会被风控静默拒绝
+    # （MediaCrawler 官方同款行为：无 IP 代理时 proxy=None 直连）
+    return None
 
 
 # ---------------------------------------------------------------------------
 # 客户端管理（通过共享 CDP 连接 Windows Chrome）
 # ---------------------------------------------------------------------------
-
-_client = None
-_client_initialized = False
-
 
 _client = None
 _client_initialized = False
@@ -53,34 +52,46 @@ async def _ensure_client():
     if _client_initialized and _client is not None:
         return _client
 
-    from ._cdp_browser import get_page_for_platform, chdir_mc
+    # 注意：xhs 模块无导入期 cwd 依赖（xhshow 签名纯算法、无文件访问），
+    # MediaCrawler 根目录已由 _cdp_browser 加入 sys.path，此处无需 chdir
+    import config as mc_config
+    mc_config.PLATFORM = "xhs"
+    mc_config.ENABLE_GET_MEIDAS = False
+    mc_config.ENABLE_GET_COMMENTS = False
 
-    os.chdir(chdir_mc())
-    try:
-        import config as mc_config
-        mc_config.PLATFORM = "xhs"
-        mc_config.ENABLE_GET_MEIDAS = False
-        mc_config.ENABLE_GET_COMMENTS = False
+    from media_platform.xhs.client import XiaoHongShuClient
 
-        from media_platform.xhs.client import XiaoHongShuClient
-        from tools import utils as mc_utils
-    finally:
-        os.chdir(os.getcwd())  # 恢复
+    from ._cdp_browser import get_page_for_platform, get_mc_utils
 
-    _page = await get_page_for_platform("xhs", "https://www.xiaohongshu.com/explore")
+    _page = await get_page_for_platform("xhs", "https://www.xiaohongshu.com")
 
-    user_agent = await _page.evaluate("() => navigator.userAgent")
     ctx = _page.context
-    cookie_str, cookie_dict = await mc_utils.convert_browser_context_cookies(
+    cookie_str, cookie_dict = await get_mc_utils().convert_browser_context_cookies(
         ctx, urls=["https://www.xiaohongshu.com"],
     )
+
+    # 请求头完全复刻 MediaCrawler create_xhs_client（core.py:361-392）——
+    # 完整的浏览器式请求头是 xhs 风控放行的关键，缺任何一项都可能被静默拒绝
     headers = {
-        "User-Agent": user_agent,
+        "accept": "application/json, text/plain, */*",
+        "accept-language": "zh-CN,zh;q=0.9",
+        "cache-control": "no-cache",
+        "content-type": "application/json;charset=UTF-8",
+        "origin": "https://www.xiaohongshu.com",
+        "pragma": "no-cache",
+        "priority": "u=1, i",
+        "referer": "https://www.xiaohongshu.com/",
+        "sec-ch-ua": '"Chromium";v="136", "Google Chrome";v="136", "Not.A/Brand";v="99"',
+        "sec-ch-ua-mobile": "?0",
+        "sec-ch-ua-platform": '"Windows"',
+        "sec-fetch-dest": "empty",
+        "sec-fetch-mode": "cors",
+        "sec-fetch-site": "same-site",
+        "user-agent": (
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+            "(KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36"
+        ),
         "Cookie": cookie_str,
-        "Host": "edith.xiaohongshu.com",
-        "Origin": "https://www.xiaohongshu.com",
-        "Referer": "https://www.xiaohongshu.com/",
-        "Content-Type": "application/json;charset=UTF-8",
     }
 
     _client = XiaoHongShuClient(
@@ -89,7 +100,56 @@ async def _ensure_client():
     )
     _client_initialized = True
     logger.info("XiaoHongShuClient 已就绪 (CDP)")
+
+    # 登录态检查（MediaCrawler 同款 pong() 判定），未登录引导扫码
+    if not await client_pong_safe(_client):
+        await _guide_login(_page, _client)
+
     return _client
+
+
+async def client_pong_safe(client) -> bool:
+    """pong() 登录态检查（防异常挂起）。"""
+    try:
+        return bool(await client.pong())
+    except Exception as e:
+        logger.warning("pong() 检查失败: %s", e)
+        return False
+
+
+async def _guide_login(page, client) -> None:
+    """在 CDP 页面上引导用户扫码登录（最多 120s）。"""
+    logger.info("小红书未登录 — 在浏览器页面引导扫码登录（最多 %ds）…", _LOGIN_POLL_SECONDS)
+    try:
+        try:
+            await page.goto(
+                "https://www.xiaohongshu.com/",
+                wait_until="domcontentloaded", timeout=15000,
+            )
+        except Exception:
+            pass
+        try:
+            login_btn = page.locator(
+                "xpath=//div[contains(@class,'login-btn')] | //span[text()='登录']"
+            )
+            await login_btn.first.click(timeout=5000)
+        except Exception:
+            pass  # 登录弹窗可能已自动出现
+    except Exception as e:
+        logger.warning("登录弹窗触发失败（不影响轮询）: %s", e)
+
+    for _ in range(_LOGIN_POLL_SECONDS):
+        await asyncio.sleep(1)
+        try:
+            if await client_pong_safe(client):
+                await client.update_cookies(
+                    page.context, urls=["https://www.xiaohongshu.com"],
+                )
+                logger.info("小红书扫码登录成功")
+                return
+        except Exception:
+            pass
+    logger.warning("小红书登录等待超时（%ds），继续尝试", _LOGIN_POLL_SECONDS)
 
 
 # ---------------------------------------------------------------------------
@@ -103,7 +163,12 @@ def extract_video_id(url: str) -> str | None:
 
 def normalize(item: dict) -> dict:
     note = item.get("note_card", item) or item
-    note_id = note.get("note_id", "") or note.get("id", "")
+    # note_id / xsec_token 在搜索结果的 item 顶层（MediaCrawler 官方
+    # core.py 用 post_item.get("id") / post_item.get("xsec_token")）
+    note_id = str(item.get("id", "") or note.get("note_id", "") or note.get("id", ""))
+    xsec_token = item.get("xsec_token", "") or note.get("xsec_token", "")
+    xsec_source = item.get("xsec_source", "") or note.get("xsec_source", "")
+
     title = note.get("display_title", "") or note.get("title", "")
     desc = note.get("desc", "") or ""
     author_info = note.get("user", {}) or {}
@@ -117,17 +182,21 @@ def normalize(item: dict) -> dict:
         duration_sec = int(video_info.get("video_duration", 0))
     create_time = int(note.get("time", 0))
 
-    # 提取 xsec_token（后续获取详情需要）
-    xsec_token = note.get("xsec_token", "")
+    # video_url 附带 xsec_token，下载时可直接解析（分享 URL 同构）
+    video_url = f"https://www.xiaohongshu.com/explore/{note_id}" if note_id else ""
+    if video_url and xsec_token:
+        video_url += f"?xsec_token={xsec_token}"
+        if xsec_source:
+            video_url += f"&xsec_source={xsec_source}"
 
     return {
-        "video_id": str(note_id),
+        "video_id": note_id,
         "title": title[:200] if title else (desc[:200] if desc else ""),
         "desc": desc[:500] if desc else "",
         "publish_time": create_time,
         "duration": duration_sec,
         "duration_text": _fmt_duration(duration_sec),
-        "video_url": f"https://www.xiaohongshu.com/explore/{note_id}" if note_id else "",
+        "video_url": video_url,
         "platform": "xiaohongshu",
         "author": author_name,
         "view_count": int(stats.get("liked_count", 0)),
@@ -152,7 +221,14 @@ def _fmt_duration(sec: int) -> str:
 async def _search_via_cdp(keyword: str, limit: int = 10) -> list[dict]:
     client = await _ensure_client()
     try:
-        resp = await client.get_note_by_keyword(keyword, page=1, page_size=limit)
+        # 参数对齐 MediaCrawler 官方 search()（core.py:286-297）：
+        # 显式 search_id + 默认 page_size=20（不传小 page_size）
+        from media_platform.xhs.help import get_search_id
+        resp = await client.get_note_by_keyword(
+            keyword=keyword,
+            search_id=get_search_id(),
+            page=1,
+        )
     except Exception as e:
         err_msg = str(e)
         if "DataFetchError" in err_msg:
@@ -162,6 +238,19 @@ async def _search_via_cdp(keyword: str, limit: int = 10) -> list[dict]:
         return []
 
     items = resp.get("items", []) if isinstance(resp, dict) else []
+    if not items:
+        # 空结果诊断：转储响应键与浏览器 cookie 名（静默风控的典型信号）
+        try:
+            ctx_cookies = await client.playwright_page.context.cookies(
+                "https://www.xiaohongshu.com")
+            logger.warning(
+                "xhs 搜索空结果: resp_keys=%s cookie_names=%s",
+                list(resp.keys()) if isinstance(resp, dict) else type(resp).__name__,
+                sorted(c["name"] for c in ctx_cookies),
+            )
+        except Exception:
+            logger.warning("xhs 搜索空结果: resp_keys=%s",
+                           list(resp.keys()) if isinstance(resp, dict) else type(resp).__name__)
     results = [normalize(it) for it in items[:limit]]
     logger.info("🔍 小红书搜索 '%s': %d 条", keyword, len(results))
     return results
@@ -186,50 +275,92 @@ async def _download_via_cdp(note_url: str, file_name: str,
 
     target = _storage.media_path(file_name, ".mp4")
     if target.exists():
+        if progress_callback:
+            progress_callback(100)
         return {"status": "success", "local_path": str(target), "platform": "xiaohongshu", "cached": True}
 
-    note_id = extract_video_id(note_url)
+    # 1. 解析 note_id + xsec_token/xsec_source（分享 URL 自带，裸 URL 则留空走兜底）
+    xsec_token, xsec_source = "", ""
+    try:
+        from media_platform.xhs.help import parse_note_info_from_note_url
+        note_info = parse_note_info_from_note_url(note_url)
+        note_id = note_info.note_id
+        xsec_token = note_info.xsec_token
+        xsec_source = note_info.xsec_source
+    except Exception:
+        note_id = extract_video_id(note_url)
     if not note_id:
         return {"status": "error", "error": f"无法解析小红书笔记 ID: {note_url}", "video_url": note_url}
 
-    # XHS download needs xsec_token from search results — 从 URL 无法单独获取
-    # 回退：直接下载封面/图片
     client = await _ensure_client()
-    try:
-        # 尝试通过短链获取
-        short_resp = await client.get_note_short_url(note_id)
-        items = short_resp.get("items", []) if isinstance(short_resp, dict) else []
-        if items:
-            note_card = items[0].get("note_card", items[0])
-            return await _download_note_media(note_card, str(target), file_name)
-    except Exception as e:
-        pass
 
-    return {"status": "error", "error": "小红书笔记下载需配合搜索使用（需要 xsec_token）", "video_url": note_url}
+    # 2. 笔记详情：API（带 token）→ 短链接口 → HTML 兜底
+    note_card = None
+    if xsec_token:
+        try:
+            note_card = await client.get_note_by_id(note_id, xsec_source, xsec_token)
+        except Exception as e:
+            logger.warning("get_note_by_id 失败: %s", e)
+    if not note_card:
+        try:
+            short_resp = await client.get_note_short_url(note_id)
+            items = short_resp.get("items", []) if isinstance(short_resp, dict) else []
+            if items:
+                note_card = items[0].get("note_card", items[0])
+        except Exception as e:
+            logger.warning("get_note_short_url 失败: %s", e)
+    if not note_card:
+        try:
+            note_card = await client.get_note_by_id_from_html(note_id, xsec_source, xsec_token)
+        except Exception as e:
+            logger.warning("get_note_by_id_from_html 兜底失败: %s", e)
+    if not note_card:
+        return {"status": "error", "error": "小红书笔记获取失败（可能需登录或笔记不可访问）", "video_url": note_url}
+
+    if note_card.get("type") != "video":
+        return {"status": "error", "error": "该笔记为图文笔记，暂不支持视频总结", "video_url": note_url}
+
+    return await _download_note_media(note_card, target, progress_callback)
 
 
-async def _download_note_media(note: dict, target: Path, file_name: str) -> dict:
-    """从笔记数据中提取并下载媒体文件。"""
+async def _download_note_media(note: dict, target: Path,
+                               progress_callback=None) -> dict:
+    """从笔记数据中提取并下载视频文件。
+
+    无水印直链优先（origin_video_key），失败降级 h264 master_url（带水印）。
+    """
     video_info = note.get("video", {}) or {}
-    media_url = video_info.get("media", {}).get("stream", {}).get("h264", [{}])[0].get("master_url", "")
+    consumer = video_info.get("consumer", {}) or {}
+    origin_video_key = consumer.get("origin_video_key") or consumer.get("originVideoKey") or ""
+    if origin_video_key:
+        media_url = f"http://sns-video-bd.xhscdn.com/{origin_video_key}"
+    else:
+        media_url = (video_info.get("media", {}) or {}).get("stream", {}).get(
+            "h264", [{}])[0].get("master_url", "")
 
     if not media_url:
-        # 尝试图片
-        image_list = note.get("image_list", []) or []
-        if image_list:
-            media_url = image_list[0].get("url_default", "") or image_list[0].get("url", "")
-
-    if not media_url:
-        return {"status": "error", "error": "未找到可下载的媒体链接"}
+        return {"status": "error", "error": "未找到可下载的视频链接"}
 
     try:
-        async with httpx.AsyncClient(proxy=_get_proxy(), timeout=120, follow_redirects=True) as http:
-            resp = await http.get(media_url)
-            resp.raise_for_status()
-            target.write_bytes(resp.content)
+        async with httpx.AsyncClient(
+            proxy=_get_proxy(), timeout=120, follow_redirects=True,
+        ) as http:
+            async with http.stream("GET", media_url) as resp:
+                resp.raise_for_status()
+                total = int(resp.headers.get("content-length", 0))
+                downloaded = 0
+                target.parent.mkdir(parents=True, exist_ok=True)
+                with open(target, "wb") as f:
+                    async for chunk in resp.aiter_bytes(65536):
+                        f.write(chunk)
+                        downloaded += len(chunk)
+                        if total > 0 and progress_callback:
+                            progress_callback(int(downloaded / total * 100))
     except Exception as e:
-        return {"status": "error", "error": f"媒体文件下载失败: {e}"}
+        return {"status": "error", "error": f"视频文件下载失败: {e}"}
 
+    if progress_callback:
+        progress_callback(100)
     return {"status": "success", "local_path": str(target), "platform": "xiaohongshu"}
 
 
@@ -259,17 +390,19 @@ class XiaohongshuPlatform(Platform):
 
     @staticmethod
     async def search(client: httpx.AsyncClient, keyword: str, limit: int = 10) -> list[dict]:
-        return await _search_via_cdp(keyword, limit)
+        from ._cdp_browser import run_on_cdp_loop_async
+        return await run_on_cdp_loop_async(_search_via_cdp(keyword, limit))
 
     @staticmethod
     async def get_creator(client: httpx.AsyncClient, creator: str, limit: int = 10) -> list[dict]:
-        return await _get_creator_via_cdp(creator, limit)
+        from ._cdp_browser import run_on_cdp_loop_async
+        return await run_on_cdp_loop_async(_get_creator_via_cdp(creator, limit))
 
     @staticmethod
     def download(video_url: str, file_name: str,
                  progress_callback: Callable[[int], None] | None = None) -> dict:
-        import asyncio as _asyncio
-        return _asyncio.run(_download_via_cdp(video_url, file_name, progress_callback=progress_callback))
+        from ._cdp_browser import run_on_cdp_loop
+        return run_on_cdp_loop(_download_via_cdp(video_url, file_name, progress_callback=progress_callback))
 
 
 register(XiaohongshuPlatform)

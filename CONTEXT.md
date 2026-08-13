@@ -38,3 +38,4 @@
 | **vLLM Bare Mode** | Qwen3-Omni-30B-A3B 运行在 AutoDL 云 GPU 实例上，仅提供 `/v1/chat/completions`（无原生 tool_choice）。 |
 | **FastAPI Server** | 本地 `server/main.py`，承担 SSE Relay + 工具 REST API + 静态文件服务。 |
 | **Next.js Frontend** | `frontend/` 目录，React 19 + AI SDK v4，承担聊天 UI + DetailPanel + VideoStore 状态管理。 |
+| **CDP Browser (Existing)** | 抖音/小红书等平台的客户端通过 CDP 连接 Windows Chrome 的 `:9222` 调试端口（WSL2 localhost 转发），复用用户浏览器登录态（详见 ADR-0004）。 |
