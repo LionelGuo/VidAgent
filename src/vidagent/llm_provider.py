@@ -70,25 +70,17 @@ class Endpoint:
 
 
 def _normalize_provider() -> str:
-    """规范化 llm_provider 到 preset 名（cloud→vllm）。local 保持 local（走旧栈）。"""
+    """规范化 llm_provider 到 preset 名（cloud→vllm）。"""
     return _PROVIDER_ALIASES.get(settings.llm_provider, settings.llm_provider)
 
 
 def _preset() -> ProviderPreset:
-    """当前 provider 的预设（local/未知 → generic 兜底）。"""
+    """当前 provider 的预设（未知 → generic 兜底）。"""
     return _PRESETS.get(_normalize_provider(), _PRESETS["generic"])
-
-
-def is_legacy_local() -> bool:
-    """是否走 Ollama 旧栈（LLM_PROVIDER=local）。"""
-    return settings.llm_provider == "local"
 
 
 def agent_endpoint() -> Endpoint:
     """agent（对话 + 工具调用）端点。relay 按 relay_mode() 分流。"""
-    if is_legacy_local():
-        base_url, api_key, model = settings.active_llm()
-        return Endpoint(base_url, api_key, model, "vllm", "think_tag")
     preset = _preset()
     base_url = settings.openai_base_url or preset.default_base_url
     model = settings.llm_model or preset.default_model
@@ -99,9 +91,6 @@ def agent_endpoint() -> Endpoint:
 
 def multimodal_endpoint() -> Endpoint:
     """多模态总结端点：MULTIMODAL_* 显式优先，回退到 agent 端点配置（单端点平台直接可用）。"""
-    if is_legacy_local():
-        base_url, api_key, model = settings.active_llm()
-        return Endpoint(base_url, api_key, model, "vllm", "think_tag")
     preset = _preset()
     base_url = (
         settings.multimodal_base_url or settings.openai_base_url or preset.default_base_url
@@ -116,8 +105,6 @@ def multimodal_endpoint() -> Endpoint:
 
 def relay_mode() -> RelayMode:
     """agent 工具调用 relay 工作模式（xml / transparent）。"""
-    if is_legacy_local():
-        return "xml"
     return _preset().relay_mode
 
 

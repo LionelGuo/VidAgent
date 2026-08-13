@@ -33,6 +33,7 @@ import httpx
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from vidagent.config import settings  # noqa: E402
+from vidagent import llm_provider  # noqa: E402
 from vidagent.utils.audio import extract_audio  # noqa: E402
 from vidagent.utils.frames import extract_frames, get_duration  # noqa: E402
 
@@ -51,7 +52,8 @@ def _api_call(
     timeout: int = 180,
 ) -> dict:
     """发送一次多模态请求，返回 {label, status, model, elapsed_s, answer, error}。"""
-    base_url, api_key, model = settings.active_llm()
+    _ep = llm_provider.agent_endpoint()
+    base_url, api_key, model = _ep.base_url, _ep.api_key, _ep.model
 
     payload: dict = {
         "model": model,
@@ -318,7 +320,8 @@ def main():
     print(f"   时长: {get_duration(video_path):.0f}s | 大小: {video_path.stat().st_size / 1024 / 1024:.0f} MB")
 
     # 配置信息
-    base_url, api_key, model = settings.active_llm()
+    _ep = llm_provider.agent_endpoint()
+    base_url, api_key, model = _ep.base_url, _ep.api_key, _ep.model
     print(f"   模型: {model}")
     print(f"   端点: {base_url}")
     if not api_key:

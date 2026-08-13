@@ -13,6 +13,12 @@ env/
 
 # 环境/密钥
 .env
+.env.local
+.env.production
+
+# 前端构建产物
+.next/
+*.tsbuildinfo
 
 # 运行期缓存（视频/音频/中间产物）
 workspace/

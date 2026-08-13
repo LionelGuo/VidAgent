@@ -283,7 +283,9 @@ export async function POST(req: Request) {
         }),
         execute: async ({ videos }) => {
           const controller = new AbortController();
-          const timeout = setTimeout(() => controller.abort(), 1_800_000); // 30 分钟超时（多长视频批量任务耗时长）
+          // 30 分钟超时（多长视频批量任务耗时长）；SUMMARY_TIMEOUT_MS 可覆盖（分发用户的自救开关）
+          const timeoutMs = parseInt(process.env.SUMMARY_TIMEOUT_MS || "") || 1_800_000;
+          const timeout = setTimeout(() => controller.abort(), timeoutMs);
           const res = await fetch(`${API_BASE}/api/tools/batch-summarize`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },

@@ -18,7 +18,7 @@ from pathlib import Path
 import httpx
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-from vidagent.config import settings  # noqa: E402
+from vidagent import llm_provider  # noqa: E402
 
 # 模拟 extract_and_summarize 返回的总结文本（~1500 tokens 中文）
 LONG_TOOL_RESULT = """
@@ -129,7 +129,8 @@ def measure_stream(base_url: str, api_key: str, model: str, label: str,
 
 
 def main():
-    base_url, api_key, model = settings.active_llm()
+    _ep = llm_provider.agent_endpoint()
+    base_url, api_key, model = _ep.base_url, _ep.api_key, _ep.model
     if not api_key:
         print("❌ 未配置 API key")
         sys.exit(1)

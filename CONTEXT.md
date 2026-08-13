@@ -6,7 +6,7 @@
 
 | 术语 | 定义 |
 |------|------|
-| **视频检索 (Video Retrieval)** | 从平台（B站）获取视频元数据：热榜、关键词搜索、创作者主页。输出 `video_id + title + desc + video_url` 等结构化数据。 |
+| **视频检索 (Video Retrieval)** | 从平台（B站 / YouTube / 抖音 / 小红书 / 快手）获取视频元数据：热榜、关键词搜索、创作者主页。输出 `video_id + title + desc + video_url` 等结构化数据。 |
 | **视频下载 (Video Download)** | 将 `video_url` 指向的视频文件下载到本地 `workspace/`，返回 `local_path`。支持缓存复用。 |
 | **音频提取 (Audio Extraction)** | ffmpeg 从视频文件中分离音频轨道，输出 mp3。 |
 | **帧抽取 (Frame Extraction)** | ffmpeg 从视频中按均匀间隔抽取关键帧（jpg），帧数 4-16 依时长自适应。帧文件名含秒级时间戳。 |
@@ -18,9 +18,7 @@
 | 术语 | 定义 |
 |------|------|
 | **视频总结 (Video Summary)** | 对单个视频的 Markdown 结构化摘要：核心观点（1-3 条）+ 主要内容梳理 + 关键帧画面描述。在 DetailPanel 中渲染。 |
-| **内容大纲 (Content Outline)** | 视频主题的层级树结构（章节 → 小节 → 要点），从视频内容中自动提取。渲染为思维导图（mind map）交互组件。当前阶段目标为章节大纲（粗粒度），不涉及跨视频的概念关系图或论点推理链。 |
-| **章节时间轴 (Chapter Timeline)** | 按话题切换点将视频切分为连续段落，每段包含标题、摘要、`start_time`、`end_time`。渲染为视频进度条上的标记点，对标 B 站「看点」功能。粒度：3-10 段/视频。 |
-| **时间戳感知 (Temporal Awareness)** | 模型在总结时能够识别并输出事件发生的时间位置。区别于当前「模型只描述内容、时间由工程侧根据切分点反推」的方式。 |
+| **章节时间轴 (Chapter Timeline)** | 长视频总结的章节结构化输出，每章含标题、摘要、`start_time`、`end_time`。渲染为视频进度条上的标记点，对标 B 站「看点」功能。 |
 
 ## Agent 架构
 

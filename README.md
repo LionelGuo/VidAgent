@@ -1,33 +1,38 @@
 # VidAgent —— 智能自媒体数据采集与多模态分析 Agent 系统
 
-结合开源爬虫与大语言模型，对多平台视频做自动化「采集 → 下载 → 语音转写 → 智能总结」，并用自然语言驱动整条流水线。
+自然语言驱动的多平台视频分析：**采集 → 下载 → 多模态总结** 全链路对话式完成。
+多模态 LLM（如 Qwen3-Omni）直接聆听音频、观看画面生成结构化总结（无 ASR 中间层）。
 
-> 设计文档：[`docs/项目开发文档v1.md`](docs/项目开发文档v1.md) ｜ 总结报告：[`docs/实习总结报告.md`](docs/实习总结报告.md)
+> 设计文档：[`docs/项目开发文档v1.md`](docs/项目开发文档v1.md) ｜ 部署指南：[`docs/服务部署与配置指南.md`](docs/服务部署与配置指南.md)
 
-## 当前进度
+## 功能特性
 
-| Sprint | 内容 | 状态 |
-|---|---|---|
-| 1 | B站 底层工具（抓取/下载/抽音） | ✅ |
-| 2 | faster-whisper ASR + 云端总结 + 硬编码流水线 | ✅ |
-| 3 | Agno Agent + Gradio UI（自然语言驱动） | ✅ |
-| 4 | 本地化(Ollama) / 扩平台(抖音·小红书) | 🟡 待启动 |
+| 能力 | 支持 |
+|---|---|
+| 平台接入 | **B站 · YouTube · 抖音 · 小红书 · 快手**（搜索 / 热榜 / 创作者） |
+| 视频下载 | 无水印，按平台分流（yt-dlp / MediaCrawler CDP 连接现有浏览器） |
+| 视频总结 | 多模态模型直送（音频 + 关键帧），短视频 / 长视频双管线（长视频含章节结构化） |
+| 对话界面 | Next.js 聊天 UI：流式思考过程、工具调用实时进度、批量总结卡片 |
 
-> 现已可用：**B站 + 云端 DeepSeek** 的完整链路（抓取→下载→ASR→总结），对话式 UI。
-
-## 架构（三层解耦）
+## 架构
 
 ```
-Gradio 对话 UI
-   │  自然语言
+Next.js 前端 :3000（AI SDK 流式对话 + 视频卡片 / 总结详情）
+   │
    ▼
-Agno Agent（意图识别 / 任务拆解 / 工具调用 / 出错反思）
-   │  Function Calling
-   ▼
-底层 Tools
-   ├─ Crawler   B站直连 REST API（WBI 签名）· 抖音/XHS 走 MediaCrawler（Sprint4）
-   ├─ Downloader B站 yt-dlp（无水印）· 抖音/XHS 走 f2（Sprint4）
-   └─ Summarizer ffmpeg 抽音 → faster-whisper ASR → LLM 总结（含无音频降级）
+FastAPI 后端 :8000
+   ├─ /v1/chat/completions   SSE Relay（按 provider 预设分流 xml / transparent）
+   ├─ /api/tools/{search,hot,creator,download,summarize}   工具 REST + SSE 进度
+   └─ 批量总结编排（并行下载 + 总结，失败重试 + 重试端点）
+   │
+   ├─▶ LLM 提供方（LLM_PROVIDER 单点切换）
+   │     ├─ vllm        自托管 vLLM-omni（bare mode，<tool_call> XML 协议）
+   │     ├─ siliconflow 远程 API（原生 function calling，audio_url）
+   │     └─ generic     任意 OpenAI 兼容端点（原生透传）
+   │
+   └─▶ 平台层
+         ├─ B站 / YouTube   httpx + yt-dlp（WBI 签名 / Data API v3 / JS runtime）
+         └─ 抖音 / 小红书 / 快手   MediaCrawler CDP（连接现有 Chrome :9222，页面监听）
 ```
 
 ## 快速开始
@@ -49,29 +54,32 @@ cd frontend && npm install && npm run dev
 
 > 抖音/小红书/快手需 Windows Chrome 以调试端口 `:9222` 运行且平台已登录。
 
-## 配置（`.env`）
+## 配置
 
-模型服务通过 **provider 预设系统**切换（`LLM_PROVIDER`），差异集中在 `src/vidagent/llm_provider.py`。
+**后端 `.env`**（模型服务通过 provider 预设切换，差异集中在 `src/vidagent/llm_provider.py`）：
 
 | 变量 | 说明 | 默认 |
 |---|---|---|
-| `LLM_PROVIDER` | `vllm` / `siliconflow` / `generic`（`cloud`≡vllm 兼容旧值；`local`=Ollama 旧栈） | `siliconflow` |
+| `LLM_PROVIDER` | `vllm` / `siliconflow` / `generic`（`cloud`≡vllm 兼容旧值） | `siliconflow` |
 | `OPENAI_API_KEY` | 模型 API 密钥（**必填**） | — |
-| `OPENAI_BASE_URL` | OpenAI 兼容端点（留空则用 provider 预设默认，如 SiliconFlow 官方端点） | preset |
-| `LLM_MODEL` | 模型名（留空则用 provider 预设默认） | preset |
-| `LLM_MULTIMODAL` | `true` 时音频/视频直送全模态模型（Qwen3-Omni），跳过 ASR | `true` |
+| `OPENAI_BASE_URL` | OpenAI 兼容端点（留空用 provider 预设默认，如 SiliconFlow 官方端点） | preset |
+| `LLM_MODEL` | 模型名（留空用 provider 预设默认） | preset |
 | `MULTIMODAL_BASE_URL` / `MULTIMODAL_MODEL` | 多模态端点（留空复用上面的 base_url + model，单端点平台直接留空） | 空 |
 | `BILI_COOKIE` | B站 Cookie（含 `SESSDATA`；下载高清流与创作者主页接口均需，避免 CDN 412） | 空 |
-| `YOUTUBE_API_KEY` / `YOUTUBE_COOKIE` / `YOUTUBE_PROXY` | YouTube 采集（可选） | 空 |
-| `MEDIACRAWLER_ROOT` | MediaCrawler 目录（抖音/小红书/快手 CDP 平台需要，默认 `~/Code/MediaCrawler`） | `~/Code/MediaCrawler` |
+| `YOUTUBE_API_KEY` / `YOUTUBE_COOKIE` / `YOUTUBE_PROXY` | YouTube 采集（可选）。`YOUTUBE_PROXY` 同时供抖音等 CDP 平台的部分请求复用 | 空 |
+| `MEDIACRAWLER_ROOT` | MediaCrawler 目录（抖音/小红书/快手 CDP 平台需要） | `~/Code/MediaCrawler` |
+| `WORKSPACE_DIR` | 媒体缓存目录（>7 天自动清理） | `workspace/` |
+
+**前端 `frontend/.env`**（复制 `frontend/.env.example`）：
+
+| 变量 | 说明 | 默认 |
+|---|---|---|
+| `FASTAPI_URL` | 后端地址（Next 服务端 SSE relay 上游） | `http://127.0.0.1:8000` |
+| `NEXT_PUBLIC_API_URL` | 后端地址（浏览器直连） | `http://127.0.0.1:8000` |
+| `SUMMARY_TIMEOUT_MS` | 批量总结 fetch 超时（毫秒） | `1800000`（30 分钟） |
 
 > **YouTube 下载需要 Node.js ≥ 22**（yt-dlp 2026+ 依赖 JS runtime 解密签名/求解挑战，否则格式退化到 240p）。
 > Docker 镜像已内置 node；裸机部署请确认 `node --version ≥ 22`。挑战求解脚本首次使用会从 GitHub 拉取一次（走 `YOUTUBE_PROXY`，缓存于 `~/.cache/yt-dlp`）。
-
-**两种部署形态：**
-
-- **场景一（本地有 ≥24GB GPU）**：`LLM_PROVIDER=vllm`，先跑模型服务（`scripts/deploy_vllm_omni.sh install && start`），`OPENAI_BASE_URL` 指向它。
-- **场景二（远程 API）**：`LLM_PROVIDER=siliconflow`，仅填 `OPENAI_API_KEY`，preset 自动提供端点与模型名。
 
 ## 部署
 
@@ -90,8 +98,6 @@ docker run --network=host -e LLM_PROVIDER=vllm -e OPENAI_BASE_URL=http://127.0.0
 `docker run -p 18000:8000 -p 13000:3000 -e LLM_PROVIDER=siliconflow -e OPENAI_API_KEY=sk-xxx vidagent`（容器内访问第三方 API 走 NAT 直连）。
 抖音/小红书/快手需额外挂载 MediaCrawler（`-e MEDIACRAWLER_ROOT=...`）+ 宿主 Chrome 开调试端口。
 
-> 注：镜像不含 TransNetV2（需 torch，体积过大）——视频场景检测自动回退 ffmpeg，功能无损。
-
 ### 本地 vLLM-omni 模型服务（场景一，独立部署）
 
 ```bash
@@ -102,46 +108,57 @@ bash scripts/deploy_vllm_omni.sh start --bg # 后台启动（端口 6006）
 ### 裸机开发
 
 ```bash
-uv sync --extra server --extra asr --extra douyin --extra agent   # 后端依赖
-uv run uvicorn server.main:app --host 0.0.0.0 --port 8000         # 后端
-cd frontend && npm install && npm run dev                          # 前端 :3000
+uv sync --extra server --extra douyin --extra dev    # 后端依赖
+uv run uvicorn server.main:app --host 0.0.0.0 --port 8000   # 后端
+cd frontend && npm install && npm run dev            # 前端 :3000
 ```
+
+进程管理说明：后端 + 前端为两个独立进程，无内置编排。`uv run uvicorn` 是包装进程——直接 kill 它子进程会变孤儿继续占用 8000 端口，**必须按监听 PID 操作**（`ss -tlnp | grep :8000` 拿 PID 再 kill）。生产部署推荐 Docker（入口 `docker/entrypoint.sh` 统一管理）。
 
 ## 技术选型要点
 
 | 关注点 | 选择 | 说明 |
 |---|---|---|
 | 包管理 | uv + pyproject.toml | 与 MediaCrawler 一致；重依赖走 optional extras |
-| Agent | Agno（OpenAI 兼容协议） | 云 DeepSeek / 本地 Ollama 单点切换 |
+| 后端 | FastAPI + uvicorn | SSE relay（OpenAI 兼容协议转换）+ 工具 REST |
+| 前端 | Next.js 15 + AI SDK | 流式对话 + SSE 进度消费，零 UI 库依赖 |
+| Agent | AI SDK 工具流（无 agent 框架） | 工具调用经 SSE relay 规范化，双 provider 协议兼容 |
 | B站爬虫 | 直连 REST API + WBI 签名 | 公开数据免登录、无 Playwright 开销 |
-| 下载 | 按平台分流 | B站 yt-dlp（无水印）；抖音/小红书/快手 f2 |
-| ASR | faster-whisper（ctranslate2） | 显存低、速度快，**不依赖 torch** |
+| YouTube | Data API v3 + yt-dlp | 检索走官方 API；下载含 PO 门控降级链 |
+| 抖音/小红书/快手 | MediaCrawler CDP | 连接现有 Chrome，页面监听（不碰签名，规避风控） |
+| 下载 | 按平台分流 | B站/YouTube yt-dlp（1080p 封顶）；CDP 平台直链 |
+| 总结 | 多模态直送（无 ASR） | 音频 + 关键帧直送 Omni 模型；长短视频双管线 |
 | 音频提取 | ffmpeg 子进程 | 比 moviepy 轻 |
 
 ## 目录结构
 
 ```
+server/           FastAPI 后端（main.py 编排 + sse_relay.py 协议转换）
 src/vidagent/
-├── tools/      bilibili.py·crawler.py·hotboard.py·downloader.py·summarizer.py
-├── utils/      wbi.py·dates.py·storage.py·audio.py
-├── agent.py    Agno Agent 组装
-├── llm.py      build_model() 云/本切换
-├── ui.py       Gradio 界面
-└── pipeline.py 硬编码流水线
-scripts/        crawl_cli.py 采集 CLI
-tests/          pytest（18 项）
+├── tools/
+│   ├── crawler.py · downloader.py · summarizer.py   检索/下载/总结工具
+│   └── platforms/   五平台适配（bilibili/youtube/douyin/xiaohongshu/kuaishou + CDP 共享层）
+├── utils/        wbi.py · dates.py · storage.py · audio.py · frames.py · timer.py
+├── llm_provider.py   provider 预设系统（端点/relay/媒体格式/推理模式）
+└── config.py     配置读取（.env → Pydantic Settings）
+frontend/         Next.js 前端（chat 路由 + 组件 + stores）
+scripts/          bench*.py · debug_tools.py · serve_omni.py · deploy_vllm_omni.sh
+tests/            pytest（36 项）
+docs/             方案文档 + ADR（docs/adr/）
 ```
 
 ## 常见问题
 
 - **创作者主页报错 `code=-352` / 非 JSON**：B站风控。在 `.env` 设 `BILI_COOKIE`（浏览器复制含 `SESSDATA` 的 Cookie）。综合热门 / 关键词搜索**无需** Cookie。
 - **总结提示「未配置 API key」**：在 `.env` 填 `OPENAI_API_KEY`。
-- **ASR 显存吃紧**：把 `WHISPER_MODEL` 调小（base→tiny），或 `ASR_DEVICE=cpu`。
-- **下载失败**：yt-dlp 偶发被限流，工具内置随机抖动；重试即可。
+- **下载失败**：yt-dlp 偶发被限流，工具内置随机抖动与降级链；重试即可。
+- **YouTube 高清不可用**：确认 `node --version ≥ 22`（JS runtime 必需）；部分视频默认客户端 403 会经 web_embedded 降级链自动重试。
+- **工具调用输出 `<tool_call>` 文本而非执行**：`LLM_PROVIDER` 与端点不匹配（vLLM 需 xml 模式）；详见部署指南故障排查。
+- **抖音/小红书/快手无结果**：确认 Windows Chrome 带 `:9222` 调试端口运行且平台已登录。
 
 ## 测试
 
 ```bash
-uv run pytest -q      # 18 项单元测试（纯逻辑，不触网）
+uv run pytest -q      # 36 项：33 绿 + 3 红（3 红为多模态用例断言形状问题，随视频→总结深模块重构修复）
 uv run ruff check .   # lint
 ```

@@ -19,18 +19,14 @@ class Settings(BaseSettings):
     )
 
     # ----- LLM 提供方（单一切换点）-----
-    # cloud ≡ vllm（自托管 vLLM-omni，兼容旧值）；vllm/siliconflow/generic 走 llm_provider 预设系统；
-    # local 仍走 Ollama 旧栈（active_llm）。详见 src/vidagent/llm_provider.py
-    llm_provider: Literal["cloud", "local", "vllm", "siliconflow", "generic"] = "cloud"
+    # cloud ≡ vllm（自托管 vLLM-omni，兼容旧值）；vllm/siliconflow/generic 走 llm_provider 预设系统。
+    # 详见 src/vidagent/llm_provider.py（未知值 → generic 兜底）
+    llm_provider: Literal["cloud", "vllm", "siliconflow", "generic"] = "cloud"
 
     # 云端（OpenAI 兼容协议）。留空时由 provider 预设补默认值（如 siliconflow 的官方端点）
     openai_base_url: str = ""
     openai_api_key: str = ""
     llm_model: str = ""
-
-    # 本地（Ollama）
-    ollama_base_url: str = "http://localhost:11434/v1"
-    llm_model_local: str = "qwen2.5:7b-instruct-q4_K_M"
 
     # 模型额外参数（JSON 字符串），传给 provider 的 extra_body；
     # 例：关闭 SiliconFlow Qwen3 思考模式 → {"enable_thinking": false}
@@ -66,12 +62,6 @@ class Settings(BaseSettings):
     def _abs_workspace(cls, v: Path) -> Path:
         """相对路径（如 .env 中的 workspace）锚定到项目根目录，与进程 CWD 解耦。"""
         return v if v.is_absolute() else (_PROJECT_ROOT / v).resolve()
-
-    def active_llm(self) -> tuple[str, str, str]:
-        """返回当前生效的 (base_url, api_key, model)。"""
-        if self.llm_provider == "local":
-            return self.ollama_base_url, "ollama", self.llm_model_local
-        return self.openai_base_url, self.openai_api_key, self.llm_model
 
 
 settings = Settings()
