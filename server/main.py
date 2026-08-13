@@ -503,6 +503,9 @@ async def tool_batch_summarize(req: BatchSummarizeRequest):
                         _summarize_tasks[task_id]["local_path"] = local_path
                         break
                     last_err = result.get("error", "未知下载错误")
+                    if result.get("fatal"):
+                        # 确定性业务错误（如小红书图文笔记），重试无意义
+                        break
                 except Exception as e:
                     last_err = str(e)
                 if retry < MAX_RETRIES:

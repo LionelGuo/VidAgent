@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import random
 import re
 from pathlib import Path
 from typing import Any, Callable, ClassVar
@@ -162,6 +163,14 @@ def extract_video_id(url: str) -> str | None:
     return m.group(1) or m.group(2) if m else None
 
 
+def _safe_int(v: Any) -> int:
+    """安全整数转换：xhs 字段多为字符串/可空（"" 或 None 会令 int() 抛异常）。"""
+    try:
+        return int(v)
+    except (TypeError, ValueError):
+        return 0
+
+
 def normalize(item: dict) -> dict:
     note = item.get("note_card", item) or item
     # note_id / xsec_token 在搜索结果的 item 顶层（MediaCrawler 官方
@@ -175,13 +184,14 @@ def normalize(item: dict) -> dict:
     author_info = note.get("user", {}) or {}
     author_name = author_info.get("nickname", "") if isinstance(author_info, dict) else ""
     stats = note.get("interact_info", {}) or {}
-    # 视频时长
+    # 视频时长（feed API 的 video 结构不含 duration 字段，通常为 0，
+    # 下载后由 server 层 ffprobe 补充）
     video_info = note.get("video", {}) or {}
-    duration_sec = int(video_info.get("duration", 0)) if video_info else 0
+    duration_sec = _safe_int(video_info.get("duration", 0)) if video_info else 0
     # 图片笔记无时长
     if not duration_sec and note.get("type") == "video" and video_info:
-        duration_sec = int(video_info.get("video_duration", 0))
-    create_time = int(note.get("time", 0))
+        duration_sec = _safe_int(video_info.get("video_duration", 0))
+    create_time = _safe_int(note.get("time", 0))
 
     # video_url 附带 xsec_token，下载时可直接解析（分享 URL 同构）
     video_url = f"https://www.xiaohongshu.com/explore/{note_id}" if note_id else ""
@@ -196,11 +206,13 @@ def normalize(item: dict) -> dict:
         "desc": desc[:500] if desc else "",
         "publish_time": create_time,
         "duration": duration_sec,
-        "duration_text": _fmt_duration(duration_sec),
+        # duration 未知（feed API 不含时长）时留空，前端隐藏时长徽标；
+        # 下载后 server 层会 ffprobe 补充
+        "duration_text": _fmt_duration(duration_sec) if duration_sec else "",
         "video_url": video_url,
         "platform": "xiaohongshu",
         "author": author_name,
-        "view_count": int(stats.get("liked_count", 0)),
+        "view_count": _safe_int(stats.get("liked_count", 0)),
         # 小红书特有字段
         "xsec_token": xsec_token,
         "note_type": note.get("type", ""),
@@ -224,18 +236,25 @@ async def _search_via_cdp(keyword: str, limit: int = 10) -> list[dict]:
     try:
         # 参数对齐 MediaCrawler 官方 search()（core.py:286-297）：
         # 显式 search_id + 默认 page_size=20（不传小 page_size）
+        # note_type=VIDEO：服务端只返回视频笔记（对齐网页端「视频」tab，
+        # SearchNoteType.VIDEO=1，见 MediaCrawler field.py:65-72）
         from media_platform.xhs.help import get_search_id
+        from media_platform.xhs.field import SearchNoteType
         resp = await client.get_note_by_keyword(
             keyword=keyword,
             search_id=get_search_id(),
             page=1,
+            note_type=SearchNoteType.VIDEO,
         )
     except Exception as e:
         err_msg = str(e)
         if "DataFetchError" in err_msg:
             logger.warning("小红书搜索失败（API 拒接，可能未登录或风控）: %s", err_msg[:120])
         else:
-            logger.warning("小红书搜索失败: %s", e)
+            # tenacity RetryError 的 str 不含底层原因，展开 last_attempt
+            cause = getattr(e, "last_attempt", None)
+            underlying = cause.exception() if cause is not None else e
+            logger.warning("小红书搜索失败: %r", underlying)
         return []
 
     items = resp.get("items", []) if isinstance(resp, dict) else []
@@ -252,8 +271,69 @@ async def _search_via_cdp(keyword: str, limit: int = 10) -> list[dict]:
         except Exception:
             logger.warning("xhs 搜索空结果: resp_keys=%s",
                            list(resp.keys()) if isinstance(resp, dict) else type(resp).__name__)
-    results = [normalize(it) for it in items[:limit]]
+    # 过滤推广卡片（对齐 MediaCrawler core.py:168：rec_query/hot_query 非真实笔记，
+    # 其 id 为 UUID 格式，无法下载）
+    items = [
+        it for it in items
+        if isinstance(it, dict) and it.get("model_type") not in ("rec_query", "hot_query")
+    ]
+    items = items[:limit]
+
+    # 二次查详情（官方 get_note_detail_async_task 做法）：搜索响应的 note_card
+    # 不含 type/video/duration 字段，按 note_id 逐个查询后图文/视频类型与时长才准确
+    _diag_done = False
+
+    async def _fetch_detail(item: dict) -> dict:
+        nonlocal _diag_done
+        note_id = str(item.get("id") or "")
+        xsec_source = item.get("xsec_source", "")
+        xsec_token = item.get("xsec_token", "")
+        if not note_id:
+            return item
+        try:
+            detail = await client.get_note_by_id(note_id, xsec_source, xsec_token)
+            if isinstance(detail, dict) and detail:
+                # 官方 core.py:308：详情数据不含 xsec_token，从搜索 item 回填
+                detail.setdefault("xsec_token", xsec_token)
+                detail.setdefault("xsec_source", xsec_source)
+                if not _diag_done:
+                    _diag_done = True
+                    src_note = item.get("note_card", item) or {}
+                    src_video = src_note.get("video") if isinstance(src_note, dict) else None
+                    det_video = detail.get("video")
+                    logger.warning(
+                        "xhs 诊断: 搜索item keys=%s video_keys=%s | feed详情 video_keys=%s type=%s",
+                        sorted(item.keys()),
+                        sorted(src_video.keys()) if isinstance(src_video, dict) else type(src_video).__name__,
+                        sorted(det_video.keys()) if isinstance(det_video, dict) else type(det_video).__name__,
+                        detail.get("type"),
+                    )
+                return detail
+            logger.warning("小红书详情查询无结果 %s (返回 %s, src=%s)",
+                           note_id, type(detail).__name__, xsec_source)
+        except Exception as e:
+            logger.warning("小红书详情查询异常 %s: %s", note_id, str(e)[:120])
+        return item  # 回退：用搜索原始 item（type/duration 可能缺失）
+
+    sem = asyncio.Semaphore(3)  # 限制并发，控制风控风险
+
+    async def _limited(item: dict) -> dict:
+        async with sem:
+            return await _fetch_detail(item)
+
+    try:
+        detailed = await asyncio.wait_for(
+            asyncio.gather(*[_limited(it) for it in items]), timeout=30,
+        )
+    except asyncio.TimeoutError:
+        logger.warning("小红书详情批量查询超时（30s），使用搜索原始数据")
+        detailed = items
+
+    results = [normalize(it) for it in detailed]
     logger.info("🔍 小红书搜索 '%s': %d 条", keyword, len(results))
+    # 对齐官方搜索后节流（base_config.py: CRAWLER_MAX_SLEEP_SEC=2），
+    # 连续密集请求是触发风控的主因之一
+    await asyncio.sleep(random.uniform(2, 4))
     return results
 
 
@@ -330,7 +410,9 @@ async def _download_via_cdp(note_url: str, file_name: str,
     )
 
     if note_card.get("type") != "video":
-        return {"status": "error", "error": "该笔记为图文笔记，暂不支持视频总结", "video_url": note_url}
+        # fatal：图文笔记是确定性结果，重试无意义（server 层不再重试）
+        return {"status": "error", "fatal": True,
+                "error": "该笔记为图文笔记，暂不支持视频总结", "video_url": note_url}
 
     return await _download_note_media(note_card, target, progress_callback)
 

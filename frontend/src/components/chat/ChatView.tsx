@@ -2,20 +2,25 @@
 
 import { memo, useEffect, useRef, useState, type MutableRefObject, type ReactNode } from "react";
 
-/** 从 video_url 提取平台原生 video_id（支持 B站/抖音/YouTube 等） */
+/** 从 video_url 提取平台原生 video_id（支持 B站/抖音/YouTube/小红书/快手等）。
+ *  必须与后端 _video_task_map 的键一致（后端用 platform.extract_video_id 的纯 ID），
+ *  否则 by-video SSE 会 404、卡片进度永远停 0%。 */
 function extractVideoId(videoUrl: string): string | null {
   // B站: BVxxx
   const bv = videoUrl.match(/BV[\w]+/);
   if (bv) return bv[0];
   // 抖音: /video/数字ID
   const dy = videoUrl.match(/douyin\.com\/video\/(\d+)/);
-  if (dy) return "dy_" + dy[1];
+  if (dy) return dy[1];
   // YouTube: v=xxx
   const yt = videoUrl.match(/[?&]v=([\w-]{11})/);
-  if (yt) return "yt_" + yt[1];
-  // 短链接
-  const short = videoUrl.match(/v\.douyin\.com\/(\w+)/);
-  if (short) return "dys_" + short[1];
+  if (yt) return yt[1];
+  // 小红书: /explore/xxx 或 /discovery/item/xxx
+  const xhs = videoUrl.match(/xiaohongshu\.com\/(?:explore|discovery\/item)\/([\w-]+)/);
+  if (xhs) return xhs[1];
+  // 快手: /short-video/xxx
+  const ks = videoUrl.match(/kuaishou\.com\/short-video\/(\w+)/);
+  if (ks) return ks[1];
   return null;
 }
 import { type Message } from "@ai-sdk/react";
