@@ -26,6 +26,16 @@ export interface VideoChapter {
   summary?: string;
 }
 
+/** 长视频分段总结的单段进度 */
+export interface VideoChunk {
+  index: number;
+  total: number;
+  time_start: number;
+  time_end: number;
+  status: "waiting" | "thinking" | "summarizing" | "done";
+  text: string;
+}
+
 export interface VideoInfo {
   video_id: string;
   title: string;
@@ -43,11 +53,13 @@ export interface VideoInfo {
   /** 总结后填充 */
   summary?: string;
   /** 任务状态 */
-  task_status?: "downloading" | "analyzing" | "extracting" | "summarizing" | "summary" | "asr" | "done" | "error";
+  task_status?: "downloading" | "analyzing" | "extracting" | "summarizing" | "summary" | "asr" | "thinking" | "chunking" | "merging" | "done" | "error";
   /** 下载进度 0-100 */
   download_progress?: number;
   /** 章节时间轴 */
   chapters?: VideoChapter[];
+  /** 长视频分段总结进度 */
+  chunks?: VideoChunk[];
 }
 
 interface VideoStore {
@@ -64,6 +76,8 @@ interface VideoStore {
   setChapters: (id: string, chapters: VideoChapter[]) => void;
   /** 设置视频时长 */
   setDuration: (id: string, duration: number) => void;
+  /** 设置分段总结进度 */
+  setChunks: (id: string, chunks: VideoChunk[]) => void;
 }
 
 export const useVideoStore = create<VideoStore>((set) => ({
@@ -115,6 +129,12 @@ export const useVideoStore = create<VideoStore>((set) => ({
       const existing = s.videos[id];
       if (!existing) return s;
       return { videos: { ...s.videos, [id]: { ...existing, duration } } };
+    }),
+  setChunks: (id, chunks) =>
+    set((s) => {
+      const existing = s.videos[id];
+      if (!existing) return s;
+      return { videos: { ...s.videos, [id]: { ...existing, chunks } } };
     }),
 }));
 

@@ -1,7 +1,8 @@
 "use client";
 
-import { X, Maximize2, Minimize2, Play, Clock, Eye, User } from "lucide-react";
+import { X, Maximize2, Minimize2, Play, Clock, Eye, User, Loader2 } from "lucide-react";
 import { useRef } from "react";
+import { cn } from "@/lib/utils";
 import { useVideoStore } from "@/lib/stores";
 import { apiBaseUrl } from "@/lib/api";
 import { MarkdownRenderer } from "@/components/ui/MarkdownRenderer";
@@ -28,6 +29,33 @@ export function DetailPanel({ videoId, expanded, onToggleFullscreen, onClose }: 
   const videoSrc = video?.local_path
     ? `${apiBaseUrl}/workspace/${video.local_path.replace(/^.*[\\/]/, "")}`
     : null;
+
+  // 总结状态胶囊指示器：由 task_status 阶段事件驱动（后端显式推送）
+  const taskStatus = video?.task_status;
+  const isWorking =
+    taskStatus === "extracting" ||
+    taskStatus === "summarizing" ||
+    taskStatus === "analyzing" ||
+    taskStatus === "asr" ||
+    taskStatus === "thinking" ||
+    taskStatus === "chunking" ||
+    taskStatus === "merging";
+  const pillLabels: Record<string, string> = {
+    thinking: "思考中",
+    chunking: "分段总结中",
+    merging: "合并总结中",
+  };
+  const summaryPill = {
+    label: pillLabels[taskStatus ?? ""] ?? (isWorking ? "正在总结" : "内容总结"),
+    working: isWorking,
+  };
+
+  // 分段总结框：仅在分段/合并阶段展示；
+  // 合并阶段开始思考后（taskStatus 变为 thinking/summary）隐藏，只显示整体总结
+  const showChunks =
+    video?.chunks &&
+    video.chunks.length > 0 &&
+    (taskStatus === "chunking" || taskStatus === "merging");
 
   return (
     <div className="h-full flex flex-col bg-card rounded-2xl shadow-xl border border-border overflow-hidden">
@@ -72,6 +100,13 @@ export function DetailPanel({ videoId, expanded, onToggleFullscreen, onClose }: 
             >
               您的浏览器不支持视频播放。
             </video>
+          </div>
+        ) : video?.task_status === "downloading" ? (
+          <div className="aspect-video bg-black flex flex-col items-center justify-center gap-2">
+            <Loader2 className="w-8 h-8 text-white/60 animate-spin" />
+            <span className="text-white/60 text-sm">
+              下载中 {video.download_progress ?? 0}%
+            </span>
           </div>
         ) : (
           <div className="aspect-video bg-black flex items-center justify-center">
@@ -119,16 +154,85 @@ export function DetailPanel({ videoId, expanded, onToggleFullscreen, onClose }: 
 
           {/* AI 总结 */}
           <div className="space-y-2">
-            <h3 className="text-sm font-semibold">📊 AI 总结</h3>
-            {video?.summary ? (
-              <MarkdownRenderer>{video.summary}</MarkdownRenderer>
-            ) : (
-              <div className="rounded-lg border border-border bg-muted/50 p-4">
-                <p className="text-sm text-muted-foreground">
-                  {video
-                    ? "该视频尚未总结。在对话中要求「总结」即可生成。"
-                    : "选中视频后将在此显示详细信息。"}
-                </p>
+            {video?.task_status !== "downloading" && (
+              <div
+                className={cn(
+                  "inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-medium",
+                  summaryPill.working
+                    ? "bg-blue-50 text-blue-700 dark:bg-blue-950 dark:text-blue-300"
+                    : "bg-muted text-muted-foreground"
+                )}
+              >
+                {summaryPill.working && (
+                  <Loader2 className="w-3 h-3 animate-spin" />
+                )}
+                {summaryPill.label}
+              </div>
+            )}
+            {video?.summary && (
+              // 思考阶段：内容降低不透明度，与正文视觉区分
+              <div className={cn(taskStatus === "thinking" && "opacity-60")}>
+                <MarkdownRenderer>{video.summary}</MarkdownRenderer>
+              </div>
+            )}
+
+            {/* 分段总结框（长视频分块处理时逐段显示） */}
+            {showChunks && (
+              <div className="space-y-2 pt-1">
+                {video!.chunks!.map((ch) => (
+                  <div
+                    key={ch.index}
+                    className={cn(
+                      "rounded-lg border border-border px-3 py-2 space-y-1.5",
+                      ch.status === "waiting" && "opacity-50",
+                      (ch.status === "thinking" || ch.status === "summarizing") &&
+                        "border-blue-200 bg-blue-50/50"
+                    )}
+                  >
+                    {/* 左上角：分段 + 时间范围；右侧：状态 */}
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-xs font-medium text-muted-foreground">
+                        段落 {ch.index}/{ch.total} · {formatTime(ch.time_start)}–
+                        {formatTime(ch.time_end)}
+                      </span>
+                      {ch.status !== "done" && (
+                        <span
+                          className={cn(
+                            "inline-flex items-center gap-1 text-xs shrink-0",
+                            ch.status === "waiting"
+                              ? "text-muted-foreground"
+                              : "text-blue-600"
+                          )}
+                        >
+                          <Loader2 className="w-3 h-3 animate-spin" />
+                          {ch.status === "waiting"
+                            ? "等待中"
+                            : ch.status === "thinking"
+                              ? "思考中"
+                              : "总结中"}
+                        </span>
+                      )}
+                    </div>
+                    {/* 段落的思考 + 总结内容；思考阶段限高，只显示最新几行 */}
+                    {ch.text && (
+                      <div
+                        className={cn(
+                          ch.status === "thinking" &&
+                            "max-h-24 overflow-hidden flex items-end"
+                        )}
+                      >
+                        <p
+                          className={cn(
+                            "text-xs text-muted-foreground whitespace-pre-wrap leading-relaxed",
+                            ch.status === "thinking" && "opacity-60"
+                          )}
+                        >
+                          {ch.text}
+                        </p>
+                      </div>
+                    )}
+                  </div>
+                ))}
               </div>
             )}
           </div>
@@ -146,4 +250,14 @@ function formatCount(n: number): string {
   if (n >= 10000) return `${(n / 10000).toFixed(1)}万`;
   if (n >= 1000) return `${(n / 1000).toFixed(1)}k`;
   return String(n);
+}
+
+function formatTime(seconds: number): string {
+  const h = Math.floor(seconds / 3600);
+  const m = Math.floor((seconds % 3600) / 60);
+  const s = Math.floor(seconds % 60);
+  if (h > 0) {
+    return `${h}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
+  }
+  return `${m}:${String(s).padStart(2, "0")}`;
 }

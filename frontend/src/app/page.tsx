@@ -60,22 +60,32 @@ export default function Home() {
         <div
           className="flex flex-col min-w-0"
           style={{
-            width: entered && !closing ? "42%" : "48rem",
+            width: entered && !closing ? "41.5%" : "48rem",
             marginLeft: entered && !closing
-              ? 0
+              ? "1.5%"
               : "calc((100% - 48rem) / 2)",
             transition:
               "width 0.5s cubic-bezier(0.16, 1, 0.3, 1), margin-left 0.5s cubic-bezier(0.16, 1, 0.3, 1)",
           }}
         >
-          <header className="shrink-0 px-6 py-4 border-b border-border">
-            <h1 className="text-lg font-semibold">🎬 VidAgent</h1>
-            <p className="text-sm text-muted-foreground">
-              视频采集与多模态总结助手
-            </p>
+          <header className="shrink-0 px-6 pt-7 pb-4 border-b border-border">
+            <div className="flex items-center gap-2.5">
+              <img
+                src="/logos/VALogo.png"
+                alt="VidAgent"
+                className="h-6 w-auto"
+              />
+              <h1 className="text-lg font-semibold">VidAgent</h1>
+            </div>
           </header>
 
-          <div className="flex-1 overflow-y-auto pl-8 pr-3 py-6">
+          <div
+            className={cn(
+              "flex-1 overflow-y-auto pl-8 pr-3 py-6",
+              // 详情卡片展开时隐藏对话区滚动条（避免两条滚动条并存）
+              showOverlay && "no-scrollbar"
+            )}
+          >
             <ChatView
               messages={messages}
               status={status}
@@ -96,10 +106,10 @@ export default function Home() {
               expanded && "inset-4 opacity-100",
               // 侧边栏 + 关闭：固定上下 + 右边距，left 动态变化
               !expanded && "top-4 bottom-24 right-4",
-              // 侧边栏可见：left 对齐对话区右侧 + 3% 间隙
-              entered && !closing && !expanded && "left-[45%] opacity-100",
-              // 进入前 / 关闭滑出：left 跟踪对话区右边界（~80%），保持间隙恒定
-              (!entered || closing) && !expanded && "left-[80%] opacity-0",
+              // 侧边栏可见：left 对齐对话区右侧 + 1% 间隙
+              entered && !closing && !expanded && "left-[44%] opacity-100",
+              // 进入前 / 关闭滑出：left 跟踪对话区右边界（~78%），保持间隙恒定
+              (!entered || closing) && !expanded && "left-[78%] opacity-0",
             )}
             style={{
               // 打开时卡片延迟 75ms 跟随对话区，关闭时同步进行
@@ -128,9 +138,9 @@ export default function Home() {
           <input
             value={input}
             onChange={handleInputChange}
-            placeholder="输入指令，如：抓 B站 今日热榜前 3 并总结…"
+            placeholder="快速了解各大平台视频内容"
             disabled={status === "streaming" || status === "submitted"}
-            className="flex-1 rounded-lg border border-input bg-background px-4 py-3 text-sm
+            className="flex-1 rounded-full border border-input bg-background px-5 py-3 text-sm
                        placeholder:text-muted-foreground focus:outline-none focus:ring-2
                        focus:ring-ring disabled:opacity-50"
           />
@@ -139,7 +149,7 @@ export default function Home() {
             disabled={
               !input.trim() || status === "streaming" || status === "submitted"
             }
-            className="rounded-lg bg-primary px-6 py-3 text-sm font-medium
+            className="rounded-full bg-primary px-6 py-3 text-sm font-medium
                        text-primary-foreground hover:opacity-90 disabled:opacity-50
                        transition-all active:scale-95"
           >

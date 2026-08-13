@@ -1,6 +1,6 @@
 "use client";
 
-import { memo, useEffect, useRef, type MutableRefObject, type ReactNode } from "react";
+import { memo, useEffect, useRef, useState, type MutableRefObject, type ReactNode } from "react";
 
 /** 从 video_url 提取平台原生 video_id（支持 B站/抖音/YouTube 等） */
 function extractVideoId(videoUrl: string): string | null {
@@ -25,6 +25,7 @@ import { MarkdownRenderer } from "@/components/ui/MarkdownRenderer";
 import { streamSummaryByVideo, type SSEController } from "@/lib/api";
 import {
   CheckCircle,
+  ChevronRight,
   Loader2,
   Search,
   Flame,
@@ -43,6 +44,7 @@ const TOOL_META: Record<string, { icon: ReactNode; label: string }> = {
   get_creator_videos: { icon: <User className="w-3.5 h-3.5" />, label: "创作者" },
   download_video: { icon: <Download className="w-3.5 h-3.5" />, label: "下载" },
   extract_and_summarize: { icon: <FileText className="w-3.5 h-3.5" />, label: "总结" },
+  batch_summarize_videos: { icon: <FileText className="w-3.5 h-3.5" />, label: "总结内容" },
 };
 
 /** 返回检索结果的工具名集合 */
@@ -120,7 +122,7 @@ export const VideoCard = memo(function VideoCard({
   const taskStatus = stored?.task_status;
   const downloadProgress = stored?.download_progress ?? 0;
   const isDone = taskStatus === "done";
-  const isSummarizing = taskStatus === "extracting" || taskStatus === "summarizing" || taskStatus === "analyzing" || taskStatus === "summary" || taskStatus === "asr";
+  const isSummarizing = taskStatus === "extracting" || taskStatus === "summarizing" || taskStatus === "analyzing" || taskStatus === "summary" || taskStatus === "asr" || taskStatus === "thinking" || taskStatus === "chunking" || taskStatus === "merging";
   const isDownloading = taskStatus === "downloading";
 
   // 构建背景样式
@@ -144,37 +146,40 @@ export const VideoCard = memo(function VideoCard({
       : {};
 
   return (
-    <button
-      onClick={() => selectVideo(videoId)}
-      className={cn(
-        "w-full text-left rounded-xl border border-border p-4",
-        "hover:shadow-md hover:border-primary/20 transition-all duration-200",
-        "active:scale-[0.99] cursor-pointer",
-        // 默认背景：下载/完成态用自己的背景替代
-        !isDownloading && !isBgOverride && "bg-card",
-        isSelected && "shadow-md border-primary/20",
-        statusBgClass
-      )}
-      style={progressStyle}
-    >
-      <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0 flex-1">
-          <h4 className="text-sm font-medium truncate">{displayTitle}</h4>
-          <div className="flex items-center gap-3 mt-1 text-xs text-muted-foreground">
-            {displayAuthor && <span>@{displayAuthor}</span>}
-            {displayDuration && <span>{displayDuration}</span>}
+    // 浮入动画在外层 wrapper：避免与 shimmer 的 animation 属性互相覆盖
+    <div className="animate-float-in">
+      <button
+        onClick={() => selectVideo(videoId)}
+        className={cn(
+          "w-full text-left rounded-xl border border-border p-4",
+          "hover:shadow-md hover:border-primary/20 transition-all duration-200",
+          "active:scale-[0.99] cursor-pointer",
+          // 默认背景：下载/完成态用自己的背景替代
+          !isDownloading && !isBgOverride && "bg-card",
+          isSelected && "shadow-md border-primary/20",
+          statusBgClass
+        )}
+        style={progressStyle}
+      >
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0 flex-1">
+            <h4 className="text-sm font-medium truncate">{displayTitle}</h4>
+            <div className="flex items-center gap-3 mt-1 text-xs text-muted-foreground">
+              {displayAuthor && <span>@{displayAuthor}</span>}
+              {displayDuration && <span>{displayDuration}</span>}
+            </div>
+            {displayDesc && (
+              <p className="text-xs text-muted-foreground mt-2 line-clamp-2">
+                {displayDesc}
+              </p>
+            )}
           </div>
-          {displayDesc && (
-            <p className="text-xs text-muted-foreground mt-2 line-clamp-2">
-              {displayDesc}
-            </p>
-          )}
+          <div className="shrink-0 w-24 h-16 rounded-lg bg-muted flex items-center justify-center">
+            <span className="text-2xl">🎬</span>
+          </div>
         </div>
-        <div className="shrink-0 w-24 h-16 rounded-lg bg-muted flex items-center justify-center">
-          <span className="text-2xl">🎬</span>
-        </div>
-      </div>
-    </button>
+      </button>
+    </div>
   );
 });
 
@@ -185,9 +190,11 @@ export const VideoCard = memo(function VideoCard({
 const ChatMessage = memo(function ChatMessage({
   message,
   onVideoClick,
+  isStreaming,
 }: {
   message: Message;
   onVideoClick: (id: string) => void;
+  isStreaming?: boolean;
 }) {
   const isUser = message.role === "user";
 
@@ -204,12 +211,16 @@ const ChatMessage = memo(function ChatMessage({
         {isUser ? (
           <p className="text-sm whitespace-pre-wrap">{message.content}</p>
         ) : (
-          <AssistantContent message={message} onVideoClick={onVideoClick} />
+          <AssistantContent
+            message={message}
+            onVideoClick={onVideoClick}
+            isStreaming={isStreaming}
+          />
         )}
       </div>
     </div>
   );
-}, (prev, next) => prev.message === next.message);
+}, (prev, next) => prev.message === next.message && prev.isStreaming === next.isStreaming);
 
 // ---------------------------------------------------------------------------
 // 从工具调用结果中提取视频数据
@@ -324,18 +335,95 @@ function extractVideoResults(toolInvocations: any[]): VideoInfo[] {
 }
 
 // ---------------------------------------------------------------------------
+// ThinkingSection — 可折叠思考过程（grid-template-rows 过渡动画）
+//
+// 替代原生 <details>（display:none 无法过渡）。
+// 处理中（inProgress）强制展开，完成后可手动折叠/展开，均带平滑动画。
+// ---------------------------------------------------------------------------
+
+function ThinkingSection({
+  inProgress,
+  lengthText,
+  children,
+}: {
+  inProgress: boolean;
+  lengthText: string;
+  children: ReactNode;
+}) {
+  const [manualOpen, setManualOpen] = useState(false);
+  const [collapseAnim, setCollapseAnim] = useState(false);
+  const isOpen = inProgress || manualOpen;
+  // 尾部视图：处理中限高显示最新内容；收起动画期间保持，避免内容突变
+  const showTail = inProgress || collapseAnim;
+
+  // 处理结束后自动收起：收起动画完成前保持尾部视图，之后切换为全文（不可见）
+  useEffect(() => {
+    if (!inProgress && !manualOpen) {
+      setCollapseAnim(true);
+      const t = setTimeout(() => setCollapseAnim(false), 250);
+      return () => clearTimeout(t);
+    }
+    setCollapseAnim(false);
+  }, [inProgress, manualOpen]);
+
+  return (
+    <div>
+      <button
+        onClick={() => setManualOpen((v) => !v)}
+        className="flex items-center gap-1 text-xs text-muted-foreground/60 cursor-pointer hover:text-muted-foreground transition-colors select-none"
+      >
+        <ChevronRight
+          className={cn(
+            "w-3 h-3 shrink-0 transition-transform duration-200",
+            isOpen && "rotate-90"
+          )}
+        />
+        {inProgress && (
+          <Loader2 className="w-3 h-3 animate-spin text-blue-500 shrink-0" />
+        )}
+        <span>思考过程{lengthText}</span>
+      </button>
+      <div
+        className={cn(
+          "grid transition-[grid-template-rows] duration-200 ease-out",
+          isOpen ? "grid-rows-[1fr]" : "grid-rows-[0fr]"
+        )}
+      >
+        <div className="overflow-hidden min-h-0">
+          <div className="mt-2 border-l-2 border-muted pl-3">
+            <div
+              className={cn(showTail && "max-h-48 overflow-hidden flex items-end")}
+            >
+              {children}
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // AssistantContent — 渲染 AI 回复（文本 + tool badges + video cards）
 // ---------------------------------------------------------------------------
 
 function AssistantContent({
   message,
   onVideoClick,
+  isStreaming,
 }: {
   message: Message;
   onVideoClick: (id: string) => void;
+  isStreaming?: boolean;
 }) {
   const toolInvocations = (message as any).toolInvocations ?? [];
   const reasoning = (message as any).reasoning as string | undefined;
+
+  // 消息是否仍在处理中：流式未结束 或 有工具正在执行
+  const hasActiveTools = toolInvocations.some(
+    (ti: any) => ti.state === "call" || ti.state === "partial-call",
+  );
+  const inProgress = isStreaming || hasActiveTools;
 
   // 从 batch_summarize_videos 工具调用中提取视频卡片
   // （搜索工具不显示卡片——未总结的视频卡片没有意义）
@@ -388,17 +476,16 @@ function AssistantContent({
         </div>
       )}
 
-      {/* 推理过程（可折叠，模型思考内容） */}
+      {/* 推理过程（可折叠，模型思考内容）— 处理期间保持展开，多次思考连续累积显示 */}
       {reasoning && (
-        <details className="group" open={!message.content}>
-          <summary className="text-xs text-muted-foreground/60 cursor-pointer hover:text-muted-foreground transition-colors select-none">
-            🤔 思考过程{reasoning.length > 0 ? `（${reasoning.length} 字）` : ""}
-          </summary>
-          <div className="mt-2 text-xs text-muted-foreground/50 whitespace-pre-wrap leading-relaxed border-l-2 border-muted pl-3">
-            {reasoning.slice(0, 2000)}
-            {reasoning.length > 2000 && <span className="text-muted-foreground/30">…（已截断）</span>}
-          </div>
-        </details>
+        <ThinkingSection
+          inProgress={inProgress}
+          lengthText={reasoning.length > 0 ? `（${reasoning.length} 字）` : ""}
+        >
+          <p className="text-xs text-muted-foreground/50 whitespace-pre-wrap leading-relaxed">
+            {reasoning}
+          </p>
+        </ThinkingSection>
       )}
 
       {/* 文本内容（Markdown 渲染） */}
@@ -435,6 +522,10 @@ function _connectSSE(
       // stage 事件
       if (data.stage) {
         store.updateProgress(videoId, { task_status: data.stage, download_progress: data.download_pct });
+      }
+      // 分块进度（长视频分段总结）
+      if (data.chunks) {
+        store.setChunks(videoId, data.chunks);
       }
       // 流式文本
       if (data.message) {
@@ -576,9 +667,13 @@ export function ChatView({
       <div className="flex items-center justify-center h-full text-muted-foreground">
         <div className="text-center space-y-2">
           <p className="text-4xl">🎬</p>
-          <p className="text-sm">输入指令开始使用 VidAgent</p>
-          <p className="text-xs text-muted-foreground/60">
-            例如：B站今日热榜前 3 名是什么？
+          <p className="text-sm flex items-center justify-center gap-1">
+            输入指令开始使用
+            <img
+              src="/logos/VidAgentLogo.png"
+              alt="VidAgent"
+              className="h-4 w-auto"
+            />
           </p>
         </div>
       </div>
@@ -587,8 +682,16 @@ export function ChatView({
 
   return (
     <div>
-      {messages.map((m) => (
-        <ChatMessage key={m.id} message={m} onVideoClick={onVideoClick} />
+      {messages.map((m, idx) => (
+        <ChatMessage
+          key={m.id}
+          message={m}
+          onVideoClick={onVideoClick}
+          isStreaming={
+            idx === messages.length - 1 &&
+            (status === "streaming" || status === "submitted")
+          }
+        />
       ))}
       {/* 思考/加载指示器：流式进行中，最后一条 assistant 消息尚未完成 */}
       {(status === "submitted" || status === "streaming") && (() => {

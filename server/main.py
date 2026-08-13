@@ -328,6 +328,7 @@ async def tool_summarize_stream(task_id: str):
         last_summary = ""
         last_summary_stage = ""
         last_download_pct = -1
+        last_chunks_snapshot = ""
         last_local_path_sent = False
         last_asr_active = False
         last_summary_active_flag = False
@@ -366,6 +367,13 @@ async def tool_summarize_stream(task_id: str):
                     last_summary_stage = stage
                     last_download_pct = download_pct
                     yield f"data: {json.dumps({'type': 'progress', 'stage': stage, 'download_pct': download_pct}, ensure_ascii=False)}\n\n"
+
+                # ★ 分块进度推送：chunks 内容变化时（长视频分段总结的逐段状态）
+                chunks = getattr(progress, 'chunks', []) or []
+                chunks_snapshot = json.dumps(chunks, ensure_ascii=False)
+                if chunks_snapshot != last_chunks_snapshot:
+                    last_chunks_snapshot = chunks_snapshot
+                    yield f"data: {json.dumps({'type': 'progress', 'chunks': chunks}, ensure_ascii=False)}\n\n"
             else:
                 # 回退：未传 task_id 的旧调用仍走全局单例
                 from vidagent.tools.summarizer import (
@@ -386,7 +394,8 @@ async def tool_summarize_stream(task_id: str):
                 last_summary_active_flag = summary_active
                 last_summary = summary_text
                 if summary_text:
-                    yield f"data: {json.dumps({'type': 'progress', 'stage': 'summary', 'message': summary_text}, ensure_ascii=False)}\n\n"
+                    # 纯文本事件：不带 stage，避免覆盖阶段事件设置的 task_status
+                    yield f"data: {json.dumps({'type': 'progress', 'message': summary_text}, ensure_ascii=False)}\n\n"
 
             await asyncio.sleep(0.05)  # ~20fps，感知为逐 token 流式
 

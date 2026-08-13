@@ -62,12 +62,15 @@ class _LiveSummary:
     def __init__(self) -> None:
         self.active = False
         self.partial = ""
-        self.stage = ""         # 当前阶段: downloading | extracting | summarizing
+        self.stage = ""         # 当前阶段: downloading | extracting | summarizing | chunking | merging | thinking | summary
         self.download_pct = 0   # 下载进度 0-100
+        # 分块进度（长视频分段总结）：每段一条 {index, total, time_start, time_end, status, text}
+        self.chunks: list[dict] = []
+        self.current_chunk: int = -1  # 当前流式写入的分块索引（-1 = 主输出 partial）
 
-    def begin(self, label: str = "🎵 多模态总结中…") -> None:
+    def begin(self, label: str = "") -> None:
         self.active = True
-        self.partial = label + "\n\n"
+        self.partial = label
         self.stage = "summarizing"
 
     def append(self, text: str) -> None:
@@ -146,21 +149,27 @@ _SUMMARY_SYS_MULTIMODAL = (
 
 _CHUNK_SUMMARY_SYS = (
     "你是一个视频片段总结助手。你会收到视频某一段落的音频和关键帧，"
-    "请用中文输出该段落的简要总结（2-5 句话），聚焦关键信息和事件。"
+    "请用中文输出该段落的详细总结（150-300 字）：\n"
+    "1. 按时间顺序梳理段落内的事件发展和观点变化\n"
+    "2. 覆盖关键信息、数据、人名和具体细节，不要遗漏\n"
+    "3. 结尾可用一句话点出该段落在全片中的作用"
 )
 
 _MERGE_SYS = (
     "你是一个视频总结助手。请将以下各段落的摘要合并为完整的结构化总结：\n"
-    "1. **核心观点**（1-3 条）\n"
-    "2. **主要内容梳理**（按时间线或逻辑分点）\n"
-    "3. **关键帧画面描述**\n"
+    "1. **整体概括**（2-3 句话概括全片主题与核心看点，放在最前面）\n"
+    "2. **核心观点**（1-3 条）\n"
+    "3. **主要内容梳理**（按时间线或逻辑分点）\n"
+    "4. **关键帧画面描述**\n"
     "请确保覆盖视频全貌，不要遗漏重要信息。"
 )
 
 _SUMMARY_SYS_CHAPTER = (
     "你是一个专业的视频内容分析师。你会收到视频的完整音频和关键帧画面。\n"
     "请聆听音频、观察画面，然后将视频划分为 3-8 个话题段落。\n\n"
-    "输出格式（每个段落以 ## 开头）：\n"
+    "输出格式（第一个段落必须是整体概括，其余段落按时间顺序）：\n"
+    "## 整体概括\n"
+    "用 2-3 句话概括整个视频的主题、内容与核心看点，让读者未读详情即可了解全貌...\n\n"
     "## 开场介绍\n"
     "主持人介绍本期主题和嘉宾背景，现场气氛轻松...\n\n"
     "## 核心讨论\n"
@@ -170,7 +179,7 @@ _SUMMARY_SYS_CHAPTER = (
     "关键规则：\n"
     "- **绝对不要输出任何时间戳、秒数或 MM:SS 格式的时间**\n"
     "- 画面标注 [画面 @ Xs] 仅供你理解时间顺序，不要在输出中引用这些数字\n"
-    "- 段落按时间先后顺序排列\n"
+    "- 段落按时间先后顺序排列（整体概括除外）\n"
     "- 描述要包含实际内容和关键观点，而非泛泛而谈"
 )
 
@@ -332,13 +341,32 @@ def _chat_completion_stream(
 
     # 思考过程回调：更新进度显示，降低感知延迟
     thinking_shown = False
+    # 正文开头的空行去除标记（模型常在 </think> 后输出 \n\n）
+    strip_leading = True
+
+    # 分块模式：streaming 内容写入当前分块条目而非主 partial
+    def _chunk_target() -> dict | None:
+        if progress is not None and 0 <= getattr(progress, "current_chunk", -1) < len(progress.chunks):
+            return progress.chunks[progress.current_chunk]
+        return None
 
     def _on_thinking(text: str) -> None:
         nonlocal thinking_shown
+        chunk = _chunk_target()
+        if chunk is not None:
+            # 分块模式：思考写入当前分块
+            if not thinking_shown:
+                chunk["status"] = "thinking"
+                thinking_shown = True
+            if len(chunk["text"]) < 3000:
+                chunk["text"] += text
+            return
         if not thinking_shown:
-            pg.set("🤔 思考中...\n\n")
+            # 用 stage 标记思考阶段（前端胶囊指示器显示），不再写入占位文字
+            pg.stage = "thinking"
+            pg.set("")
             thinking_shown = True
-        # 逐步追加推理内容（限制长度防止 UI 过载）
+        # 思考内容流式输出（限制长度防止 UI 过载）
         current = pg.partial
         if len(current) < 2000:
             pg.append(text)
@@ -373,27 +401,53 @@ def _chat_completion_stream(
                         # 分离 <think> 推理块和实际内容
                         stripped = stripper.feed(token)
                         if stripped:
+                            if strip_leading:
+                                stripped = stripped.lstrip()
+                                if stripped:
+                                    strip_leading = False
+                        if stripped:
                             if ttft is None:
                                 ttft = time.perf_counter() - t0
-                                # 第一个实际内容 token 到达：清空思考显示
-                                if thinking_shown:
+                                chunk = _chunk_target()
+                                if chunk is not None:
+                                    # 分块模式：正文开始输出，清空思考内容只显示正文
+                                    chunk["status"] = "summarizing"
+                                    chunk["text"] = ""
+                                    thinking_shown = False
+                                else:
+                                    # 第一个正文 token 到达：清空思考内容，进入正文流式阶段
                                     pg.set("")
+                                    pg.stage = "summary"
                                     thinking_shown = False
                             accumulated += stripped
                             token_count += len(stripped)
-                            pg.append(stripped)
+                            chunk = _chunk_target()
+                            if chunk is not None:
+                                if len(chunk["text"]) < 3000:
+                                    chunk["text"] += stripped
+                            else:
+                                pg.append(stripped)
                 except (json.JSONDecodeError, KeyError, IndexError):
                     pass
 
     # 流结束：清空 stripper 残留，同时推送到 progress
     flushed = stripper.flush()
+    if flushed and strip_leading:
+        flushed = flushed.lstrip()
+        if flushed:
+            strip_leading = False
     flushed_len = len(flushed) if flushed else 0
     if flushed:
         if ttft is None:
             ttft = time.perf_counter() - t0
         accumulated += flushed
         token_count += len(flushed)
-        pg.append(flushed)  # 修复：最后几个字符也要推送到前端
+        chunk = _chunk_target()
+        if chunk is not None:
+            if len(chunk["text"]) < 3000:
+                chunk["text"] += flushed
+        else:
+            pg.append(flushed)  # 修复：最后几个字符也要推送到前端
 
     elapsed = time.perf_counter() - t0
     raw_len = len(accumulated_raw)
@@ -721,7 +775,7 @@ def _summarize_chunk(
     prompt = (
         f"{meta_block}"
         f"【视频段落 {chunk_index}/{total_chunks}】时间范围 {time_start:.0f}s–{time_end:.0f}s\n"
-        f"请聆听该段落的音频并结合画面帧，输出 2-5 句话的段落总结。"
+        f"请聆听该段落的音频并结合画面帧，输出 150-300 字的详细段落总结，覆盖关键信息与细节。"
     )
 
     content_parts: list[dict] = [
@@ -905,6 +959,12 @@ def _summarize_multimodal_chunked(
         total = len(audio_chunks)
         logger.info("长音频分块完成：%d 段（每段 ~%ds）", total, chunk_s)
 
+        # 初始化分块进度（前端渲染分段圆角框）
+        pg.chunks = []
+        pg.current_chunk = -1
+        pg.stage = "chunking"
+        pg.set("")
+
         chunk_summaries: list[str] = []
         t0_chunks = time.perf_counter()
         for i, chunk_path in enumerate(audio_chunks, 1):
@@ -916,19 +976,16 @@ def _summarize_multimodal_chunked(
                 i, total, t_start, t_end, chunk_kb,
             )
 
-            # 更新实时进度（覆盖旧段落内容）
-            progress_header = (
-                f"🎵 长视频分块总结中… 段落 {i}/{total} ({(i-1)/total*100:.0f}%)\n"
-                f"{'─' * 40}\n\n"
-            )
-            if chunk_summaries:
-                done_text = "\n\n".join(
-                    f"**段落 {j+1}** ({j*chunk_s:.0f}s–{min((j+1)*chunk_s, duration):.0f}s)：\n{s[:200]}…"
-                    for j, s in enumerate(chunk_summaries)
-                )
-                pg.set(progress_header + done_text + f"\n\n⏳ 段落 {i} 分析中…")
-            else:
-                pg.set(progress_header + f"⏳ 段落 {i} 分析中…")
+            # 注册分块进度条目，流式内容写入该条目
+            pg.chunks.append({
+                "index": i,
+                "total": total,
+                "time_start": int(t_start),
+                "time_end": int(t_end),
+                "status": "waiting",
+                "text": "",
+            })
+            pg.current_chunk = i - 1
 
             t0_chunk = time.perf_counter()
             summary = _summarize_chunk(
@@ -941,11 +998,16 @@ def _summarize_multimodal_chunked(
             )
             chunk_elapsed = time.perf_counter() - t0_chunk
             chunk_summaries.append(summary)
+            pg.chunks[-1]["status"] = "done"
+            pg.chunks[-1]["text"] = summary
             logger.info(
                 "✅ 分块 %d/%d 完成: %.1fs (%d 字)",
                 i, total, chunk_elapsed, len(summary),
             )
 
+        # 分块全部完成，进入合并阶段
+        pg.current_chunk = -1
+        pg.stage = "merging"
         chunks_total = time.perf_counter() - t0_chunks
         logger.info("分块总结全部完成: %d 段 / %.1fs，开始合并…", total, chunks_total)
         return _merge_summaries(
@@ -1148,7 +1210,8 @@ def _summarize_multimodal_with_chapters(
     prompt_text = (
         f"{meta_block}"
         f"请聆听完整音频，结合关键帧画面，将视频划分为几个话题段落。\n"
-        f"每个段落以 ## 标题开头，然后写描述。不要输出任何时间戳。\n"
+        f"在开头先输出一个「## 整体概括」段落（2-3 句话概括全片），"
+        f"然后按时间顺序输出各话题段落，每个段落以 ## 标题开头。不要输出任何时间戳。\n"
     )
 
     content_parts: list[dict] = [

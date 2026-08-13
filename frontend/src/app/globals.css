@@ -67,6 +67,15 @@
   border-radius: 3px;
 }
 
+/* 隐藏滚动条（详情卡片展开时的对话区） */
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+.no-scrollbar {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
 /* 工具调用徽章动画 */
 @keyframes pulse-dot {
   0%, 100% { opacity: 1; }
