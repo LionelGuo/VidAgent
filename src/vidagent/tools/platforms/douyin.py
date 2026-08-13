@@ -337,29 +337,33 @@ def normalize(item: dict) -> dict:
 
 
 def _normalize_trending(item: dict) -> dict:
+    """热搜词条（hot/search/list 的 word_list，与 douyin.com/hot 页面热搜榜一致）。
+
+    字段依据页面接口实测：word / hot_value（热度，页面显示"X万热度"）/
+    view_count（观看数，部分请求参数下可能为 None）/ sentence_id（词条 ID）。
+    词条本身不是视频（无作者/时长），video_url 用搜索页 URL——
+    下载流程会透明解析为真实视频（_SEARCH_URL_RE）。
+    """
     word = item.get("word", "")
-    video_count = item.get("video_count", 0)
-    hot_value = item.get("hot_value", 0)
-    event_time = item.get("event_time", 0)
-    group_id = item.get("group_id", "")
-    cover = item.get("word_cover", {})
-    cover_url = ""
-    if isinstance(cover, dict):
-        urls = cover.get("url_list", [])
-        cover_url = urls[0] if urls else ""
+    hot_value = _safe_int(item.get("hot_value", 0))
+    # 词条真实观看数（部分请求参数下接口不返回，回退热度值）
+    view_count = _safe_int(item.get("view_count", 0)) or hot_value
+    sentence_id = str(item.get("sentence_id", "") or "")
+    hot_text = f"{hot_value / 10000:.1f}万" if hot_value > 0 else "0"
+    desc = f"抖音热搜 · 热度 {hot_text}"
     return {
-        "video_id": group_id or f"dy_trend_{hash(word) & 0xFFFFFFFF:08x}",
+        "video_id": f"dy_hot_{sentence_id}" if sentence_id else f"dy_trend_{hash(word) & 0xFFFFFFFF:08x}",
         "title": word,
-        "desc": f"抖音热搜 · 热度 {hot_value} · {video_count} 个视频",
-        "publish_time": event_time,
+        "desc": desc,
+        "publish_time": 0,
         "duration": 0,
         "duration_text": "",
         "video_url": f"https://www.douyin.com/search/{word}" if word else "",
         "platform": "douyin",
         "author": "",
-        "view_count": video_count,
+        "view_count": view_count,
         "hot_value": hot_value,
-        "cover_url": cover_url,
+        "cover_url": "",
     }
 
 
@@ -397,6 +401,14 @@ def _normalize_video(item: dict) -> dict:
     }
 
 
+def _safe_int(v: Any) -> int:
+    """安全整数转换：防御 None / 空串 / 非数字字符串。"""
+    try:
+        return int(v)
+    except (TypeError, ValueError):
+        return 0
+
+
 def _fmt_duration(sec: int) -> str:
     if sec <= 0:
         return "00:00"
@@ -405,11 +417,11 @@ def _fmt_duration(sec: int) -> str:
 
 
 # ---------------------------------------------------------------------------
-# 热榜（视频榜 — CDP 页面内 XHR）
+# 热榜（热搜榜 — CDP 页面内 XHR，与 douyin.com/hot 页面一致）
 # ---------------------------------------------------------------------------
 
 async def fetch_hot_search(client: httpx.AsyncClient, limit: int = 20) -> list[dict]:
-    """[兼容旧签名] 热搜词榜（话题热度，非视频）。已由视频榜方案取代。"""
+    """[兼容旧签名] 热搜词榜（旧版无参数接口，已由页面内 XHR 方案取代）。"""
     try:
         resp = await client.get(_HOT_SEARCH_API)
         resp.raise_for_status()
@@ -423,8 +435,8 @@ async def fetch_hot_search(client: httpx.AsyncClient, limit: int = 20) -> list[d
     return [normalize(it) for it in trending[:limit]]
 
 
-_HOT_XHR_JS = """(count) => new Promise((resolve) => {
-  const url = 'https://www.douyin.com/aweme/v1/web/channel/hotspot?device_platform=webapp&aid=6383&channel=channel_pc_web&tag_id=&count=' + count + '&Seo-Flag=0&channel_id=99&pc_client_type=1&pc_libra_divert=Windows&support_h265=1&support_dash=1&cookie_enabled=true&platform=PC';
+_HOT_LIST_XHR_JS = """() => new Promise((resolve) => {
+  const url = 'https://www.douyin.com/aweme/v1/web/hot/search/list/?device_platform=webapp&aid=6383&channel=channel_pc_web&detail_list=1&source=6&pc_client_type=1&pc_libra_divert=Windows&support_h265=1&support_dash=1&cookie_enabled=true&platform=PC';
   const xhr = new XMLHttpRequest();
   xhr.open('GET', url, true);
   xhr.withCredentials = true;
@@ -434,11 +446,23 @@ _HOT_XHR_JS = """(count) => new Promise((resolve) => {
 })"""
 
 
-async def _fetch_hot_videos_via_page(limit: int = 10) -> list[dict]:
-    """通过 CDP 页面内 XHR 请求视频榜（douyin.com/hot 的「视频」tab）。
+async def _fetch_hot_list_via_page(limit: int = 10) -> list[dict]:
+    """通过 CDP 页面内 XHR 请求热搜榜（hot/search/list 的 word_list），
+    并为每个词条附带其搜索第一条真实视频的数据（作者/时长/播放量/直链）。
 
-    直接 httpx / DouYinClient 签名请求会被风控拒绝（account blocked 空响应），
-    而页面自身 XHR 会被 webmssdk 的 XHR hook 自动补签名，与真实浏览行为一致。
+    2026-08-13 修复：此前 hotspot channel_id=99 返回的是「热点视频」feed，
+    与 douyin.com/hot 页面显示的热搜榜（word_list）不一致。热搜榜数据源为
+    /aweme/v1/web/hot/search/list/?detail_list=1&source=6，字段含 word /
+    hot_value（页面显示的热度）/ view_count / sentence_id。
+
+    词条本身不是视频（无作者/时长/播放量）——直接返回会导致列表输出
+    「作者：无 时长：0 播放量：0」。因此对每个词条用 MediaCrawler 官方
+    搜索（search_info_by_keyword）取第一条真实视频填充数据（串行 + 节流，
+    对齐官方搜索节奏）；搜索失败降级为纯词条。title 保持词条（与页面
+    热榜一致），video_url 用真实视频直链（可直接下载总结）。
+
+    直接 httpx / DouYinClient 签名请求会被风控拒绝，而页面自身 XHR 会被
+    webmssdk 的 XHR hook 自动补签名，与真实浏览行为一致（同旧方案）。
     """
     from ._cdp_browser import get_page_for_platform
 
@@ -453,31 +477,76 @@ async def _fetch_hot_videos_via_page(limit: int = 10) -> list[dict]:
 
     for attempt in range(3):
         try:
-            raw = await page.evaluate(_HOT_XHR_JS, limit)
+            raw = await page.evaluate(_HOT_LIST_XHR_JS)
         except Exception as e:
-            logger.warning("抖音视频榜 XHR 异常(第%d次): %s", attempt + 1, e)
+            logger.warning("抖音热搜榜 XHR 异常(第%d次): %s", attempt + 1, e)
             raw = {"status": 0, "body": ""}
         if raw.get("status") == 200 and raw.get("body"):
             break
         await asyncio.sleep(1)
 
     if raw.get("status") != 200 or not raw.get("body"):
-        logger.warning("抖音视频榜 XHR 失败: status=%s", raw.get("status"))
+        logger.warning("抖音热搜榜 XHR 失败: status=%s", raw.get("status"))
         return []
     try:
         data = json.loads(raw["body"])
     except (json.JSONDecodeError, TypeError) as e:
-        logger.warning("抖音视频榜响应解析失败: %s", e)
+        logger.warning("抖音热搜榜响应解析失败: %s", e)
         return []
-    aweme_list = data.get("aweme_list", []) or []
-    if not aweme_list:
+    word_list = (data.get("data") or {}).get("word_list", []) or []
+    if not word_list:
         # 空结果诊断：转储响应键（静默风控的典型信号）
-        logger.warning("抖音视频榜空结果: resp_keys=%s",
+        logger.warning("抖音热搜榜空结果: resp_keys=%s",
                        list(data.keys()) if isinstance(data, dict) else type(data).__name__)
         return []
-    results = [_normalize_video(a) for a in aweme_list[:limit]]
-    logger.info("🔥 抖音热榜: %d 个视频", len(results))
+    # 过滤无热度词条（横幅/头条位，hot_value=0 未入榜），保持页面原始排序
+    words = [w for w in word_list if _safe_int(w.get("hot_value", 0)) > 0]
+
+    results = []
+    for w in words[:limit]:
+        video = await _search_first_video_for_word(w.get("word", ""))
+        if video is not None:
+            # 词条 + 真实视频数据合并：title 保持词条（页面一致），
+            # 作者/时长/下载地址用视频真实数据；view_count 用词条热度
+            # （与页面热榜显示的数值一致——用户按页面热度核对播放量；
+            # 抖音视频本身无公开播放数字段，digg_count 是点赞数易误读）
+            hot_value = _safe_int(w.get("hot_value", 0))
+            hot_text = f"{hot_value / 10000:.1f}万"
+            video_title = video["title"]
+            video["title"] = w.get("word", "")
+            video["desc"] = f"抖音热搜 · 热度 {hot_text} · 视频: {video_title}"
+            video["view_count"] = hot_value
+            video["hot_value"] = hot_value
+            results.append(video)
+        else:
+            results.append(_normalize_trending(w))  # 搜索失败降级为纯词条
+        await asyncio.sleep(2)  # 逐词条搜索节流（对齐官方 CRAWLER_MAX_SLEEP_SEC）
+
+    logger.info("🔥 抖音热搜榜: %d 条", len(results))
     return results
+
+
+async def _search_first_video_for_word(word: str) -> dict | None:
+    """搜索词条并返回第一条真实视频（MediaCrawler 官方搜索路径）。"""
+    if not word:
+        return None
+    try:
+        resp = await _client_call(
+            lambda c: c.search_info_by_keyword(
+                keyword=word, offset=0,
+                search_channel=_SearchChannelType.GENERAL,
+            )
+        )
+    except DouyinClientError as e:
+        logger.warning("热榜词条搜索失败 '%s': %s", word, e)
+        return None
+    data = resp.get("data", []) if isinstance(resp, dict) else []
+    for item in data:
+        aweme = item.get("aweme_info") or item.get("aweme_detail") or item
+        if aweme and aweme.get("aweme_id"):
+            return _normalize_video(aweme)
+    logger.warning("热榜词条搜索无结果: '%s'", word)
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -694,9 +763,9 @@ class DouyinPlatform(Platform):
 
     @staticmethod
     async def get_hot(client: httpx.AsyncClient, limit: int = 20) -> list[dict]:
-        """视频榜（CDP 页面内 XHR，webmssdk 自动签名）。"""
+        """热搜榜（CDP 页面内 XHR，与 douyin.com/hot 页面一致，webmssdk 自动签名）。"""
         from ._cdp_browser import run_on_cdp_loop_async
-        return await run_on_cdp_loop_async(_fetch_hot_videos_via_page(limit))
+        return await run_on_cdp_loop_async(_fetch_hot_list_via_page(limit))
 
     @staticmethod
     async def search(client: httpx.AsyncClient, keyword: str, limit: int = 10) -> list[dict]:
