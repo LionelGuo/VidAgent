@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import re
 from pathlib import Path
@@ -296,9 +297,11 @@ async def _download_via_cdp(note_url: str, file_name: str,
 
     # 2. 笔记详情：API（带 token）→ 短链接口 → HTML 兜底
     note_card = None
+    note_source = ""
     if xsec_token:
         try:
             note_card = await client.get_note_by_id(note_id, xsec_source, xsec_token)
+            note_source = "feed API"
         except Exception as e:
             logger.warning("get_note_by_id 失败: %s", e)
     if not note_card:
@@ -307,15 +310,24 @@ async def _download_via_cdp(note_url: str, file_name: str,
             items = short_resp.get("items", []) if isinstance(short_resp, dict) else []
             if items:
                 note_card = items[0].get("note_card", items[0])
+                note_source = "short_url"
         except Exception as e:
             logger.warning("get_note_short_url 失败: %s", e)
     if not note_card:
         try:
             note_card = await client.get_note_by_id_from_html(note_id, xsec_source, xsec_token)
+            note_source = "html"
         except Exception as e:
             logger.warning("get_note_by_id_from_html 兜底失败: %s", e)
     if not note_card:
         return {"status": "error", "error": "小红书笔记获取失败（可能需登录或笔记不可访问）", "video_url": note_url}
+
+    logger.info(
+        "  笔记来源: %s, type=%s, keys=%s, video_keys=%s",
+        note_source, note_card.get("type"),
+        sorted(k for k in note_card.keys())[:12],
+        sorted(k for k in (note_card.get("video") or {}).keys()) if isinstance(note_card.get("video"), dict) else type(note_card.get("video")).__name__,
+    )
 
     if note_card.get("type") != "video":
         return {"status": "error", "error": "该笔记为图文笔记，暂不支持视频总结", "video_url": note_url}
@@ -323,22 +335,59 @@ async def _download_via_cdp(note_url: str, file_name: str,
     return await _download_note_media(note_card, target, progress_callback)
 
 
+def _extract_h264_url(container: Any) -> str:
+    """从 media/media_v2 容器中提取 h264 流 URL（类型安全）。"""
+    if not isinstance(container, dict):
+        return ""
+    stream = container.get("stream")
+    if not isinstance(stream, dict):
+        return ""
+    h264 = stream.get("h264")
+    if isinstance(h264, list) and h264 and isinstance(h264[0], dict):
+        return h264[0].get("master_url", "") or ""
+    # 兜底：任意清晰度流
+    for entries in stream.values():
+        if isinstance(entries, list) and entries and isinstance(entries[0], dict):
+            url = (entries[0].get("master_url", "")
+                   or entries[0].get("url", "")
+                   or (entries[0].get("backup_urls") or [""])[0])
+            if url:
+                return url
+    return ""
+
+
 async def _download_note_media(note: dict, target: Path,
                                progress_callback=None) -> dict:
     """从笔记数据中提取并下载视频文件。
 
-    无水印直链优先（origin_video_key），失败降级 h264 master_url（带水印）。
+    优先级：consumer.origin_video_key（无水印直链）→
+    media_v2/media 的 h264 master_url（带水印兜底）。
     """
-    video_info = note.get("video", {}) or {}
-    consumer = video_info.get("consumer", {}) or {}
+    video_info = note.get("video", {})
+    if not isinstance(video_info, dict):
+        video_info = {}
+    consumer = video_info.get("consumer", {})
+    if not isinstance(consumer, dict):
+        consumer = {}
     origin_video_key = consumer.get("origin_video_key") or consumer.get("originVideoKey") or ""
-    if origin_video_key:
-        media_url = f"http://sns-video-bd.xhscdn.com/{origin_video_key}"
-    else:
-        media_url = (video_info.get("media", {}) or {}).get("stream", {}).get(
-            "h264", [{}])[0].get("master_url", "")
+    media_url = f"http://sns-video-bd.xhscdn.com/{origin_video_key}" if origin_video_key else ""
 
     if not media_url:
+        # h264 流：media_v2（新版 API 字段）→ media（旧版字段）
+        for field in ("media_v2", "media"):
+            media_url = _extract_h264_url(video_info.get(field))
+            if media_url:
+                break
+
+    if not media_url:
+        for field in ("media_v2", "media"):
+            v = video_info.get(field)
+            logger.warning(
+                "  视频 URL 结构诊断[%s]: type=%s value=%s",
+                field, type(v).__name__,
+                (json.dumps(v, ensure_ascii=False)[:400]
+                 if isinstance(v, (dict, list)) else str(v)[:200]),
+            )
         return {"status": "error", "error": "未找到可下载的视频链接"}
 
     try:
