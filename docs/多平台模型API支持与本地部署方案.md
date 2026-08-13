@@ -46,8 +46,8 @@
 
 - 前端模型名改占位符，由 relay 服务端注入 `LLM_MODEL`
 - `vllm` 分支：现有逻辑**原样保留**（剥 tools/stream_options、强制 stream、`<tool_call>` XML→tool_calls delta、`<think>` 文本透传）
-- `siliconflow` 分支：tools 原样转发、上游 SSE 逐条透传（含 `reasoning_content`/`tool_calls` delta/`finish_reason`）、模型名注入
-- 前端 reasoning 双通道并存：`extractReasoningMiddleware({tagName:"think"})` 保留（vllm 路径用，siliconflow 路径自然无 `<think>` 标签为空操作）；AI SDK 原生解析 `reasoning_content`（siliconflow 路径用）。前端零 provider 感知
+- `siliconflow` 分支：tools 原样转发、tool_choice 规范化为 auto、模型名注入、**`reasoning_content` 增量包成 `<think>` 文本流**（`@ai-sdk/openai` 会丢弃该字段，实测 1.3.24 仅读 content/tool_calls；正文/tool_calls/finish 到达时闭合 `</think>`）、tool_calls/finish_reason 透传
+- 前端**单推理通道**：`extractReasoningMiddleware({tagName:"think"})` 同时服务两条 provider 路径（vllm 原生 `<think>` 标签、siliconflow 由 relay 转换而来）。前端零 provider 感知
 
 ### 3. 多模态适配层（summarizer.py + 新模块）
 
@@ -107,6 +107,7 @@
 - **镜像不含 TransNetV2**（需 torch 体积过大）：场景检测自动回退 ffmpeg，Phase 2 已禁用故功能无损
 - **SiliconFlow 平台现象**：多模态端点间歇性 401 "Token is invalid"（新 key 鉴权缓存不稳定，纯文本端点不受影响），自愈周期约 1-5 分钟；期间流式请求会 ReadTimeout 中断。**非我方代码问题**（裸机同 payload 复现）；生产可考虑在 summarizer 对 401 加重试
 - 冒烟结论：容器内 agent 工具调用（finish=tool_calls + 参数正确）+ 多模态总结（1978 字结构化）全绿
+- **思考流修复（commit 5af4918，用户 UI 实测发现）**：初始设计的「AI SDK 原生解析 reasoning_content」不成立——`@ai-sdk/openai` 1.3.24 chat 流解析丢弃该字段，前端无思考输出。改为 transparent relay 把 reasoning_content 包成 `<think>` 文本流，与 vLLM 共用前端单通道（ADR-0005 已更新）。用户 UI 实测通过（思考流式 + 折叠 + 工具调用）
 
 ## 风险与缓解
 

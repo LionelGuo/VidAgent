@@ -25,6 +25,8 @@ function calling 后删除 XML 转换分支收敛——预设系统是迈向终�
 ## 后果
 
 - relay 成为 provider 差异的唯一收敛点；新增 OpenAI 兼容平台只需加一个 preset + 可能的 media 映射。
-- 前端 `<think>` middleware（vllm 路径）与 AI SDK 原生 reasoning_content（siliconflow 路径）两条推理通道并存，
-  互不干扰（siliconflow 路径无 `<think>` 标签，middleware 为空操作）。
+- **推理通道统一为 `<think>` 文本流**：`@ai-sdk/openai` 的 chat 流解析会丢弃 `delta.reasoning_content`
+  （实测 1.3.24 仅读 content/tool_calls），transparent relay 因此把 reasoning_content 增量包成
+  `<think>` 标签文本（正文/tool_calls/finish 时闭合），前端 `extractReasoningMiddleware` 单通道提取——
+  前端零 provider 感知（commit 5af4918）。
 - vllm-omni 原生 function calling 成熟后，删除 relay 的 XML 分支即可收敛到统一透传——预设系统届时退化为纯透传。
