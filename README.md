@@ -93,7 +93,11 @@ docker run --network=host -e LLM_PROVIDER=vllm -e OPENAI_BASE_URL=http://127.0.0
 ```
 
 `--network=host` 推荐：CDP 平台复用宿主 Chrome `:9222`，浏览器直达 localhost。
+若宿主 3000/8000 端口被占用（如同时跑开发服务器），可改桥接 + 端口映射：
+`docker run -p 18000:8000 -p 13000:3000 -e LLM_PROVIDER=siliconflow -e OPENAI_API_KEY=sk-xxx vidagent`（容器内访问第三方 API 走 NAT 直连）。
 抖音/小红书/快手需额外挂载 MediaCrawler（`-e MEDIACRAWLER_ROOT=...`）+ 宿主 Chrome 开调试端口。
+
+> 注：镜像不含 TransNetV2（需 torch，体积过大）——视频场景检测自动回退 ffmpeg，功能无损。
 
 ### 本地 vLLM-omni 模型服务（场景一，独立部署）
 

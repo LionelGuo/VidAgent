@@ -99,6 +99,15 @@
 ⑤ 镜像构建 + 镜像内场景二冒烟（对话含工具调用一次 + 短视频总结一次）
 ⑥ vLLM 部署脚本无损片段验证（AutoDL 现有实例）
 
+## 实施验证记录（2026-08-13 晚）
+
+- ①②③④⑥ 全部完成并通过（commit c205236 + 915666d）；⑤ 镜像构建 + 场景二冒烟完成（2.83GB，commit 见后续）
+- **Docker 构建环境要点**（WSL2 + clash）：构建必须 `--network=host` + `--build-arg HTTP_PROXY=http://127.0.0.1:7890`（容器内 127.0.0.1 不通宿主 clash，普通 build-arg 代理只对拉镜像生效）；`.dockerignore` 不支持行内注释；hatchling 构建包需要 README.md 出现在 COPY 层
+- **运行**：`--network=host` 在宿主 3000/8000 被占时不可用 → 桥接 + `-p` 映射即可（容器访问第三方 API 走 NAT 直连正常）
+- **镜像不含 TransNetV2**（需 torch 体积过大）：场景检测自动回退 ffmpeg，Phase 2 已禁用故功能无损
+- **SiliconFlow 平台现象**：多模态端点间歇性 401 "Token is invalid"（新 key 鉴权缓存不稳定，纯文本端点不受影响），自愈周期约 1-5 分钟；期间流式请求会 ReadTimeout 中断。**非我方代码问题**（裸机同 payload 复现）；生产可考虑在 summarizer 对 401 加重试
+- 冒烟结论：容器内 agent 工具调用（finish=tool_calls + 参数正确）+ 多模态总结（1978 字结构化）全绿
+
 ## 风险与缓解
 
 | 风险 | 缓解 |

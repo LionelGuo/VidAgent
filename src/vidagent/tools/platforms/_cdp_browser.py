@@ -23,7 +23,9 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
-_MEDIACRAWLER_ROOT = str(Path.home() / "Code" / "MediaCrawler")
+# MediaCrawler 根目录：可通过 MEDIACRAWLER_ROOT 环境变量覆盖（Docker/自定义路径），
+# 默认 ~/Code/MediaCrawler（开发机约定）
+_MEDIACRAWLER_ROOT = os.getenv("MEDIACRAWLER_ROOT") or str(Path.home() / "Code" / "MediaCrawler")
 _mc_venv = str(Path(_MEDIACRAWLER_ROOT) / ".venv" / "lib" / f"python{sys.version_info.major}.{sys.version_info.minor}" / "site-packages")
 if not os.path.isdir(_mc_venv):
     _venv_lib = Path(_MEDIACRAWLER_ROOT) / ".venv" / "lib"

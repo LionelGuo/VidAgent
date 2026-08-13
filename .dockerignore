@@ -1,0 +1,38 @@
+# 版本控制 / 元数据
+.git
+.gitignore
+.github
+
+# Python
+.venv
+__pycache__
+*.pyc
+.pytest_cache
+.ruff_cache
+
+# 前端构建产物（镜像内重新构建）
+frontend/node_modules
+frontend/.next
+
+# 运行时数据（不应进入镜像）
+workspace
+logs
+tmp
+*.log
+
+# 敏感配置（用户运行时通过 -e / 挂载注入）
+.env
+.env.*
+www.youtube.com_cookies.txt
+
+# 文档 / 图片（不影响运行）
+docs
+*.md
+# pyproject.toml 构建包需要 README.md（hatchling readme 字段）
+!README.md
+*.png
+
+# 本地 / 编辑器
+.claude
+.vscode
+.idea
