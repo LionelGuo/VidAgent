@@ -6,7 +6,6 @@
 
 端点：
   POST /v1/chat/completions          SSE Relay → vLLM bare mode
-  GET  /api/tools/definitions        工具定义（AI SDK 初始化）
   GET  /api/tools/hot                热榜查询
   GET  /api/tools/search             关键词搜索
   GET  /api/tools/creator            创作者视频
@@ -19,7 +18,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import os
 import sys
 import threading
 import time
@@ -40,7 +38,6 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from server.sse_relay import relay_stream, relay_stream_transparent
-from server.tool_definitions import TOOL_DEFINITIONS
 
 # 确保 vidagent 模块的 INFO 日志能输出到 uvicorn 控制台
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s", force=True)
@@ -53,19 +50,6 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 app = FastAPI(title="VidAgent Server", version="0.2.0")
-
-# ── 启动时预加载本地模型（避免首次请求冷启动延迟）──
-@app.on_event("startup")
-async def _preload_models():
-    """预加载 TransNetV2 场景检测模型（本机 GPU）。"""
-    try:
-        from vidagent.utils.frames import _get_transnet
-        import time
-        t0 = time.perf_counter()
-        _get_transnet()
-        logger.info("✅ TransNetV2 预加载完成 (%.1fs)", time.perf_counter() - t0)
-    except Exception as e:
-        logger.warning("TransNetV2 预加载失败，将回退 ffmpeg: %s", e)
 
 app.add_middleware(
     CORSMiddleware,
@@ -81,10 +65,9 @@ _workspace_dir.mkdir(parents=True, exist_ok=True)
 app.mount("/workspace", StaticFiles(directory=str(_workspace_dir)), name="workspace")
 
 # ---------------------------------------------------------------------------
-# 配置（从环境变量 / .env 读取，与 src/vidagent/config.py 共用）
+# 配置（provider 预设解析：vllm/siliconflow/generic）
 # ---------------------------------------------------------------------------
 
-from vidagent.config import settings
 from vidagent import llm_provider
 
 # Agent 端点（relay 上游）+ provider 模式：由 provider 预设解析（vllm/siliconflow/generic）
@@ -96,9 +79,6 @@ _executor = ThreadPoolExecutor(max_workers=5)
 
 # vLLM 并发控制：避免多视频同时 Omni 推理导致显存/队列拥塞
 _llm_semaphore = threading.BoundedSemaphore(2)
-
-# 功能开关：Phase 2 章节匹配（实验性，效果不稳定时关闭）
-_ENABLE_PHASE2 = False
 
 # 总结任务追踪：{task_id: {"status": str, "result": str, "partial": str}}
 _summarize_tasks: dict[str, dict[str, Any]] = {}
@@ -163,17 +143,6 @@ async def chat_completions(request: dict):
             "X-Accel-Buffering": "no",
         },
     )
-
-
-# ---------------------------------------------------------------------------
-# Tool Definitions
-# ---------------------------------------------------------------------------
-
-
-@app.get("/api/tools/definitions")
-async def get_tool_definitions():
-    """返回 OpenAI 兼容的工具定义列表，供 AI SDK 初始化。"""
-    return TOOL_DEFINITIONS
 
 
 # ---------------------------------------------------------------------------
@@ -333,13 +302,11 @@ async def tool_summarize_stream(task_id: str):
     async def _stream():
         import json
 
-        last_partial = ""
         last_summary = ""
         last_summary_stage = ""
         last_download_pct = -1
         last_chunks_snapshot = ""
         last_local_path_sent = False
-        last_asr_active = False
         last_summary_active_flag = False
 
         while True:
@@ -362,11 +329,9 @@ async def tool_summarize_stream(task_id: str):
                 last_local_path_sent = True
                 yield f"data: {json.dumps({'type': 'progress', 'stage': 'downloaded', 'local_path': task['local_path']}, ensure_ascii=False)}\n\n"
 
-            # 轮询 per-task progress（优先）或全局进度（回退）
+            # 轮询 per-task progress
             progress = get_progress(task_id)
             if progress is not None:
-                asr_active = False
-                asr_text = ""
                 summary_active = progress.active
                 summary_text = progress.partial if progress.active else ""
                 # ★ 推送阶段事件：stage 变化 或 download_pct 变化（下载进度实时更新）
@@ -383,21 +348,6 @@ async def tool_summarize_stream(task_id: str):
                 if chunks_snapshot != last_chunks_snapshot:
                     last_chunks_snapshot = chunks_snapshot
                     yield f"data: {json.dumps({'type': 'progress', 'chunks': chunks}, ensure_ascii=False)}\n\n"
-            else:
-                # 回退：未传 task_id 的旧调用仍走全局单例
-                from vidagent.tools.summarizer import (
-                    live_partial, live_summary, live_summary_active, live_active,
-                )
-                asr_active = live_active()
-                summary_active = live_summary_active()
-                asr_text = live_partial()
-                summary_text = live_summary()
-
-            if asr_active != last_asr_active or asr_text != last_partial:
-                last_asr_active = asr_active
-                last_partial = asr_text
-                if asr_text:
-                    yield f"data: {json.dumps({'type': 'progress', 'stage': 'asr', 'message': asr_text}, ensure_ascii=False)}\n\n"
 
             if summary_active != last_summary_active_flag or summary_text != last_summary:
                 last_summary_active_flag = summary_active
@@ -479,7 +429,7 @@ async def tool_batch_summarize(req: BatchSummarizeRequest):
         { batch_id, tasks: [{ task_id, video_id, status }] }
     前端可立即按 video_id 连接 SSE 获取各视频流式进度。
     """
-    from vidagent.tools.summarizer import extract_and_summarize, cleanup_progress, get_progress, create_progress
+    from vidagent.tools.summarizer import cleanup_progress, get_progress, create_progress
     from vidagent.tools.downloader import download_video
 
     batch_id = f"batch_{uuid.uuid4().hex[:12]}"
@@ -539,9 +489,9 @@ async def tool_batch_summarize(req: BatchSummarizeRequest):
                 return
 
             # ── 预处理：音频 + 均匀帧（Phase 1 立即启动）──
-            from vidagent.utils.frames import extract_frames, detect_boundaries
+            from vidagent.utils.frames import extract_frames
             from vidagent.utils.audio import extract_audio
-            from vidagent.tools.summarizer import _summarize_multimodal_with_chapters, _match_chapters_segmented, _summarize_short_video
+            from vidagent.tools.summarizer import _summarize_multimodal_with_chapters, _summarize_short_video
 
             # 获取已创建的 per-task progress（下载阶段已通过 create_progress 创建）
             pg = get_progress(task_id)
@@ -586,16 +536,9 @@ async def tool_batch_summarize(req: BatchSummarizeRequest):
                     )
                 chapters: list[dict] = []
             else:
-                # ═══════ 长视频管线（≥90s，现有逻辑不变）═══════
+                # ═══════ 长视频管线（≥90s）═══════
                 # Phase 1: 均匀采样帧
                 phase1_frames = extract_frames(video_path, duration=duration)
-
-                # ── 并行：Phase 1 多模态总结 + 边界检测 ──
-                import concurrent.futures as _cf
-
-                phase1_result: dict = {"summary": "", "chapters": []}
-                candidate_boundaries: list[int] = []
-                candidate_frames: list[str] = []
 
                 def _do_phase1():
                     """Phase 1: 完整音频 + 均匀帧 → 流式总结"""
@@ -603,174 +546,16 @@ async def tool_batch_summarize(req: BatchSummarizeRequest):
                     chapters, summary = _summarize_multimodal_with_chapters(
                         mp3_path=Path(mp3),
                         metadata=metadata,
-                        candidate_boundaries=[],  # 空 → Phase 1 only (不触发 Phase 2)
+                        candidate_boundaries=[],  # 空 → 无章节模式（Phase 2 已随旧栈删除）
                         candidate_frames=phase1_frames,
                         base_url=base_url, api_key=api_key, model=model,
                         progress=pg,
                     )
                     return {"summary": summary, "chapters": chapters}
 
-                def _do_boundaries():
-                    """后台：Silero VAD ∥ TransNetV2 场景检测 → 候选边界 + 中间帧"""
-                    import subprocess as _sp
-
-                    # ── 并行：Silero VAD（音频）+ 场景检测（视频），互相独立 ──
-                    vad_times: list[float] = []
-                    scene_times: set[float] = set()
-
-                    def _run_vad() -> list[float]:
-                        try:
-                            import numpy as np
-                            from faster_whisper.vad import (
-                                SileroVADModel, get_speech_timestamps, VadOptions,
-                            )
-                            import faster_whisper
-
-                            fw_dir = Path(faster_whisper.__file__).parent
-                            vad_model = SileroVADModel(
-                                str(fw_dir / "assets" / "silero_vad_v6.onnx")
-                            )
-                            raw = _sp.run(
-                                ["ffmpeg", "-y", "-i", str(mp3), "-f", "s16le",
-                                 "-acodec", "pcm_s16le", "-ar", "16000", "-ac", "1", "-"],
-                                capture_output=True, timeout=60,
-                            )
-                            if raw.returncode == 0 and raw.stdout:
-                                audio = (np.frombuffer(raw.stdout, dtype=np.int16)
-                                          .astype(np.float32) / 32768.0)
-                                vad_opts = VadOptions(
-                                    threshold=0.5, min_speech_duration_ms=500,
-                                    min_silence_duration_ms=2000, max_speech_duration_s=120,
-                                )
-                                speech_ts = get_speech_timestamps(audio, vad_opts, sampling_rate=16000)
-                                result = [s["start"] / 16000.0 for s in speech_ts]
-                                logger.info("🔇 Silero VAD: %d 段", len(result))
-                                return result
-                        except Exception as e:
-                            logger.warning("Silero VAD 失败: %s", e)
-                            return []
-
-                    def _run_scene_detect() -> list[tuple[float, float]] | None:
-                        """TransNetV2 场景检测 → [(timestamp, probability), ...]"""
-                        try:
-                            from vidagent.utils.frames import _get_transnet
-                            import tempfile
-                            lowres = Path(tempfile.mktemp(suffix=".mp4"))
-                            _sp.run(
-                                ["ffmpeg", "-y", "-an", "-i", str(video_path),
-                                 "-vf", "scale=320:-1,fps=4", "-preset", "ultrafast",
-                                 "-crf", "28", "-c:v", "libx264", str(lowres)],
-                                capture_output=True, timeout=max(30, int(metadata.get("duration", 30))),
-                            )
-                            model = _get_transnet()
-                            scenes = model.detect_scenes(str(lowres))
-                            lowres.unlink(missing_ok=True)
-                            result = [
-                                (float(s["start_time"]), s["probability"])
-                                for s in scenes
-                                if 0 < float(s["start_time"]) < metadata.get("duration", float("inf"))
-                            ]
-                            logger.info("🎬 TransNetV2: %d 个场景边界", len(result))
-                            return result
-                        except Exception as e:
-                            logger.warning("TransNetV2 失败: %s", e)
-                            return None
-
-                    # 并行执行 VAD + 场景检测
-                    with _cf.ThreadPoolExecutor(max_workers=2) as _vpool:
-                        _fv = _vpool.submit(_run_vad)
-                        _fs = _vpool.submit(_run_scene_detect)
-                        vad_times = _fv.result()
-                        scene_probs = _fs.result()
-
-                    # ── 动态阈值：取满足 ≤ 8/min 的最低阈值（最多候选点）──
-                    video_minutes = (metadata.get("duration") or 60) / 60
-                    scene_times: set[float] = set()
-                    if scene_probs is not None:
-                        chosen = 0.70
-                        for threshold in [0.95, 0.90, 0.85, 0.80, 0.75, 0.70]:
-                            filtered = {t for t, p in scene_probs if p > threshold}
-                            if len(filtered) / max(video_minutes, 0.1) <= 8:
-                                scene_times = filtered
-                                chosen = threshold
-                            else:
-                                break  # 更高阈值已超限
-                        logger.info(
-                            "🎬 动态阈值: >%.2f → %d 个场景边界 (%.1f/min)",
-                            chosen, len(scene_times),
-                            len(scene_times) / max(video_minutes, 0.1),
-                        )
-                    else:
-                        scene_times = None  # 让 detect_boundaries 内部回退
-
-                    # ── 合并 VAD + 场景边界 → detect_boundaries ──
-                    boundaries = detect_boundaries(
-                        local_path,
-                        vad_boundaries=vad_times or None,
-                        scene_boundaries=scene_times if scene_times is not None else None,
-                    )
-                    if len(boundaries) >= 3:
-                        mid_ts = [
-                            (boundaries[i] + boundaries[i + 1]) / 2
-                            for i in range(len(boundaries) - 1)
-                        ]
-                        frames = extract_frames(
-                            video_path, timestamps=[float(t) for t in mid_ts],
-                            output_dir=video_path.parent / f"keyframes_{video_id}_chapters",
-                        )
-                        return boundaries, [str(f) for f in frames]
-                    return boundaries, []
-
-                if _ENABLE_PHASE2:
-                    with _cf.ThreadPoolExecutor(max_workers=2) as _pool:
-                        _f1 = _pool.submit(_do_phase1)
-                        _f2 = _pool.submit(_do_boundaries)
-                        phase1_result = _f1.result()
-                        candidate_boundaries, candidate_frames = _f2.result()
-
-                    logger.info(
-                        "📐 边界检测完成: %d 边界 → %s",
-                        len(candidate_boundaries), candidate_boundaries,
-                    )
-
-                    # ── 结果处理 ──
-                    summary = phase1_result.get("summary", "")
-                    chapters = phase1_result.get("chapters", [])
-                else:
-                    # Phase 2 禁用：只做总结，跳过边界检测和章节
-                    phase1_result = _do_phase1()
-                    summary = phase1_result.get("summary", "")
-                    chapters: list[dict] = []
-                    candidate_boundaries = []
-                    candidate_frames = []
-
-                # Phase 2: 分段多模态匹配（有边界 + Phase 1 无章节时触发）
-                if _ENABLE_PHASE2 and not chapters and len(candidate_boundaries) >= 3:
-                    logger.info("📑 Phase 2: 分段匹配 (%d 段) …", len(candidate_boundaries) - 1)
-                    with _llm_semaphore:
-                        chapters = _match_chapters_segmented(
-                            phase1_summary=summary,
-                            mp3_path=Path(mp3),
-                            candidate_boundaries=candidate_boundaries,
-                            candidate_frames=[Path(f) for f in candidate_frames] if candidate_frames else [],
-                            base_url=base_url, api_key=api_key, model=model,
-                        )
-                    # 重试一次
-                    if not chapters:
-                        logger.warning("Phase 2 首次失败，重试…")
-                        with _llm_semaphore:
-                            chapters = _match_chapters_segmented(
-                                phase1_summary=summary,
-                                mp3_path=Path(mp3),
-                                candidate_boundaries=candidate_boundaries,
-                                candidate_frames=[Path(f) for f in candidate_frames] if candidate_frames else [],
-                                base_url=base_url, api_key=api_key, model=model,
-                            )
-
-                # 兜底
-                if not chapters and len(candidate_boundaries) >= 3:
-                    from vidagent.tools.summarizer import _fallback_chapters
-                    chapters = _fallback_chapters(candidate_boundaries, int(metadata.get("duration") or 0))
+                phase1_result = _do_phase1()
+                summary = phase1_result.get("summary", "")
+                chapters: list[dict] = []
 
             _summarize_tasks[task_id]["status"] = "done"
             _summarize_tasks[task_id]["result"] = summary

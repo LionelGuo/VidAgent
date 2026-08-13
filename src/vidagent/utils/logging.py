@@ -14,7 +14,5 @@ def setup_logging(level: int = logging.INFO) -> None:
         force=True,
     )
     # 第三方噪声降到 WARNING，突出我们自己的计时/进度日志
-    for noisy in ("httpx", "openai", "urllib3", "agno", "httpcore"):
+    for noisy in ("httpx", "openai", "urllib3", "httpcore"):
         logging.getLogger(noisy).setLevel(logging.WARNING)
-    # faster-whisper 的处理进度保留
-    logging.getLogger("faster_whisper").setLevel(logging.INFO)

@@ -1,9 +1,8 @@
-"""Tool 3: extract_and_summarize —— 音频提取 + ASR + LLM 总结。
+"""Tool 3: extract_and_summarize —— 音频/帧提取 + 多模态 LLM 总结。
 
-- 抽音：ffmpeg 子进程（utils.audio）
-- ASR：faster-whisper（ctranslate2，GPU 优先）
-- 总结：OpenAI 兼容协议（httpx 直调），云端 DeepSeek / 本地 Ollama
-- 降级（文档 §5.2）：无音频轨 / ASR 失败 → 仅用「标题+简介」总结，不崩溃
+- 抽音/抽帧：ffmpeg 子进程（utils.audio / utils.frames）
+- 总结：多模态模型直送音频 + 关键帧（OpenAI 兼容协议，httpx 直调）
+- 降级（文档 §5.2）：无音频轨 / 多模态失败 → 仅用「标题+简介」总结，不崩溃
 """
 
 from __future__ import annotations
@@ -19,9 +18,7 @@ from pathlib import Path
 
 import httpx
 
-from vidagent.config import settings
 from vidagent import llm_provider
-from vidagent.utils import storage
 from vidagent.utils.frames import extract_frames
 from vidagent.utils.audio import extract_audio
 from vidagent.utils.timer import Timer
@@ -29,32 +26,10 @@ from vidagent.utils.timer import Timer
 logger = logging.getLogger(__name__)
 
 
-class _LiveASR:
-    """ASR 实时进度：供 UI 在工具执行期间轮询、逐段显示转写。
-
-    本地单用户场景；工具线程写、UI 协程读，GIL 下单属性读写原子，够用。
-    """
-
-    def __init__(self) -> None:
-        self.active = False
-        self.partial = ""
-
-    def begin(self) -> None:
-        self.active = True
-        self.partial = ""
-
-    def update(self, text: str) -> None:
-        self.partial = text
-
-    def reset(self) -> None:
-        self.active = False
-        self.partial = ""
-
-
 class _LiveSummary:
-    """多模态总结实时流：UI 轮询时获取当前已生成的总结文本。
+    """多模态总结实时流：SSE 轮询时获取当前已生成的总结文本。
 
-    与 _LiveASR 同样的单用户 GIL 设计。
+    单用户 GIL 设计；工具线程写、SSE 协程读，GIL 下单属性读写原子，够用。
     支持两种模式：
     - streaming: 逐 token 追加（短音频单请求）
     - chunked: 逐段追加完整摘要（长音频分块）
@@ -87,10 +62,7 @@ class _LiveSummary:
         self.stage = ""
 
 
-_live = _LiveASR()
-_live_summary = _LiveSummary()
-
-# per-task progress（替代全局单例，支持并行总结）
+# per-task progress（支持并行总结 + 前端流式）
 _task_progress: dict[str, _LiveSummary] = {}
 
 
@@ -109,24 +81,6 @@ def get_progress(task_id: str) -> _LiveSummary | None:
 def cleanup_progress(task_id: str) -> None:
     """清理 per-task 进度追踪器。"""
     _task_progress.pop(task_id, None)
-
-
-def live_partial() -> str:
-    """当前转写文本（仅 ASR 进行中非空）。"""
-    return _live.partial if _live.active else ""
-
-
-def live_active() -> bool:
-    return _live.active
-
-
-def live_summary() -> str:
-    """当前多模态总结流文本（模型输出中 / 分块进度中）。"""
-    return _live_summary.partial if _live_summary.active else ""
-
-
-def live_summary_active() -> bool:
-    return _live_summary.active
 
 
 _SUMMARY_SYS = (
@@ -331,14 +285,14 @@ def _chat_completion_stream(
     base_url: str, api_key: str, payload: dict, timeout: int = 300,
     progress: _LiveSummary | None = None,
 ) -> str:
-    """流式 chat completion，返回完整响应文本；同时更新 progress（默认 _live_summary）。"""
+    """流式 chat completion，返回完整响应文本；同时更新 progress（None 时禁用进度输出）。"""
     payload = {**payload, "stream": True}
     accumulated = ""
     accumulated_raw = ""  # 诊断：未过滤的原始内容
     token_count = 0
     t0 = time.perf_counter()
     ttft = None  # time-to-first-token (first non-think content token)
-    pg = progress or _live_summary  # 默认回退到全局单例，保持向后兼容
+    pg = progress
 
     # 思考过程回调：更新进度显示，降低感知延迟
     thinking_shown = False
@@ -485,8 +439,7 @@ def extract_and_summarize(
 ) -> dict:
     """对本地视频生成结构化中文总结（Markdown）。
 
-    多模态模型（LLM_MULTIMODAL=true）：抽取音频 → 直送 LLM，跳过 ASR。
-    普通模型：抽取音频 → ASR 转写 → 文本总结。
+    抽取音频 + 关键帧 → 直送多模态 LLM（唯一路径，ASR 已随旧栈删除）。
 
     无音频轨时自动降级为仅依据元数据的总结（不报错）。
 
@@ -501,178 +454,82 @@ def extract_and_summarize(
         {"summary": str, "chapters": [{"start": int, "end": int, "title": str}]}
     """
     metadata = metadata or {}
-    video_id = metadata.get("video_id", "")
 
-    # per-task progress（替代全局单例，支持并行 + 前端流式）
+    # per-task progress（支持并行 + 前端流式）
     progress = create_progress(task_id) if task_id else None
     try:
         if progress:
             progress.begin()
 
-        # ── 多模态路径：音频直送 LLM，跳过 ASR ──
-        if settings.llm_multimodal:
-            _live.begin()
-            _live.update("🎵 多模态模型分析音频中…")
-            if not progress:
-                _live_summary.begin()
-            try:
-                video_path = Path(local_path)
+        video_path = Path(local_path)
 
-                # ── 章节感知路径：使用预提取的候选帧和边界 ──
-                if candidate_boundaries and candidate_frames:
-                    # 音频提取（只做音频，帧已预提取）
-                    with Timer("音频提取(ffmpeg)"):
-                        mp3 = extract_audio(local_path)
+        # ── 章节感知路径：使用预提取的候选帧和边界 ──
+        if candidate_boundaries and candidate_frames:
+            # 音频提取（只做音频，帧已预提取）
+            with Timer("音频提取(ffmpeg)"):
+                mp3 = extract_audio(local_path)
 
-                    mp3_kb = Path(mp3).stat().st_size // 1024
-                    frames_paths = [Path(f) for f in candidate_frames]
-                    frames_kb = sum(f.stat().st_size for f in frames_paths) // 1024
-                    logger.info(
-                        "⚙️ 预处理完成(章节模式): 音频 %d KB + %d 候选帧 / %d KB",
-                        mp3_kb, len(frames_paths), frames_kb,
-                    )
+            mp3_kb = Path(mp3).stat().st_size // 1024
+            frames_paths = [Path(f) for f in candidate_frames]
+            frames_kb = sum(f.stat().st_size for f in frames_paths) // 1024
+            logger.info(
+                "⚙️ 预处理完成(章节模式): 音频 %d KB + %d 候选帧 / %d KB",
+                mp3_kb, len(frames_paths), frames_kb,
+            )
 
-                    _ep = llm_provider.multimodal_endpoint()
-                    base_url, api_key, model = _ep.base_url, _ep.api_key, _ep.model
+            _ep = llm_provider.multimodal_endpoint()
+            base_url, api_key, model = _ep.base_url, _ep.api_key, _ep.model
 
-                    with Timer("多模态总结(章节感知)"):
-                        chapters, summary = _summarize_multimodal_with_chapters(
-                            mp3_path=Path(mp3),
-                            metadata=metadata,
-                            candidate_boundaries=candidate_boundaries,
-                            candidate_frames=frames_paths,
-                            base_url=base_url,
-                            api_key=api_key,
-                            model=model,
-                            progress=progress,
-                        )
-                    return {"summary": summary, "chapters": chapters}
-
-                # ── 原多模态路径（无章节）──
-                # 并行：音频提取 + 帧抽取（两个独立 ffmpeg 操作）
-                from concurrent.futures import ThreadPoolExecutor
-
-                t0_pre = time.perf_counter()
-                with ThreadPoolExecutor(max_workers=2) as pool:
-                    audio_future = pool.submit(extract_audio, local_path)
-                    frames_future = pool.submit(
-                        extract_frames, video_path,
-                        duration=metadata.get("duration"),
-                    )
-                    mp3 = audio_future.result()
-                    all_frames = frames_future.result()
-                pre_elapsed = time.perf_counter() - t0_pre
-
-                mp3_kb = Path(mp3).stat().st_size // 1024
-                frames_kb = sum(f.stat().st_size for f in all_frames) // 1024
-                logger.info(
-                    "⚙️ 预处理完成: 音频 %d KB + %d 帧 / %d KB | %.1fs (并行)",
-                    mp3_kb, len(all_frames), frames_kb, pre_elapsed,
+            with Timer("多模态总结(章节感知)"):
+                chapters, summary = _summarize_multimodal_with_chapters(
+                    mp3_path=Path(mp3),
+                    metadata=metadata,
+                    candidate_boundaries=candidate_boundaries,
+                    candidate_frames=frames_paths,
+                    base_url=base_url,
+                    api_key=api_key,
+                    model=model,
+                    progress=progress,
                 )
+            return {"summary": summary, "chapters": chapters}
 
-                with Timer("多模态总结(音频直送)"):
-                    summary = _summarize_multimodal(
-                        Path(mp3), metadata,
-                        video_path=video_path,
-                        pre_extracted_frames=all_frames,
-                        progress=progress,
-                    )
-                    return {"summary": summary, "chapters": []}
-            except Exception as e:
-                logger.warning("多模态总结失败，走降级总结（仅元数据）: %s", e)
-                with Timer("LLM 总结(降级)"):
-                    return {"summary": _summarize("", metadata), "chapters": []}
-            finally:
-                _live.reset()
-                if not progress:
-                    _live_summary.reset()
+        # ── 常规多模态路径（无章节）──
+        # 并行：音频提取 + 帧抽取（两个独立 ffmpeg 操作）
+        from concurrent.futures import ThreadPoolExecutor
 
-        # ── 原 ASR 路径 ──
-        cache_path = storage.transcript_path(video_id) if video_id else None
+        t0_pre = time.perf_counter()
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            audio_future = pool.submit(extract_audio, local_path)
+            frames_future = pool.submit(
+                extract_frames, video_path,
+                duration=metadata.get("duration"),
+            )
+            mp3 = audio_future.result()
+            all_frames = frames_future.result()
+        pre_elapsed = time.perf_counter() - t0_pre
 
-        transcript = ""
-        if cache_path and cache_path.exists():
-            # 转写缓存命中：跳过抽音 + ASR
-            transcript = cache_path.read_text(encoding="utf-8").strip()
-            logger.info("ASR 命中缓存(%s)，转写 %d 字", video_id, len(transcript))
-        else:
-            _live.begin()
-            last_logged = 0
+        mp3_kb = Path(mp3).stat().st_size // 1024
+        frames_kb = sum(f.stat().st_size for f in all_frames) // 1024
+        logger.info(
+            "⚙️ 预处理完成: 音频 %d KB + %d 帧 / %d KB | %.1fs (并行)",
+            mp3_kb, len(all_frames), frames_kb, pre_elapsed,
+        )
 
-            def on_partial(p: str) -> None:
-                _live.update(p)
-                nonlocal last_logged
-                if len(p) - last_logged >= 800:
-                    last_logged = len(p)
-                    logger.info("…ASR 进行中，已转 %d 字", len(p))
-
-            try:
-                with Timer("音频提取(ffmpeg)"):
-                    mp3 = extract_audio(local_path)
-                with Timer("ASR 转写(流式)"):
-                    transcript, _lang = _transcribe(mp3, on_partial=on_partial)
-                logger.info("ASR 完成，转写 %d 字", len(transcript))
-                if transcript and cache_path:  # 仅成功转写才缓存（空/降级不缓存）
-                    cache_path.write_text(transcript, encoding="utf-8")
-            except Exception as e:  # 抽音/ASR 失败 → 降级
-                logger.warning("ASR 失败，走降级总结（仅元数据）: %s", e)
-            finally:
-                _live.reset()
-
-        with Timer("LLM 总结"):
-            return {"summary": _summarize(transcript, metadata), "chapters": []}
+        with Timer("多模态总结(音频直送)"):
+            summary = _summarize_multimodal(
+                Path(mp3), metadata,
+                video_path=video_path,
+                pre_extracted_frames=all_frames,
+                progress=progress,
+            )
+            return {"summary": summary, "chapters": []}
+    except Exception as e:
+        logger.warning("多模态总结失败，走降级总结（仅元数据）: %s", e)
+        with Timer("LLM 总结(降级)"):
+            return {"summary": _summarize("", metadata), "chapters": []}
     finally:
         if progress:
             progress.reset()
-
-
-# Whisper 模型单例：进程内只加载一次，避免每次转写重复加载权重进显存
-_WHISPER = None
-
-
-def _get_whisper():
-    global _WHISPER
-    if _WHISPER is None:
-        from faster_whisper import WhisperModel
-
-        device = _resolve_device()
-        compute_type = "float16" if device == "cuda" else "int8"
-        with Timer("加载 faster-whisper(仅首次)"):
-            logger.info(
-                "首次加载 faster-whisper(%s, device=%s, compute=%s)",
-                settings.whisper_model, device, compute_type,
-            )
-            _WHISPER = WhisperModel(
-                settings.whisper_model, device=device, compute_type=compute_type
-            )
-    return _WHISPER
-
-
-def _transcribe(mp3_path, on_partial=None) -> tuple[str, str]:
-    """faster-whisper 转写，返回 (text, language)。模型复用单例。
-
-    on_partial: 可选回调，每解码出一段就以「累计文本」调用一次 → 流式产出。
-    """
-    model = _get_whisper()
-    segments, info = model.transcribe(str(mp3_path), beam_size=5, vad_filter=True)
-    cumul: list[str] = []
-    for seg in segments:
-        cumul.append(seg.text)
-        if on_partial:
-            on_partial("".join(cumul).strip())
-    return "".join(cumul).strip(), info.language
-
-
-def _resolve_device() -> str:
-    """auto → 依据 ctranslate2 CUDA 计数选 cuda/cpu。"""
-    if settings.asr_device != "auto":
-        return settings.asr_device
-    try:
-        import ctranslate2
-
-        return "cuda" if ctranslate2.get_cuda_device_count() > 0 else "cpu"
-    except Exception:
-        return "cpu"
 
 
 def _summarize(transcript: str, metadata: dict) -> str:
@@ -845,7 +702,7 @@ def _merge_summaries(
         # max_tokens 由 vLLM --max-num-batched-tokens 统一限制
     }
     # 更新 summary 显示合并阶段
-    pg = progress or _live_summary
+    pg = progress
     pg.set(pg.partial + "\n\n--- 合并中… ---\n\n")
     merged = _chat_completion_stream(base_url, api_key, payload, timeout=180, progress=progress)
     return merged
@@ -943,7 +800,7 @@ def _summarize_multimodal(
         audio_b64_kb, len(all_frames), frames_b64_kb,
         encode_elapsed, frames_encode_elapsed, payload_kb, base_url,
     )
-    # 流式：逐 token 更新 progress（或全局 _live_summary），UI 可实时轮询
+    # 流式：逐 token 更新 progress，SSE 可实时轮询
     return _chat_completion_stream(base_url, api_key, payload, timeout=300, progress=progress)
 
 
@@ -957,7 +814,7 @@ def _summarize_multimodal_chunked(
     from pathlib import Path as P
 
     work_dir = P(tempfile.mkdtemp(prefix="vidagent_chunks_"))
-    pg = progress or _live_summary
+    pg = progress
     try:
         # 基于文件大小的自适应分块：每段目标 ~8MB mp3（~10.6MB base64）
         mp3_size = mp3_path.stat().st_size
@@ -1202,10 +1059,8 @@ def _summarize_multimodal_with_chapters(
         return chapters, summary
 
     # ── 短音频：单次请求（流式输出）──
-    t0_encode = time.perf_counter()
     mp3_b64 = b64.b64encode(mp3_path.read_bytes()).decode()
     audio_b64_kb = len(mp3_b64) // 1024
-    encode_elapsed = time.perf_counter() - t0_encode
 
     # 构建 content_parts：文本提示 + 音频 + 带时间戳标注的帧
     meta_block = ""

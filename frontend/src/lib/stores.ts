@@ -139,32 +139,3 @@ export const useVideoStore = create<VideoStore>((set) => ({
       return { videos: { ...s.videos, [id]: { ...existing, chunks } } };
     }),
 }));
-
-// ---------------------------------------------------------------------------
-// Tool Progress Store — 补充 AI SDK toolInvocations，跟踪长时间工具进度
-// ---------------------------------------------------------------------------
-
-interface TaskInfo {
-  status: "processing" | "done" | "error";
-  partial: string;
-  result: string | null;
-}
-
-interface ToolProgressState {
-  tasks: Record<string, TaskInfo>;
-  updateTask: (id: string, data: Partial<TaskInfo>) => void;
-  removeTask: (id: string) => void;
-}
-
-export const useToolProgressStore = create<ToolProgressState>((set) => ({
-  tasks: {},
-  updateTask: (id, data) =>
-    set((s) => ({
-      tasks: { ...s.tasks, [id]: { ...s.tasks[id], ...data } },
-    })),
-  removeTask: (id) =>
-    set((s) => {
-      const { [id]: _, ...rest } = s.tasks;
-      return { tasks: rest };
-    }),
-}));

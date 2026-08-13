@@ -6,8 +6,6 @@
 from __future__ import annotations
 
 import logging
-from pathlib import Path
-
 from typing import Callable
 
 from vidagent.tools.platforms import detect_platform

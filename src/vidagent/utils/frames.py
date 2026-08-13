@@ -10,16 +10,12 @@ v2 优化：
 - 帧缓存：已存在的 keyframes 目录直接复用
 - 可传入已知 duration（来自爬虫元数据），省一次 ffprobe
 - 图片缩放至 512px 宽度（模型内部进一步下采样，全分辨率无意义）
-
-v3 新增：
-- detect_boundaries()：混合边界检测（scene detection + silence detection）
 - extract_frames() 支持 timestamps 参数，按指定时间点抽帧
 """
 
 from __future__ import annotations
 
 import logging
-import re
 import subprocess
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -29,18 +25,6 @@ logger = logging.getLogger(__name__)
 
 MIN_FRAMES = 4
 MAX_FRAMES = 16
-
-# TransNetV2 模型单例：进程内只加载一次（首次 ~0.4s，后续复用）
-_TRANSNET = None
-
-
-def _get_transnet():
-    global _TRANSNET
-    if _TRANSNET is None:
-        from transnetv2_pytorch import TransNetV2
-
-        _TRANSNET = TransNetV2()
-    return _TRANSNET
 
 
 def get_duration(video_path: str | Path) -> float:
@@ -55,160 +39,6 @@ def get_duration(video_path: str | Path) -> float:
     except ValueError:
         logger.warning("无法解析视频时长: %s", video_path)
         return 0.0
-
-
-def detect_boundaries(
-    video_path: str | Path,
-    duration: float | None = None,
-    vad_boundaries: list[float] | None = None,
-    scene_boundaries: set[float] | None = None,
-) -> list[int]:
-    """混合边界检测：scene detection + silence/VAD → 候选章节边界。
-
-    scene_boundaries 传入时跳过内部场景检测（外部已并行完成 TransNetV2）。
-    vad_boundaries 传入时跳过 silence detection（外部已并行完成 Silero VAD）。
-
-    优化：两遍 ffmpeg 并行执行，scene 缩小到 320px 宽度加速。
-    vad_boundaries 传入时替代 ffmpeg silence detection（Whisper VAD 语义停顿）。
-
-    Args:
-        video_path: 视频文件路径。
-        duration: 已知时长（秒），省一次 ffprobe。
-        vad_boundaries: Whisper VAD 语音段起始时间戳。传入时跳过 ffmpeg silence detect。
-
-    Returns:
-        候选章节边界时间戳列表（秒，整数，升序），始终包含 0。
-        相邻边界约束：>=30s 且 <=120s。
-    """
-    video_path = Path(video_path)
-    if duration is None:
-        duration = get_duration(video_path)
-    if duration <= 0:
-        return [0]
-
-    scene_times: set[float] = set()
-    silence_times: set[float] = set()
-
-    def _run_scene_detect() -> None:
-        """场景检测：优先 TransNetV2 神经网络（GPU），回退 ffmpeg 像素差。"""
-        # ── TransNetV2（本机 GPU，~28x 实时）──
-        try:
-            model = _get_transnet()
-            scenes = model.detect_scenes(str(video_path))
-            for s in scenes:
-                t = float(s["start_time"])
-                if 0 < t < duration:
-                    scene_times.add(t)
-            logger.info(
-                "🎬 TransNetV2: %d 个场景边界 (GPU, %.1fs 视频)",
-                len(scene_times), duration,
-            )
-            return
-        except Exception as e:
-            logger.warning("TransNetV2 失败，回退 ffmpeg scene: %s", e)
-
-        # ── 回退：ffmpeg scene detection ──
-        try:
-            r = subprocess.run(
-                ["ffmpeg", "-an", "-i", str(video_path),
-                 "-vf", "scale=320:-1,select='gt(scene,0.3)',showinfo",
-                 "-vsync", "vfr", "-f", "null", "-"],
-                capture_output=True, text=True, timeout=max(30, int(duration * 0.3)),
-            )
-            for line in r.stderr.splitlines():
-                m = re.search(r"pts_time:([\d.]+)", line)
-                if m:
-                    t = float(m.group(1))
-                    if 0 < t < duration:
-                        scene_times.add(t)
-            logger.info("🎬 ffmpeg 场景检测: %d 个候选点 (scale=320px, threshold=0.3)", len(scene_times))
-        except Exception as e:
-            logger.warning("场景检测失败: %s", e)
-
-    def _run_silence_detect() -> None:
-        """静音检测：跳过视频解码（只需要音频）。"""
-        try:
-            r = subprocess.run(
-                ["ffmpeg", "-vn", "-i", str(video_path),
-                 "-af", "silencedetect=noise=-30dB:d=1.0",
-                 "-f", "null", "-"],
-                capture_output=True, text=True, timeout=max(30, int(duration * 0.3)),
-            )
-            for line in r.stderr.splitlines():
-                m = re.search(r"silence_end:\s*([\d.]+)", line)
-                if m:
-                    t = float(m.group(1))
-                    if 0 < t < duration:
-                        silence_times.add(t)
-            logger.info("🔇 静音检测: %d 个候选点 (threshold=-30dB, min=1.0s)", len(silence_times))
-        except Exception as e:
-            logger.warning("静音检测失败: %s", e)
-
-    # ── 场景检测：优先用外部传入的结果（已并行完成）──
-    t0 = time.perf_counter()
-    if scene_boundaries is not None:
-        scene_times = scene_boundaries
-        logger.info("🎬 外部场景边界: %d 个候选点", len(scene_times))
-    else:
-        _run_scene_detect()
-
-    # ── 静音/VAD 检测：优先用外部传入的结果 ──
-    if vad_boundaries is not None:
-        for t in vad_boundaries:
-            if 0 < t < duration:
-                silence_times.add(t)
-        logger.info("🔇 外部 VAD: %d 个候选点", len(silence_times))
-    else:
-        _run_silence_detect()
-
-    elapsed = time.perf_counter() - t0
-    logger.info("⏱️ 边界检测耗时: %.1fs (视频 %.0fs)", elapsed, duration)
-
-    # ── 3. 合并 + 去重 + 约束 ──
-    all_times = sorted(scene_times | silence_times)
-
-    # 去重：<3s 视为重复，保留较晚的
-    deduped: list[float] = []
-    for t in all_times:
-        if deduped and t - deduped[-1] < 3:
-            deduped[-1] = t  # 替换为较晚的时间
-        else:
-            deduped.append(t)
-
-    # 约束：仅去重（<3s 视为同一边界），不做合并（动态阈值已控制密度）
-    MAX_GAP = 120
-    FALLBACK_INTERVAL = 60
-
-    # 强制插入兜底切点（确保无超长间隔）
-    result: list[int] = [0]  # 始终从 0 开始
-
-    for t in deduped:
-        boundary_int = int(t)
-        if boundary_int <= result[-1]:
-            continue
-        if boundary_int - result[-1] > MAX_GAP:
-            fallback = result[-1] + FALLBACK_INTERVAL
-            while fallback < boundary_int:
-                result.append(fallback)
-                fallback += FALLBACK_INTERVAL
-        result.append(boundary_int)
-
-    # 处理最后一个边界到视频结尾的间隔
-    while int(duration) - result[-1] > MAX_GAP:
-        fallback = result[-1] + FALLBACK_INTERVAL
-        if fallback >= int(duration):
-            break
-        result.append(fallback)
-    # 确保视频结尾作为最后一个边界
-    dur_int = int(duration)
-    if result[-1] != dur_int:
-        result.append(dur_int)
-
-    logger.info(
-        "📐 候选章节边界: %d 个 → (去重+兜底) → %d 个 | 视频 %.0fs",
-        len(all_times), len(result), duration,
-    )
-    return result
 
 
 def adaptive_frame_count(

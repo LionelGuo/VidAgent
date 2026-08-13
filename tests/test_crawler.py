@@ -4,7 +4,8 @@ import pytest
 @pytest.mark.asyncio
 async def test_get_creator_videos_resolves_name(monkeypatch):
     """昵称应被自动解析为 mid，再用于拉取投稿。"""
-    from vidagent.tools import bilibili, crawler
+    from vidagent.tools import crawler
+    from vidagent.tools.platforms import bilibili
 
     resolved: dict = {}
     fetched: dict = {}
@@ -29,7 +30,8 @@ async def test_get_creator_videos_resolves_name(monkeypatch):
 @pytest.mark.asyncio
 async def test_get_creator_videos_numeric_skips_resolution(monkeypatch):
     """数字 UID 应直接使用，不触发昵称解析。"""
-    from vidagent.tools import bilibili, crawler
+    from vidagent.tools import crawler
+    from vidagent.tools.platforms import bilibili
 
     fetched: dict = {}
     resolve_called = {"v": False}
@@ -48,25 +50,3 @@ async def test_get_creator_videos_numeric_skips_resolution(monkeypatch):
     await crawler.get_creator_videos("bilibili", "546195", limit=3)
     assert fetched["mid"] == "546195"
     assert resolve_called["v"] is False
-
-
-@pytest.mark.asyncio
-async def test_search_and_fetch_videos_backcompat_dispatch(monkeypatch):
-    """旧入口按 task_type 正确分派到新工具（pipeline/crawl_cli 仍可用）。"""
-    from vidagent.tools import crawler
-
-    async def fake_hot(platform="bilibili", limit=10, date_filter=None):
-        return [{"video_id": "BV", "duration": 10}]
-
-    async def fake_search(platform="bilibili", keyword="", limit=10, date_filter=None):
-        return [{"video_id": "BV", "duration": 20, "keyword": keyword}]
-
-    monkeypatch.setattr(crawler, "get_hot_videos", fake_hot)
-    monkeypatch.setattr(crawler, "search_videos", fake_search)
-
-    hot = await crawler.search_and_fetch_videos("bilibili", "hot_board", limit=1)
-    assert hot[0]["duration"] == 10
-
-    sr = await crawler.search_and_fetch_videos("bilibili", "search", "kw", limit=1)
-    assert sr[0]["duration"] == 20
-    assert sr[0]["keyword"] == "kw"

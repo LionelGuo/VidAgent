@@ -1,4 +1,4 @@
-from vidagent.tools import bilibili as b
+from vidagent.tools.platforms import bilibili as b
 from vidagent.utils import wbi
 
 

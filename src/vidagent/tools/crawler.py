@@ -1,4 +1,4 @@
-"""视频检索工具：三个意图明确的独立工具 + 一个向后兼容的分发器。
+"""视频检索工具：三个意图明确的独立工具。
 
 工具（Agent 使用）：
     get_hot_videos     —— 平台综合热门
@@ -125,20 +125,3 @@ async def get_creator_videos(
     if date_filter == "today":
         items = filter_today(items)
     return items[:limit]
-
-
-async def search_and_fetch_videos(
-    platform: str,
-    task_type: str,  # hot_board | search | user_homepage
-    target_id: str | None = None,
-    date_filter: str | None = None,
-    limit: int = 10,
-) -> list[dict]:
-    """[向后兼容] 按 task_type 分派到上面三个工具。供 pipeline / crawl_cli / 旧测试使用。"""
-    if task_type == "hot_board":
-        return await get_hot_videos(platform, limit, date_filter)
-    if task_type == "search":
-        return await search_videos(platform, target_id or "", limit, date_filter)
-    if task_type == "user_homepage":
-        return await get_creator_videos(platform, target_id or "", limit, date_filter)
-    raise ValueError(f"未知 task_type: {task_type}（可选: hot_board / search / user_homepage）")

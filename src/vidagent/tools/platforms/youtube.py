@@ -5,13 +5,11 @@ API Key 可选：无 key 时搜索降级为 yt-dlp ytsearch（元数据较少）
 
 from __future__ import annotations
 
-import json
 import logging
-import os
 import re
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, ClassVar
+from typing import Callable, ClassVar
 
 import httpx
 import shutil

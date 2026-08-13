@@ -34,30 +34,20 @@ Agno Agent（意图识别 / 任务拆解 / 工具调用 / 出错反思）
 
 ```bash
 # 1. 安装依赖（uv）
-uv sync --extra asr --extra agent --extra ui   # ASR + Agent + UI
-uv sync --extra dev                            # 可选：测试/ lint
+uv sync --extra server --extra douyin --extra dev   # 后端 + CDP 平台 + 测试/lint
 
 # 2. 配置 LLM（复制模板并填 key）
-cp .env.example .env        # 至少填 OPENAI_API_KEY（默认指向 DeepSeek）
+cp .env.example .env        # 至少填 OPENAI_API_KEY（默认指向 SiliconFlow）
 
-# 3. 启动对话 UI
-uv run python -m vidagent.ui
-#   浏览器打开后输入：抓B站今日热榜前3并逐个总结
+# 3. 启动后端
+uv run uvicorn server.main:app --host 0.0.0.0 --port 8000
+
+# 4. 启动前端（另开终端）
+cd frontend && npm install && npm run dev
+#   浏览器打开 http://localhost:3000
 ```
 
-### 命令行（不通过 Agent）
-
-```bash
-# 仅抓取元数据
-uv run python scripts/crawl_cli.py --task hot_board --limit 5
-uv run python scripts/crawl_cli.py --task search --target 大模型 --limit 3
-
-# 抓取 + 下载 + 抽音
-uv run python scripts/crawl_cli.py --task hot_board --limit 1 --download
-
-# 硬编码流水线（抓取→下载→ASR→总结，无 Agent）
-uv run python -m vidagent.pipeline --task hot_board --limit 1
-```
+> 抖音/小红书/快手需 Windows Chrome 以调试端口 `:9222` 运行且平台已登录。
 
 ## 配置（`.env`）
 
