@@ -527,24 +527,45 @@ async def _fetch_hot_list_via_page(limit: int = 10) -> list[dict]:
 
 
 async def _search_first_video_for_word(word: str) -> dict | None:
-    """搜索词条并返回第一条真实视频（MediaCrawler 官方搜索路径）。"""
+    """搜索词条并返回第一条真实视频（MediaCrawler 官方搜索路径）。
+
+    容错：搜索超时/失败重试一次（_client_call 超时后已重建 page，重试
+    大概率成功）；优先取第一条有真实时长的视频（跳过 duration=0 的
+    异常条目，全部无时长则退回第一条）。
+    """
     if not word:
         return None
-    try:
-        resp = await _client_call(
-            lambda c: c.search_info_by_keyword(
-                keyword=word, offset=0,
-                search_channel=_SearchChannelType.GENERAL,
+    for attempt in range(2):
+        try:
+            resp = await _client_call(
+                lambda c: c.search_info_by_keyword(
+                    keyword=word, offset=0,
+                    search_channel=_SearchChannelType.GENERAL,
+                )
             )
-        )
-    except DouyinClientError as e:
-        logger.warning("热榜词条搜索失败 '%s': %s", word, e)
-        return None
-    data = resp.get("data", []) if isinstance(resp, dict) else []
-    for item in data:
-        aweme = item.get("aweme_info") or item.get("aweme_detail") or item
-        if aweme and aweme.get("aweme_id"):
-            return _normalize_video(aweme)
+        except DouyinClientError as e:
+            if attempt == 0:
+                logger.warning("热榜词条搜索失败 '%s'（页面已重建，重试）: %s", word, e)
+                continue
+            logger.warning("热榜词条搜索失败 '%s': %s", word, e)
+            return None
+
+        data = resp.get("data", []) if isinstance(resp, dict) else []
+        fallback = None
+        for item in data:
+            aweme = item.get("aweme_info") or item.get("aweme_detail") or item
+            if not (aweme and aweme.get("aweme_id")):
+                continue
+            video = _normalize_video(aweme)
+            if fallback is None:
+                fallback = video
+            if video.get("duration", 0) > 0:
+                return video
+        if fallback is not None:
+            return fallback
+        if attempt == 0:
+            logger.warning("热榜词条搜索无结果 '%s'（重试）", word)
+            continue
     logger.warning("热榜词条搜索无结果: '%s'", word)
     return None
 
