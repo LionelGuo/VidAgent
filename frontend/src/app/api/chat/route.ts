@@ -92,8 +92,7 @@ const SYSTEM_PROMPT = `你是 VidAgent，一个自媒体视频采集与总结助
 
 【其它】
 - 平台支持 bilibili、youtube、douyin、kuaishou、xiaohongshu；用户未指定时默认 bilibili。
-- **小红书没有热榜**：不要对 xiaohongshu 调用 get_hot_videos。用户想看小红书热门内容时，
-  改用关键词搜索（search_videos），并向用户说明小红书无热榜、已改为搜索。
+- **小红书和快手没有热榜**：不要对 xiaohongshou/kuaishou 调用 get_hot_videos。用户想看这些平台的热门内容时，改用关键词搜索（search_videos），并向用户说明该平台无热榜、已改为搜索。
 - **工具调用策略：收到工具结果后，先判断用户任务是否已完成。**
   如果用户仅需检索/列表（如「列出热榜」「搜索xx教程」），检索完成后按模式 A 逐条列出结果，
   不要继续下载或总结。不要在任务完成后调用无关工具。
@@ -184,9 +183,9 @@ export async function POST(req: Request) {
       // ── 检索工具 ──
       get_hot_videos: {
         description:
-          "获取平台综合热门视频榜单（热榜本身反映当前热度，不限发布日期）。返回视频列表，每项含 video_id/title/desc/duration/duration_text/video_url/platform/author/view_count。注意：xiaohongshu 不支持热榜，返回结果含 message 提示，应引导用户改用搜索。",
+          "获取平台综合热门视频榜单（热榜本身反映当前热度，不限发布日期）。返回视频列表，每项含 video_id/title/desc/duration/duration_text/video_url/platform/author/view_count。注意：kuaishou、xiaohongshu 不支持热榜，返回结果含 message 提示，应引导用户改用搜索。",
         parameters: z.object({
-          platform: z.string().nullable().default("bilibili").describe("平台：bilibili / youtube / douyin / kuaishou（xiaohongshu 不支持热榜）"),
+          platform: z.string().nullable().default("bilibili").describe("平台：bilibili / youtube / douyin（kuaishou、xiaohongshu 不支持热榜）"),
           limit: z.number().nullable().default(10).describe("返回条数上限"),
           date_filter: z.string().nullable().optional().describe("按发布日期过滤。通常不传（热榜已反映当前热度）。仅在用户明确要求'只看今天发布的'时才传 'today'"),
         }),
