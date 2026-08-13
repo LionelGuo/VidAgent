@@ -39,7 +39,7 @@ from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from server.sse_relay import relay_stream
+from server.sse_relay import relay_stream, relay_stream_transparent
 from server.tool_definitions import TOOL_DEFINITIONS
 
 # 确保 vidagent 模块的 INFO 日志能输出到 uvicorn 控制台
@@ -85,9 +85,10 @@ app.mount("/workspace", StaticFiles(directory=str(_workspace_dir)), name="worksp
 # ---------------------------------------------------------------------------
 
 from vidagent.config import settings
+from vidagent import llm_provider
 
-VLLM_URL = os.getenv("VLLM_URL") or settings.openai_base_url
-VLLM_API_KEY = os.getenv("OPENAI_API_KEY", "not-needed")
+# Agent 端点（relay 上游）+ provider 模式：由 provider 预设解析（vllm/siliconflow/generic）
+VLLM_URL = llm_provider.agent_endpoint().base_url
 
 # Thread pool for sync tools (downloader, summarizer)
 # 5 workers 支持并行下载 + 总结
@@ -140,15 +141,21 @@ class BatchSummarizeRequest(BaseModel):
 
 @app.post("/v1/chat/completions")
 async def chat_completions(request: dict):
-    """OpenAI 兼容的 chat completions 端点。
+    """OpenAI 兼容的 chat completions 端点（SSE Relay）。
 
-    AI SDK useChat 连接此端点。内部做 SSE Relay：
-    - 请求 → vLLM bare mode（stream=true，无 tool_choice）
-    - 实时检测 <tool_call> XML → 转换为 OpenAI tool_calls delta
-    - 纯文本 → 透明透传
+    AI SDK useChat 连接此端点。按 provider 预设分流：
+    - vLLM-omni（xml 模式）：bare mode 无原生 function calling → 检测 <tool_call> XML → 转换为 tool_calls delta
+    - 标准端点（transparent 模式）：原生 function calling → tools 原样转发、SSE 逐行透传
     """
+    ep = llm_provider.agent_endpoint()
+    if llm_provider.relay_mode() == "transparent":
+        gen = relay_stream_transparent(
+            request, upstream_url=ep.base_url, model=ep.model, api_key=ep.api_key
+        )
+    else:
+        gen = relay_stream(request, vllm_url=ep.base_url, api_key=ep.api_key, model=ep.model)
     return StreamingResponse(
-        relay_stream(request, vllm_url=VLLM_URL, api_key=VLLM_API_KEY),
+        gen,
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",
@@ -562,9 +569,8 @@ async def tool_batch_summarize(req: BatchSummarizeRequest):
                 metadata["duration_text"] = f"{int(duration // 60):02d}:{int(duration % 60):02d}"
                 logger.info("📐 补充 duration: %.0fs", duration)
 
-            base_url = settings.multimodal_base_url or settings.openai_base_url
-            api_key = settings.openai_api_key
-            model = settings.multimodal_model or settings.llm_model
+            _ep = llm_provider.multimodal_endpoint()
+            base_url, api_key, model = _ep.base_url, _ep.api_key, _ep.model
 
             # ── 分流：短视频 vs 长视频 ──
             if isinstance(duration, (int, float)) and 0 < duration < 90:

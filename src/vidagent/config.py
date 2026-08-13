@@ -19,12 +19,14 @@ class Settings(BaseSettings):
     )
 
     # ----- LLM 提供方（单一切换点）-----
-    llm_provider: Literal["cloud", "local"] = "cloud"
+    # cloud ≡ vllm（自托管 vLLM-omni，兼容旧值）；vllm/siliconflow/generic 走 llm_provider 预设系统；
+    # local 仍走 Ollama 旧栈（active_llm）。详见 src/vidagent/llm_provider.py
+    llm_provider: Literal["cloud", "local", "vllm", "siliconflow", "generic"] = "cloud"
 
-    # 云端（OpenAI 兼容协议）
-    openai_base_url: str = "https://api.deepseek.com/v1"
+    # 云端（OpenAI 兼容协议）。留空时由 provider 预设补默认值（如 siliconflow 的官方端点）
+    openai_base_url: str = ""
     openai_api_key: str = ""
-    llm_model: str = "deepseek-chat"
+    llm_model: str = ""
 
     # 本地（Ollama）
     ollama_base_url: str = "http://localhost:11434/v1"

@@ -182,6 +182,7 @@ async def relay_stream(
     request_body: dict,
     vllm_url: str,
     api_key: str = "not-needed",
+    model: str | None = None,
     timeout: int = 300,
 ) -> AsyncIterator[str]:
     """SSE 流式转发：请求 vLLM → 逐行处理 → 实时 SSE 输出。
@@ -199,6 +200,9 @@ async def relay_stream(
         if k not in ("tools", "tool_choice", "stream_options")
     }
     body["stream"] = True
+    # 注入真实模型名（前端发占位符，由 provider 预设解析）
+    if model:
+        body["model"] = model
 
     headers = {
         "Authorization": f"Bearer {api_key}",
@@ -374,3 +378,64 @@ async def relay_stream(
                 yield "data: [DONE]\n\n"
 
     logger.info("SSE Relay 完成 | yielded_text=%d chars", len(yielded_text))
+
+
+async def relay_stream_transparent(
+    request_body: dict,
+    upstream_url: str,
+    model: str,
+    api_key: str = "not-needed",
+    timeout: int = 300,
+) -> AsyncIterator[str]:
+    """原生透传 relay（用于支持原生 function calling 的标准 OpenAI 兼容端点，如 SiliconFlow）。
+
+    与 relay_stream（XML 模式，面向 vLLM bare mode）的区别：
+    - 保留 tools（让模型原生 function calling，AI SDK 原生解析 tool_calls）
+    - tool_choice 规范化为 auto（SiliconFlow 等仅支持 auto，避免 400）
+    - 注入 model（前端发占位符，服务端按 provider 预设注入）
+    - 上游 SSE 逐行透传（含 reasoning_content / tool_calls delta / finish_reason）
+    """
+    body = dict(request_body)
+    body["model"] = model
+    body["stream"] = True
+    # SiliconFlow 等仅支持 tool_choice=auto；forced/required 会 400，强制规范化
+    if body.get("tool_choice") not in (None, "auto"):
+        body["tool_choice"] = "auto"
+
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+    }
+
+    logger.info("SSE Relay(transparent) → %s | model=%s", upstream_url, model)
+
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(timeout)) as client:
+            async with client.stream(
+                "POST",
+                f"{upstream_url}/chat/completions",
+                json=body,
+                headers=headers,
+            ) as resp:
+                if resp.status_code != 200:
+                    error_bytes = await resp.aread()
+                    error_text = error_bytes.decode(errors="ignore")[:400]
+                    logger.error(
+                        "上游返回错误 HTTP %s: %s", resp.status_code, error_text
+                    )
+                    yield _format_sse_content(
+                        f"⚠️ 模型服务错误 (HTTP {resp.status_code})：{error_text}"
+                    )
+                    yield "data: [DONE]\n\n"
+                    return
+
+                async for line in resp.aiter_lines():
+                    if line.startswith("data:"):
+                        # 透传上游 SSE data 行（含 [DONE]、reasoning_content、tool_calls、finish_reason）
+                        yield line + "\n\n"
+    except (httpx.ConnectTimeout, httpx.ReadTimeout) as e:
+        logger.error("上游连接超时: %s", e)
+        yield _format_sse_content("⚠️ 模型服务连接超时，请稍后重试。")
+        yield "data: [DONE]\n\n"
+
+    logger.info("SSE Relay(transparent) 完成")

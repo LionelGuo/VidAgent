@@ -20,6 +20,7 @@ from pathlib import Path
 import httpx
 
 from vidagent.config import settings
+from vidagent import llm_provider
 from vidagent.utils import storage
 from vidagent.utils.frames import extract_frames
 from vidagent.utils.audio import extract_audio
@@ -371,7 +372,9 @@ def _chat_completion_stream(
         if len(current) < 2000:
             pg.append(text)
 
-    stripper = _ThinkStripper(on_thinking=_on_thinking)
+    # 推理内容解析模式：think_tag（vLLM，content 内联 <think> 标签）/ reasoning_content（标准 OpenAI 兼容，独立字段）
+    reasoning_mode = llm_provider.multimodal_endpoint().reasoning_mode
+    stripper = _ThinkStripper(on_thinking=_on_thinking) if reasoning_mode == "think_tag" else None
 
     with httpx.stream(
         "POST", f"{base_url}/chat/completions",
@@ -395,11 +398,17 @@ def _chat_completion_stream(
                     fr = (chunk.get("choices") or [{}])[0].get("finish_reason")
                     if fr:
                         finish_reason = fr
+                    # 推理内容解析：think_tag 模式从 content 内联 <think> 标签提取（stripper）；
+                    # reasoning_content 模式从独立字段读取推理，content 已是纯正文（无需 stripper）
+                    if reasoning_mode == "reasoning_content":
+                        rc = delta.get("reasoning_content", "")
+                        if rc:
+                            _on_thinking(rc)
                     token = delta.get("content", "")
                     if token:
                         accumulated_raw += token  # 诊断：保留原始内容
-                        # 分离 <think> 推理块和实际内容
-                        stripped = stripper.feed(token)
+                        # think_tag 模式分离 <think> 推理块；reasoning_content 模式直接用纯正文
+                        stripped = stripper.feed(token) if stripper else token
                         if stripped:
                             if strip_leading:
                                 stripped = stripped.lstrip()
@@ -430,8 +439,8 @@ def _chat_completion_stream(
                 except (json.JSONDecodeError, KeyError, IndexError):
                     pass
 
-    # 流结束：清空 stripper 残留，同时推送到 progress
-    flushed = stripper.flush()
+    # 流结束：清空 stripper 残留，同时推送到 progress（reasoning_content 模式无 stripper）
+    flushed = stripper.flush() if stripper else None
     if flushed and strip_leading:
         flushed = flushed.lstrip()
         if flushed:
@@ -523,9 +532,8 @@ def extract_and_summarize(
                         mp3_kb, len(frames_paths), frames_kb,
                     )
 
-                    base_url = settings.multimodal_base_url or settings.openai_base_url
-                    api_key = settings.openai_api_key
-                    model = settings.multimodal_model or settings.llm_model
+                    _ep = llm_provider.multimodal_endpoint()
+                    base_url, api_key, model = _ep.base_url, _ep.api_key, _ep.model
 
                     with Timer("多模态总结(章节感知)"):
                         chapters, summary = _summarize_multimodal_with_chapters(
@@ -668,10 +676,11 @@ def _resolve_device() -> str:
 
 
 def _summarize(transcript: str, metadata: dict) -> str:
-    base_url, api_key, model = settings.active_llm()
-    if settings.llm_provider == "cloud" and not settings.openai_api_key:
+    _ep = llm_provider.agent_endpoint()
+    base_url, api_key, model = _ep.base_url, _ep.api_key, _ep.model
+    if not api_key:
         raise RuntimeError(
-            f"未配置云端 LLM API key：请在 .env 设置 OPENAI_API_KEY（推荐 DeepSeek）。"
+            f"未配置 LLM API key：请在 .env 设置 OPENAI_API_KEY。"
             f" 转写文本({len(transcript)} 字)已就绪，配好 key 后重试即可。"
         )
 
@@ -780,7 +789,7 @@ def _summarize_chunk(
 
     content_parts: list[dict] = [
         {"type": "text", "text": prompt},
-        {"type": "input_audio", "input_audio": {"data": mp3_b64, "format": "mp3"}},
+        llm_provider.build_audio_part(mp3_b64),
     ]
     for f in chunk_frames[:6]:  # 每段帧数上限
         img_b64 = b64.b64encode(f.read_bytes()).decode()
@@ -857,9 +866,8 @@ def _summarize_multimodal(
     超长音频（>_MAX_AUDIO_CHUNK_SECONDS）自动分块处理：
     切分为多个段落 → 逐段总结 → 合并为完整总结。
     """
-    base_url = settings.multimodal_base_url or settings.openai_base_url
-    api_key = settings.openai_api_key
-    model = settings.multimodal_model or settings.llm_model
+    _ep = llm_provider.multimodal_endpoint()
+    base_url, api_key, model = _ep.base_url, _ep.api_key, _ep.model
     if not api_key:
         raise RuntimeError("未配置 OPENAI_API_KEY")
 
@@ -916,7 +924,7 @@ def _summarize_multimodal(
         meta_block = f"【标题】{metadata.get('title', '')}\n【简介】{metadata.get('desc', '')}\n"
     prompt_text = f"{meta_block}\n请结合音频和关键帧画面，输出结构化总结。"
 
-    content_parts.insert(0, {"type": "input_audio", "input_audio": {"data": mp3_b64, "format": "mp3"}})
+    content_parts.insert(0, llm_provider.build_audio_part(mp3_b64))
     content_parts.insert(0, {"type": "text", "text": prompt_text})
 
     payload = {
@@ -1216,7 +1224,7 @@ def _summarize_multimodal_with_chapters(
 
     content_parts: list[dict] = [
         {"type": "text", "text": prompt_text},
-        {"type": "input_audio", "input_audio": {"data": mp3_b64, "format": "mp3"}},
+        llm_provider.build_audio_part(mp3_b64),
     ]
 
     # 帧前面插入时间戳标注（帮助模型关联画面和时点）
@@ -1385,8 +1393,8 @@ def _summarize_short_video(
 
     content_parts: list[dict] = [
         {"type": "text", "text": f"{meta_block}\n请仔细分析这个短视频的音频和画面，输出精准详细的总结。"},
-        {"type": "input_audio", "input_audio": {"data": mp3_b64, "format": "mp3"}},
-        {"type": "video_url", "video_url": {"url": f"data:video/mp4;base64,{video_b64}"}},
+        llm_provider.build_audio_part(mp3_b64),
+        llm_provider.build_video_part(video_b64),
     ]
 
     payload = {
@@ -1462,10 +1470,7 @@ def _match_chapters_segmented(
             "text": f"--- 段{i+1} [{candidate_boundaries[i]}s-{candidate_boundaries[i+1]}s] ---",
         })
         seg_b64 = b64.b64encode(audio_segs[i].read_bytes()).decode()
-        content_parts.append({
-            "type": "input_audio",
-            "input_audio": {"data": seg_b64, "format": "mp3"},
-        })
+        content_parts.append(llm_provider.build_audio_part(seg_b64))
         if i < len(candidate_frames):
             img_b64 = b64.b64encode(candidate_frames[i].read_bytes()).decode()
             content_parts.append({

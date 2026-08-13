@@ -173,7 +173,8 @@ export async function POST(req: Request) {
 
   const result = streamText({
     model: wrapLanguageModel({
-      model: vidagent("/root/autodl-tmp/Qwen3-Omni-Thinking-AWQ-4bit"),
+      // 模型名由后端 relay 按 provider 预设注入（LLM_MODEL），前端发占位符即可
+      model: vidagent("vidagent-agent"),
       middleware: extractReasoningMiddleware({ tagName: "think" }),
     }),
     system: SYSTEM_PROMPT,
