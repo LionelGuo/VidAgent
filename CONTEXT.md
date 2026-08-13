@@ -10,7 +10,7 @@
 | **视频下载 (Video Download)** | 将 `video_url` 指向的视频文件下载到本地 `workspace/`，返回 `local_path`。支持缓存复用。 |
 | **音频提取 (Audio Extraction)** | ffmpeg 从视频文件中分离音频轨道，输出 mp3。 |
 | **帧抽取 (Frame Extraction)** | ffmpeg 从视频中按均匀间隔抽取关键帧（jpg），帧数 4-16 依时长自适应。帧文件名含秒级时间戳。 |
-| **多模态总结 (Multimodal Summarization)** | 音频 (mp3) + 关键帧 (jpg) 直送 Qwen3-Omni 模型，由模型原生理解音视频内容，输出结构化 Markdown 总结。不经过 ASR 转写。 |
+| **多模态总结 (Multimodal Summarization)** | 音频 + 画面直送全模态模型（Qwen3-Omni），由模型原生理解音视频内容，输出结构化 Markdown 总结，不经 ASR 转写。两条路径：长视频 = 音频 (mp3) + 关键帧 (jpg)；短视频 (<90s) = 音频 + 完整视频 (video_url base64)。 |
 | **降级总结 (Fallback Summarization)** | 无音频轨道或模型调用失败时，仅依据元数据（标题+简介）生成总结。 |
 
 ## 用户可见的功能产物
@@ -35,7 +35,9 @@
 
 | 术语 | 定义 |
 |------|------|
-| **vLLM Bare Mode** | Qwen3-Omni-30B-A3B 运行在 AutoDL 云 GPU 实例上，仅提供 `/v1/chat/completions`（无原生 tool_choice）。 |
+| **vLLM Bare Mode** | Qwen3-Omni-30B-A3B 运行在 AutoDL 云 GPU 实例（或本地 ≥24GB GPU）上，仅提供 `/v1/chat/completions`（无原生 tool_choice）。模型自由输出 `<tool_call>` XML，由 SSE Relay 转换。 |
+| **模型提供方 (Provider)** | LLM 服务的来源。本项目支持三种预设：`vllm`（自托管 vLLM-omni，XML 协议）、`siliconflow`（SiliconFlow 平台，原生 function calling）、`generic`（任意标准 OpenAI 兼容端点）。由 `LLM_PROVIDER` 切换，差异集中在 `src/vidagent/llm_provider.py`。 |
+| **Provider 预设 (Provider Preset)** | 承载平台差异的三维映射：relay 模式（xml 手写协议 vs 原生透传）、多模态 wire format（input_audio vs audio_url）、推理解析模式（`<think>` 标签 vs reasoning_content 字段）。是迈向「统一 OpenAI API」终态的过渡抽象。 |
 | **FastAPI Server** | 本地 `server/main.py`，承担 SSE Relay + 工具 REST API + 静态文件服务。 |
 | **Next.js Frontend** | `frontend/` 目录，React 19 + AI SDK v4，承担聊天 UI + DetailPanel + VideoStore 状态管理。 |
 | **CDP Browser (Existing)** | 抖音/小红书等平台的客户端通过 CDP 连接 Windows Chrome 的 `:9222` 调试端口（WSL2 localhost 转发），复用用户浏览器登录态（详见 ADR-0004）。 |

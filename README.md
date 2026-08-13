@@ -61,16 +61,54 @@ uv run python -m vidagent.pipeline --task hot_board --limit 1
 
 ## 配置（`.env`）
 
+模型服务通过 **provider 预设系统**切换（`LLM_PROVIDER`），差异集中在 `src/vidagent/llm_provider.py`。
+
 | 变量 | 说明 | 默认 |
 |---|---|---|
-| `LLM_PROVIDER` | `cloud` / `local` | `cloud` |
-| `OPENAI_BASE_URL` | 云端 OpenAI 兼容地址 | DeepSeek |
-| `OPENAI_API_KEY` | 云端密钥（**必填**） | — |
-| `LLM_MODEL` | 云端模型 | `deepseek-chat` |
-| `OLLAMA_BASE_URL` / `LLM_MODEL_LOCAL` | 本地 Ollama（Sprint4） | qwen2.5:7b |
-| `BILI_COOKIE` | B站登录 Cookie（创作者主页接口需要） | 空 |
-| `WHISPER_MODEL` | ASR 模型：tiny/base/small/medium | `base` |
-| `ASR_DEVICE` | `auto`/`cuda`/`cpu` | `auto` |
+| `LLM_PROVIDER` | `vllm` / `siliconflow` / `generic`（`cloud`≡vllm 兼容旧值；`local`=Ollama 旧栈） | `siliconflow` |
+| `OPENAI_API_KEY` | 模型 API 密钥（**必填**） | — |
+| `OPENAI_BASE_URL` | OpenAI 兼容端点（留空则用 provider 预设默认，如 SiliconFlow 官方端点） | preset |
+| `LLM_MODEL` | 模型名（留空则用 provider 预设默认） | preset |
+| `LLM_MULTIMODAL` | `true` 时音频/视频直送全模态模型（Qwen3-Omni），跳过 ASR | `true` |
+| `MULTIMODAL_BASE_URL` / `MULTIMODAL_MODEL` | 多模态端点（留空复用上面的 base_url + model，单端点平台直接留空） | 空 |
+| `BILI_COOKIE` | B站 Cookie（创作者主页接口需要，含 `SESSDATA`） | 空 |
+| `YOUTUBE_API_KEY` / `YOUTUBE_COOKIE` / `YOUTUBE_PROXY` | YouTube 采集（可选） | 空 |
+| `MEDIACRAWLER_ROOT` | MediaCrawler 目录（抖音/小红书/快手 CDP 平台需要，默认 `~/Code/MediaCrawler`） | `~/Code/MediaCrawler` |
+
+**两种部署形态：**
+
+- **场景一（本地有 ≥24GB GPU）**：`LLM_PROVIDER=vllm`，先跑模型服务（`scripts/deploy_vllm_omni.sh install && start`），`OPENAI_BASE_URL` 指向它。
+- **场景二（远程 API）**：`LLM_PROVIDER=siliconflow`，仅填 `OPENAI_API_KEY`，preset 自动提供端点与模型名。
+
+## 部署
+
+### Docker（主逻辑镜像：FastAPI + 前端）
+
+```bash
+docker build -t vidagent .
+# 场景二：远程 API（最简）
+docker run --network=host -e LLM_PROVIDER=siliconflow -e OPENAI_API_KEY=sk-xxx vidagent
+# 场景一：配合本地 vLLM（OPENAI_BASE_URL 指向宿主模型服务）
+docker run --network=host -e LLM_PROVIDER=vllm -e OPENAI_BASE_URL=http://127.0.0.1:6006/v1 vidagent
+```
+
+`--network=host` 推荐：CDP 平台复用宿主 Chrome `:9222`，浏览器直达 localhost。
+抖音/小红书/快手需额外挂载 MediaCrawler（`-e MEDIACRAWLER_ROOT=...`）+ 宿主 Chrome 开调试端口。
+
+### 本地 vLLM-omni 模型服务（场景一，独立部署）
+
+```bash
+bash scripts/deploy_vllm_omni.sh install   # 装 vllm-omni + 下载模型（≥24GB VRAM）
+bash scripts/deploy_vllm_omni.sh start --bg # 后台启动（端口 6006）
+```
+
+### 裸机开发
+
+```bash
+uv sync --extra server --extra asr --extra douyin --extra agent   # 后端依赖
+uv run uvicorn server.main:app --host 0.0.0.0 --port 8000         # 后端
+cd frontend && npm install && npm run dev                          # 前端 :3000
+```
 
 ## 技术选型要点
 
