@@ -16,6 +16,7 @@ P2: MediaCrawler CDP — 连接 Windows Chrome 远程调试端口（:9222），
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import re
@@ -404,21 +405,79 @@ def _fmt_duration(sec: int) -> str:
 
 
 # ---------------------------------------------------------------------------
-# 热榜（P0）
+# 热榜（视频榜 — CDP 页面内 XHR）
 # ---------------------------------------------------------------------------
 
 async def fetch_hot_search(client: httpx.AsyncClient, limit: int = 20) -> list[dict]:
+    """[兼容旧签名] 热搜词榜（话题热度，非视频）。已由视频榜方案取代。"""
     try:
         resp = await client.get(_HOT_SEARCH_API)
         resp.raise_for_status()
         data = resp.json()
     except (httpx.HTTPError, ValueError) as e:
-        logger.warning("抖音热榜 API 失败: %s", e)
+        logger.warning("抖音热搜词 API 失败: %s", e)
         return []
     trending = data.get("data", {}).get("trending_list", [])
-    logger.info("🔥 抖音热榜: %d 条 (更新时间: %s)", len(trending),
+    logger.info("🔥 抖音热搜词: %d 条 (更新时间: %s)", len(trending),
                 data.get("data", {}).get("active_time", ""))
     return [normalize(it) for it in trending[:limit]]
+
+
+_HOT_XHR_JS = """(count) => new Promise((resolve) => {
+  const url = 'https://www.douyin.com/aweme/v1/web/channel/hotspot?device_platform=webapp&aid=6383&channel=channel_pc_web&tag_id=&count=' + count + '&Seo-Flag=0&channel_id=99&pc_client_type=1&pc_libra_divert=Windows&support_h265=1&support_dash=1&cookie_enabled=true&platform=PC';
+  const xhr = new XMLHttpRequest();
+  xhr.open('GET', url, true);
+  xhr.withCredentials = true;
+  xhr.onload = () => resolve({status: xhr.status, body: xhr.responseText});
+  xhr.onerror = () => resolve({status: 0, body: ''});
+  xhr.send();
+})"""
+
+
+async def _fetch_hot_videos_via_page(limit: int = 10) -> list[dict]:
+    """通过 CDP 页面内 XHR 请求视频榜（douyin.com/hot 的「视频」tab）。
+
+    直接 httpx / DouYinClient 签名请求会被风控拒绝（account blocked 空响应），
+    而页面自身 XHR 会被 webmssdk 的 XHR hook 自动补签名，与真实浏览行为一致。
+    """
+    from ._cdp_browser import get_page_for_platform
+
+    page = await get_page_for_platform("dy", "https://www.douyin.com/hot")
+
+    # 等 webmssdk 就绪（XHR hook 生效前发出的请求无签名会被拒）
+    for _ in range(24):
+        ready = await page.evaluate("() => !!window.byted_acrawler")
+        if ready:
+            break
+        await asyncio.sleep(0.5)
+
+    for attempt in range(3):
+        try:
+            raw = await page.evaluate(_HOT_XHR_JS, limit)
+        except Exception as e:
+            logger.warning("抖音视频榜 XHR 异常(第%d次): %s", attempt + 1, e)
+            raw = {"status": 0, "body": ""}
+        if raw.get("status") == 200 and raw.get("body"):
+            break
+        await asyncio.sleep(1)
+
+    if raw.get("status") != 200 or not raw.get("body"):
+        logger.warning("抖音视频榜 XHR 失败: status=%s", raw.get("status"))
+        return []
+    try:
+        data = json.loads(raw["body"])
+    except (json.JSONDecodeError, TypeError) as e:
+        logger.warning("抖音视频榜响应解析失败: %s", e)
+        return []
+    aweme_list = data.get("aweme_list", []) or []
+    if not aweme_list:
+        # 空结果诊断：转储响应键（静默风控的典型信号）
+        logger.warning("抖音视频榜空结果: resp_keys=%s",
+                       list(data.keys()) if isinstance(data, dict) else type(data).__name__)
+        return []
+    results = [_normalize_video(a) for a in aweme_list[:limit]]
+    logger.info("🔥 抖音热榜: %d 个视频", len(results))
+    return results
 
 
 # ---------------------------------------------------------------------------
@@ -635,7 +694,9 @@ class DouyinPlatform(Platform):
 
     @staticmethod
     async def get_hot(client: httpx.AsyncClient, limit: int = 20) -> list[dict]:
-        return await fetch_hot_search(client, limit)
+        """视频榜（CDP 页面内 XHR，webmssdk 自动签名）。"""
+        from ._cdp_browser import run_on_cdp_loop_async
+        return await run_on_cdp_loop_async(_fetch_hot_videos_via_page(limit))
 
     @staticmethod
     async def search(client: httpx.AsyncClient, keyword: str, limit: int = 10) -> list[dict]:
