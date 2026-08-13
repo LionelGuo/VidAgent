@@ -393,7 +393,10 @@ async def relay_stream_transparent(
     - 保留 tools（让模型原生 function calling，AI SDK 原生解析 tool_calls）
     - tool_choice 规范化为 auto（SiliconFlow 等仅支持 auto，避免 400）
     - 注入 model（前端发占位符，服务端按 provider 预设注入）
-    - 上游 SSE 逐行透传（含 reasoning_content / tool_calls delta / finish_reason）
+    - reasoning_content → <think> 文本流转换：@ai-sdk/openai 的 chat 流解析不读
+      delta.reasoning_content（会直接丢弃），转换成 <think> 标签文本后由前端
+      extractReasoningMiddleware 提取——与 vLLM 路径同一条 reasoning 通道，前端零感知
+    - tool_calls / finish_reason 透传
     """
     body = dict(request_body)
     body["model"] = model
@@ -408,6 +411,16 @@ async def relay_stream_transparent(
     }
 
     logger.info("SSE Relay(transparent) → %s | model=%s", upstream_url, model)
+
+    in_reasoning = False
+
+    def _flush_reasoning() -> list[str]:
+        """闭合未闭合的 <think> 块。"""
+        nonlocal in_reasoning
+        if in_reasoning:
+            in_reasoning = False
+            return [_format_sse_content("</think>")]
+        return []
 
     try:
         async with httpx.AsyncClient(timeout=httpx.Timeout(timeout)) as client:
@@ -430,9 +443,74 @@ async def relay_stream_transparent(
                     return
 
                 async for line in resp.aiter_lines():
-                    if line.startswith("data:"):
-                        # 透传上游 SSE data 行（含 [DONE]、reasoning_content、tool_calls、finish_reason）
-                        yield line + "\n\n"
+                    if not line.startswith("data:"):
+                        continue
+                    data_part = line[5:].strip()
+                    if data_part == "[DONE]":
+                        # 流结束：先闭合未闭合的 <think>（推理后直接结束的极端情况）
+                        for sse in _flush_reasoning():
+                            yield sse
+                        yield "data: [DONE]\n\n"
+                        continue
+                    try:
+                        chunk = json.loads(data_part)
+                    except json.JSONDecodeError:
+                        continue
+
+                    choices = chunk.get("choices") or []
+                    if not choices:
+                        continue
+                    choice = choices[0]
+                    delta = choice.get("delta") or {}
+                    rc = delta.get("reasoning_content") or ""
+                    content = delta.get("content") or ""
+                    tool_calls = delta.get("tool_calls")
+                    finish = choice.get("finish_reason")
+
+                    # 1) 推理流 → <think> 包裹的 content 流（前端 middleware 提取）
+                    if rc:
+                        if not in_reasoning:
+                            yield _format_sse_content("<think>")
+                            in_reasoning = True
+                        yield _format_sse_content(rc)
+
+                    # 2) 正文 / tool_calls 到达 → 先闭合 </think> 再透传
+                    if content or tool_calls is not None:
+                        for sse in _flush_reasoning():
+                            yield sse
+                        if content:
+                            yield _format_sse_content(content)
+                        if tool_calls is not None:
+                            tc_payload = json.dumps(
+                                {
+                                    "choices": [
+                                        {
+                                            "delta": {"tool_calls": tool_calls},
+                                            "index": choice.get("index", 0),
+                                        }
+                                    ]
+                                },
+                                ensure_ascii=False,
+                            )
+                            yield f"data: {tc_payload}\n\n"
+
+                    # 3) finish_reason 透传（触发 AI SDK 续跑 tool_calls）
+                    if finish:
+                        for sse in _flush_reasoning():
+                            yield sse
+                        fin_payload = json.dumps(
+                            {
+                                "choices": [
+                                    {
+                                        "delta": {},
+                                        "finish_reason": finish,
+                                        "index": choice.get("index", 0),
+                                    }
+                                ]
+                            },
+                            ensure_ascii=False,
+                        )
+                        yield f"data: {fin_payload}\n\n"
     except (httpx.ConnectTimeout, httpx.ReadTimeout) as e:
         logger.error("上游连接超时: %s", e)
         yield _format_sse_content("⚠️ 模型服务连接超时，请稍后重试。")
