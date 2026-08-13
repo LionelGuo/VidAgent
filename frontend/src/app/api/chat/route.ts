@@ -38,6 +38,17 @@ const SYSTEM_PROMPT = `你是 VidAgent，一个自媒体视频采集与总结助
 {"name": "工具名", "arguments": {...}}
 </tool_call>
 
+【必要参数缺失时（重要）】
+- 调用工具前，先检查必要参数是否齐全：search_videos 需要 keyword；
+  get_creator_videos 需要 creator；batch_summarize_videos 的每一项都需要
+  video_url 和 title。
+- 如果必要参数无法从对话上下文确定，**直接向用户询问确认需求**，
+  不要猜测、编造或硬填默认值后调用工具。
+  例：「总结一下」「帮我下载那个」但未指明哪个视频 → 问清楚要哪个视频；
+      「搜索xx」未说平台 → 可先用默认平台搜索，但结果不合预期时主动询问。
+- 检索结果为空、或结果缺少必要字段（如没有 video_url）时，如实告知用户
+  并询问下一步，不要自行编造条目。
+
 【检索工具选择（很重要）】
 - 用户提到某位 UP 主/创作者人名（如「老番茄」「何同学」「罗翔」）→ 用
   get_creator_videos。creator 填人名即可，系统会自动解析为 ID。
@@ -81,6 +92,8 @@ const SYSTEM_PROMPT = `你是 VidAgent，一个自媒体视频采集与总结助
 
 【其它】
 - 平台支持 bilibili、youtube、douyin、kuaishou、xiaohongshu；用户未指定时默认 bilibili。
+- **小红书没有热榜**：不要对 xiaohongshu 调用 get_hot_videos。用户想看小红书热门内容时，
+  改用关键词搜索（search_videos），并向用户说明小红书无热榜、已改为搜索。
 - **工具调用策略：收到工具结果后，先判断用户任务是否已完成。**
   如果用户仅需检索/列表（如「列出热榜」「搜索xx教程」），检索完成后按模式 A 逐条列出结果，
   不要继续下载或总结。不要在任务完成后调用无关工具。
@@ -171,9 +184,9 @@ export async function POST(req: Request) {
       // ── 检索工具 ──
       get_hot_videos: {
         description:
-          "获取平台综合热门视频榜单（热榜本身反映当前热度，不限发布日期）。返回视频列表，每项含 video_id/title/desc/duration/duration_text/video_url/platform/author/view_count。",
+          "获取平台综合热门视频榜单（热榜本身反映当前热度，不限发布日期）。返回视频列表，每项含 video_id/title/desc/duration/duration_text/video_url/platform/author/view_count。注意：xiaohongshu 不支持热榜，返回结果含 message 提示，应引导用户改用搜索。",
         parameters: z.object({
-          platform: z.string().nullable().default("bilibili").describe("平台：bilibili / youtube"),
+          platform: z.string().nullable().default("bilibili").describe("平台：bilibili / youtube / douyin / kuaishou（xiaohongshu 不支持热榜）"),
           limit: z.number().nullable().default(10).describe("返回条数上限"),
           date_filter: z.string().nullable().optional().describe("按发布日期过滤。通常不传（热榜已反映当前热度）。仅在用户明确要求'只看今天发布的'时才传 'today'"),
         }),

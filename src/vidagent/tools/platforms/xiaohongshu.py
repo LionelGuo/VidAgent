@@ -55,15 +55,17 @@ async def _ensure_client():
         return _client
 
     # 注意：xhs 模块无导入期 cwd 依赖（xhshow 签名纯算法、无文件访问），
-    # MediaCrawler 根目录已由 _cdp_browser 加入 sys.path，此处无需 chdir
+    # MediaCrawler 根目录已由 _cdp_browser 加入 sys.path，此处无需 chdir。
+    # 顺序约束：_cdp_browser 的 import 必须先于 `import config`——前者负责把
+    # MediaCrawler 根加入 sys.path（首次调用时无此顺序依赖会 ModuleNotFoundError）
+    from ._cdp_browser import get_page_for_platform, get_mc_utils  # noqa: F401
+
     import config as mc_config
     mc_config.PLATFORM = "xhs"
     mc_config.ENABLE_GET_MEIDAS = False
     mc_config.ENABLE_GET_COMMENTS = False
 
     from media_platform.xhs.client import XiaoHongShuClient
-
-    from ._cdp_browser import get_page_for_platform, get_mc_utils
 
     _page = await get_page_for_platform("xhs", "https://www.xiaohongshu.com")
 
@@ -517,7 +519,10 @@ class XiaohongshuPlatform(Platform):
 
     @staticmethod
     async def get_hot(client: httpx.AsyncClient, limit: int = 20) -> list[dict]:
-        raise NotImplementedError("小红书暂不支持热榜")
+        raise NotImplementedError(
+            "小红书暂无热榜视频接口（网页端热搜为话题词形态，非视频列表），"
+            "请改用关键词搜索（search_videos），例如「搜索小红书的 vlog」"
+        )
 
     @staticmethod
     async def search(client: httpx.AsyncClient, keyword: str, limit: int = 10) -> list[dict]:

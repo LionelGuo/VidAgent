@@ -278,21 +278,31 @@ function extractVideoResults(toolInvocations: any[]): VideoInfo[] {
       }
       // 批量完成 → 写入 summary + local_path + task_status
       if (ti.state === "result" && ti.result?.results) {
-        for (const r of ti.result.results) {
-          if (!r.video_id) continue;
-          let vid = r.video_id;
-          // 按 video_url 二次匹配：Agent 可能未透传 video_id，导致后端 ID 与前端不同
-          if (!useVideoStore.getState().videos[vid] && r.video_url) {
-            const store = useVideoStore.getState();
-            const match = Object.values(store.videos).find(
-              (v) => v.video_url === r.video_url,
+        // 后端 results 顺序 = 请求 videos 顺序（server 按序构建 tasks），
+        // 与 videoCards 渲染分支同索引取渲染键，保证卡片条目必然命中。
+        // 旧的 r.video_id / video_url 匹配依赖 Agent 透传字段的完整性，
+        // Agent 转写参数（如丢失 xsec_token）时会导致单个卡片永远卡 downloading。
+        const batchVideos: any[] = ti.args?.videos ?? [];
+        for (let i = 0; i < ti.result.results.length; i++) {
+          const r = ti.result.results[i];
+          const v = batchVideos[i];
+          const renderVid = v
+            ? (v.video_id || extractVideoId(v.video_url ?? "") || `batch-${i}`)
+            : "";
+          // 优先渲染键；回退后端 video_id；再回退 video_url 全等匹配
+          let vid = "";
+          if (renderVid && useVideoStore.getState().videos[renderVid]) vid = renderVid;
+          if (!vid && r.video_id && useVideoStore.getState().videos[r.video_id]) vid = r.video_id;
+          if (!vid && r.video_url) {
+            const match = Object.values(useVideoStore.getState().videos).find(
+              (x) => x.video_url === r.video_url,
             );
-            if (match) {
-              vid = match.video_id;
-            }
+            if (match) vid = match.video_id;
           }
-          // 确保 VideoStore 有该条目
-          if (!useVideoStore.getState().videos[vid]) {
+          // 全部未命中：按渲染键建条目（卡片至少显示最终状态，不卡死）
+          if (!vid) {
+            vid = renderVid || r.video_id || `batch-${i}`;
+            if (!vid) continue;
             useVideoStore.getState().upsertResults([{
               video_id: vid,
               title: r.title ?? vid,

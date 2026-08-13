@@ -187,7 +187,9 @@ async def tool_get_hot_videos(
         results = await get_hot_videos(platform=platform, limit=limit, date_filter=date_filter)
         return {"status": "ok", "results": results, "count": len(results)}
     except NotImplementedError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        # 平台明确不支持热榜（如小红书）：返回带提示的正常结果而非 400，
+        # 让主 agent 从工具结果 message 中得知不支持并引导用户改用搜索
+        return {"status": "ok", "results": [], "count": 0, "message": str(e)}
     except Exception as e:
         logger.exception("get_hot_videos 失败")
         raise HTTPException(status_code=500, detail=str(e))
@@ -424,6 +426,11 @@ async def tool_summarize_stream_by_video(video_id: str):
             return await tool_summarize_stream(task_id)
         await asyncio.sleep(0.05)
 
+    # 诊断：SSE 键与注册键不一致（前端 extractVideoId 与后端 _extract_video_id 差异）
+    logger.warning(
+        "by-video SSE 未命中映射: video_id=%r 已注册键=%s",
+        video_id, sorted(_video_task_map.keys()),
+    )
     raise HTTPException(status_code=404, detail="未找到该视频的总结任务（等待超时）")
 
 
@@ -801,6 +808,7 @@ async def tool_batch_summarize(req: BatchSummarizeRequest):
         futures.append(_executor.submit(_run_one, video))
 
     logger.info("批量总结启动: batch=%s, %d 个视频，等待完成…", batch_id, len(req.videos))
+    logger.info("批量总结注册键: %s", [v["_video_id"] for v in video_list])
 
     # ★ 关键：等待移到线程池，释放 asyncio 事件循环给 SSE 请求
     loop = asyncio.get_event_loop()
