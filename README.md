@@ -71,9 +71,12 @@ uv run python -m vidagent.pipeline --task hot_board --limit 1
 | `LLM_MODEL` | 模型名（留空则用 provider 预设默认） | preset |
 | `LLM_MULTIMODAL` | `true` 时音频/视频直送全模态模型（Qwen3-Omni），跳过 ASR | `true` |
 | `MULTIMODAL_BASE_URL` / `MULTIMODAL_MODEL` | 多模态端点（留空复用上面的 base_url + model，单端点平台直接留空） | 空 |
-| `BILI_COOKIE` | B站 Cookie（创作者主页接口需要，含 `SESSDATA`） | 空 |
+| `BILI_COOKIE` | B站 Cookie（含 `SESSDATA`；下载高清流与创作者主页接口均需，避免 CDN 412） | 空 |
 | `YOUTUBE_API_KEY` / `YOUTUBE_COOKIE` / `YOUTUBE_PROXY` | YouTube 采集（可选） | 空 |
 | `MEDIACRAWLER_ROOT` | MediaCrawler 目录（抖音/小红书/快手 CDP 平台需要，默认 `~/Code/MediaCrawler`） | `~/Code/MediaCrawler` |
+
+> **YouTube 下载需要 Node.js ≥ 22**（yt-dlp 2026+ 依赖 JS runtime 解密签名/求解挑战，否则格式退化到 240p）。
+> Docker 镜像已内置 node；裸机部署请确认 `node --version ≥ 22`。挑战求解脚本首次使用会从 GitHub 拉取一次（走 `YOUTUBE_PROXY`，缓存于 `~/.cache/yt-dlp`）。
 
 **两种部署形态：**
 

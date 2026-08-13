@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any, Callable, ClassVar
 
 import httpx
+import shutil
 import yt_dlp
 
 from vidagent.config import settings
@@ -63,6 +64,37 @@ def _ytdlp_cookiefile() -> str | None:
         if _os.path.isfile(c):
             return c
     return None
+
+
+async def _enrich(client: httpx.AsyncClient, results: list[dict]) -> None:
+    """用一次 videos.list 补全时长/播放量（search 只返回 snippet，无 contentDetails）。
+
+    失败静默忽略——元数据缺失不阻断搜索主流程（前端显示 00:00 而已）。
+    """
+    ids = [v.get("video_id") for v in results if v.get("video_id")]
+    if not ids:
+        return
+    try:
+        data = await _api_get(client, "/videos", {
+            "part": "contentDetails,statistics",
+            "id": ",".join(ids),
+        })
+    except RuntimeError as e:
+        logger.warning("YouTube 元数据补全失败: %s", e)
+        return
+    by_id = {it.get("id"): it for it in data.get("items", [])}
+    for v in results:
+        detail = by_id.get(v.get("video_id")) or {}
+        content = detail.get("contentDetails", {})
+        stats = detail.get("statistics", {})
+        if content.get("duration"):
+            v["duration"] = _parse_iso_duration(content["duration"])
+            v["duration_text"] = _fmt_duration(v["duration"])
+        if stats.get("viewCount"):
+            try:
+                v["view_count"] = int(stats["viewCount"])
+            except (ValueError, TypeError):
+                pass
 
 
 def _parse_iso_duration(raw: str | None) -> int:
@@ -265,7 +297,7 @@ def _ytdlp_trending(limit: int = 10) -> list[dict]:
 # ---------------------------------------------------------------------------
 
 def _apply_ytdlp_opts(opts: dict) -> None:
-    """将代理、cookie 等通用配置注入 yt-dlp opts。"""
+    """将代理、cookie、JS runtime 等通用配置注入 yt-dlp opts。"""
     proxy = _ytdlp_proxy()
     if proxy:
         opts["proxy"] = proxy
@@ -280,6 +312,14 @@ def _apply_ytdlp_opts(opts: dict) -> None:
                 logger.info("Cookie 文件过小，跳过: %s", cookiefile)
         except OSError:
             pass
+
+    # yt-dlp 2026+：YouTube 签名/挑战求解需要 JS runtime（默认仅启用 deno）。
+    # 本机 node >= 22 即可；无 node 时保持 yt-dlp 默认（格式受限，但可降级下载）。
+    # 挑战求解脚本首次使用会远程拉取一次（走 proxy，缓存于 ~/.cache/yt-dlp）。
+    node_path = shutil.which("node")
+    if node_path:
+        opts["js_runtimes"] = {"node": {"path": node_path}}
+        opts["remote_components"] = ["ejs:github"]
 
 
 def _download_yt(url: str, file_name: str,
@@ -307,7 +347,9 @@ def _download_yt(url: str, file_name: str,
         opts = {
             "outtmpl": str(target.with_suffix(".%(ext)s")),
             "merge_output_format": "mp4",
-            "format": "bestvideo+bestaudio/bestvideo+best/bestvideo/best",
+            # 1080p 封顶：JS runtime 解锁后 bestvideo 会选到 4K/8K，
+            # 长视频动辄数 GB，而总结抽帧只需 512×512，超清纯属浪费
+            "format": "bestvideo[height<=1080]+bestaudio/best[height<=1080]/best",
             "quiet": True,
             "noprogress": True,
             "no_warnings": True,
@@ -320,23 +362,28 @@ def _download_yt(url: str, file_name: str,
             ydl.download([url])
         return True
 
+    # 降级链：默认客户端（最高画质）→ web_embedded 客户端（绕过 GVS PO Token
+    # 实验，YouTube 2026 起部分视频〔如影视预告片〕的高清流 403）→ 无 cookie
+    attempts: list[dict] = [
+        {},
+        {"extractor_args": {"youtube": {"player_client": ["web_embedded", "mweb"]}}},
+    ]
+    if _ytdlp_cookiefile():
+        attempts.append({"cookiefile": None})
+
     last_error = None
-    # Attempt 1: with configured cookies/proxy
-    try:
-        with Timer("YouTube下载(yt-dlp)"):
-            _try_download()
-    except yt_dlp.utils.DownloadError as e:
-        last_error = str(e)
-        err_lower = last_error.lower()
-        # Attempt 2: if format error and cookiefile was used, retry without it
-        if "format" in err_lower and "not available" in err_lower and _ytdlp_cookiefile():
-            logger.info("Cookie 可能导致格式异常，重试无 cookie 模式…")
-            try:
-                with Timer("YouTube下载(yt-dlp, no-cookie)"):
-                    _try_download({"cookiefile": None})
-                last_error = None  # success
-            except yt_dlp.utils.DownloadError as e2:
-                last_error = str(e2)
+    for extra in attempts:
+        try:
+            label = "YouTube下载(yt-dlp)"
+            if extra:
+                label += " | " + ("no-cookie" if "cookiefile" in extra else "embedded-client")
+            with Timer(label):
+                _try_download(extra)
+            last_error = None
+            break
+        except yt_dlp.utils.DownloadError as e:
+            last_error = str(e)
+            logger.warning("YouTube 下载失败（将尝试下一级降级）: %s", str(e)[:200])
 
     if last_error:
         return {"status": "error", "error": f"yt-dlp 下载失败: {last_error}", "video_url": url}
@@ -394,7 +441,9 @@ class YoutubePlatform(Platform):
             "maxResults": min(limit, 50),
         })
         items = data.get("items", [])
-        return [normalize(it) for it in items[:limit]]
+        results = [normalize(it) for it in items[:limit]]
+        await _enrich(client, results)
+        return results
 
     @staticmethod
     async def get_hot(client: httpx.AsyncClient, limit: int = 10) -> list[dict]:

@@ -32,3 +32,7 @@ vendor/
 # 测试/缓存
 .pytest_cache/
 .ruff_cache/
+
+# 平台 Cookie（Netscape 格式，含登录凭证，严禁入库）
+*_cookies.txt
+www.youtube.com_cookies.txt
