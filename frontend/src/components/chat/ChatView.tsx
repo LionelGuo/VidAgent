@@ -677,6 +677,13 @@ export function ChatView({
     };
   }, []);
 
+  // 仅发送新消息时自动滚动到对话最下方（流式输出期间不跟踪滚动）
+  const bottomRef = useRef<HTMLDivElement | null>(null);
+  const lastUserMsgId = [...messages].reverse().find((m) => m.role === "user")?.id;
+  useEffect(() => {
+    bottomRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+  }, [lastUserMsgId]);
+
   if (messages.length === 0) {
     return (
       <div className="flex items-center justify-center h-full text-muted-foreground">
@@ -723,6 +730,8 @@ export function ChatView({
           思考中…
         </div>
       )}
+      {/* 自动滚动锚点 */}
+      <div ref={bottomRef} />
     </div>
   );
 }
