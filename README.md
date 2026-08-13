@@ -154,7 +154,7 @@ docs/             方案文档 + ADR（docs/adr/）
 - **下载失败**：yt-dlp 偶发被限流，工具内置随机抖动与降级链；重试即可。
 - **YouTube 高清不可用**：确认 `node --version ≥ 22`（JS runtime 必需）；部分视频默认客户端 403 会经 web_embedded 降级链自动重试。
 - **工具调用输出 `<tool_call>` 文本而非执行**：`LLM_PROVIDER` 与端点不匹配（vLLM 需 xml 模式）；详见部署指南故障排查。
-- **抖音/小红书/快手无结果**：确认 Windows Chrome 带 `:9222` 调试端口运行且平台已登录。
+- **抖音/小红书/快手无结果**：确认 Windows Chrome 带 `:9222` 调试端口运行且平台已登录（快手未登录时 profile 接口返回 `result=109`）。注意：Chrome 146+ 经 chrome://inspect 勾选开启的调试模式**不提供 `/json/*` HTTP 端点**——`curl http://127.0.0.1:9222/json/version` 返回 404 属正常，不代表调试未开启；判断标准：Windows 上 `netstat -ano | findstr :9222` 有 `chrome.exe` LISTENING 即正常。
 
 ## 测试
 

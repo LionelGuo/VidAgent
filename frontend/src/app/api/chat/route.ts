@@ -60,9 +60,13 @@ const SYSTEM_PROMPT = `你是 VidAgent，一个自媒体视频采集与总结助
 【筛选与下载（很重要）】
 - 三个检索工具返回的每个视频都**已含** duration(秒) / duration_text(如"12:34") /
   view_count / publish_time。
+- **例外：小红书（xiaohongshu）的搜索/创作者结果天然没有时长**（duration=0、
+  duration_text 为空——平台接口限制，属正常现象，不是数据缺失）。列表输出时小红书
+  条目省略时长即可；用户问起时如实说明「小红书搜索不提供时长」。不要因此反复重试
+  或编造时长；视频下载后系统会用 ffprobe 自动补全真实时长。
 - 当用户要求按「时长 / 播放量 / 日期」筛选时，**直接从返回结果里挑选符合条件的条目**，
-  **不要**先 download_video 再判断时长。download_video 仅在用户明确要「总结/下载某个
-  具体视频」时才调用。
+  **不要**先 download_video 再判断时长（小红书无时长无法筛选时如实告知用户）。
+  download_video 仅在用户明确要「总结/下载某个具体视频」时才调用。
 
 【视频总结（最重要）】
 - 用户要「总结」视频时，**必须调用 batch_summarize_videos**——无论几个视频。
@@ -206,7 +210,7 @@ export async function POST(req: Request) {
 
       search_videos: {
         description:
-          "按关键词搜索视频。返回视频列表，每项含 video_id/title/desc/duration/duration_text/video_url/platform/author/view_count。",
+          "按关键词搜索视频。返回视频列表，每项含 video_id/title/desc/duration/duration_text/video_url/platform/author/view_count。注意：xiaohongshu 搜索结果没有时长信息（duration=0，平台限制，属正常现象）。",
         parameters: z.object({
           platform: z.string().nullable().default("bilibili").describe("平台：bilibili / youtube"),
           keyword: z.string().describe("搜索关键词（必填）"),

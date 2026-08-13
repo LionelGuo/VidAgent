@@ -438,7 +438,7 @@ async def tool_batch_summarize(req: BatchSummarizeRequest):
     MAX_RETRIES = 5
     RETRY_BASE_DELAY = 2  # 秒，指数退避：2s / 4s / 8s / 16s
 
-    def _run_one(video: dict) -> None:
+    def _run_one(video: dict, task_entry: dict) -> None:
         task_id = video["_task_id"]
         video_id = video["_video_id"]
 
@@ -485,7 +485,7 @@ async def tool_batch_summarize(req: BatchSummarizeRequest):
                 _summarize_tasks[task_id]["result"] = f"下载失败(已重试{MAX_RETRIES}次): {last_err}"
                 cleanup_progress(task_id)
                 _video_task_map.pop(video_id, None)
-                tasks[-1]["status"] = "error"
+                task_entry["status"] = "error"
                 return
 
             # ── 预处理：音频 + 均匀帧（Phase 1 立即启动）──
@@ -560,7 +560,7 @@ async def tool_batch_summarize(req: BatchSummarizeRequest):
             _summarize_tasks[task_id]["status"] = "done"
             _summarize_tasks[task_id]["result"] = summary
             _summarize_tasks[task_id]["chapters"] = chapters
-            tasks[-1]["status"] = "done"
+            task_entry["status"] = "done"
             logger.info(
                 "✅ 批量总结完成: %s (%s) | chapters=%d",
                 video_id, video.get("title", ""), len(chapters),
@@ -570,7 +570,7 @@ async def tool_batch_summarize(req: BatchSummarizeRequest):
             logger.exception("批量总结任务 %s 异常", video_id)
             _summarize_tasks[task_id]["status"] = "error"
             _summarize_tasks[task_id]["result"] = str(e)
-            tasks[-1]["status"] = "error"
+            task_entry["status"] = "error"
         finally:
             cleanup_progress(task_id)
 
@@ -593,10 +593,11 @@ async def tool_batch_summarize(req: BatchSummarizeRequest):
         }
         tasks.append({"task_id": task_id, "video_id": video_id, "status": "processing"})
 
-    # 所有视频并行提交到线程池
+    # 所有视频并行提交到线程池（task_entry 按序对应：多线程各自写自己的状态，
+    # 避免旧实现 tasks[-1] 共享最后一个条目导致的跨任务状态覆盖）
     futures = []
-    for video in video_list:
-        futures.append(_executor.submit(_run_one, video))
+    for i, video in enumerate(video_list):
+        futures.append(_executor.submit(_run_one, video, tasks[i]))
 
     logger.info("批量总结启动: batch=%s, %d 个视频，等待完成…", batch_id, len(req.videos))
     logger.info("批量总结注册键: %s", [v["_video_id"] for v in video_list])

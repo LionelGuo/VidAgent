@@ -330,68 +330,79 @@ def _chat_completion_stream(
     reasoning_mode = llm_provider.multimodal_endpoint().reasoning_mode
     stripper = _ThinkStripper(on_thinking=_on_thinking) if reasoning_mode == "think_tag" else None
 
-    with httpx.stream(
-        "POST", f"{base_url}/chat/completions",
-        json=payload,
-        headers={"Authorization": f"Bearer {api_key}"},
-        timeout=timeout,
-    ) as resp:
-        if resp.status_code != 200:
-            try:
-                body = resp.read().decode(errors="ignore")[:300]
-            except Exception:
-                body = "(无法读取响应体)"
-            raise RuntimeError(f"LLM 流式调用失败 HTTP {resp.status_code}: {body}")
-        finish_reason = None
-        for line in resp.iter_lines():
-            if line.startswith("data: ") and line != "data: [DONE]":
+    finish_reason = None
+    try:
+        with httpx.stream(
+            "POST", f"{base_url}/chat/completions",
+            json=payload,
+            headers={"Authorization": f"Bearer {api_key}"},
+            timeout=timeout,
+        ) as resp:
+            if resp.status_code != 200:
                 try:
-                    chunk = json.loads(line[6:])
-                    delta = (chunk.get("choices") or [{}])[0].get("delta") or {}
-                    # 追踪 finish_reason（诊断截断根因）
-                    fr = (chunk.get("choices") or [{}])[0].get("finish_reason")
-                    if fr:
-                        finish_reason = fr
-                    # 推理内容解析：think_tag 模式从 content 内联 <think> 标签提取（stripper）；
-                    # reasoning_content 模式从独立字段读取推理，content 已是纯正文（无需 stripper）
-                    if reasoning_mode == "reasoning_content":
-                        rc = delta.get("reasoning_content", "")
-                        if rc:
-                            _on_thinking(rc)
-                    token = delta.get("content", "")
-                    if token:
-                        accumulated_raw += token  # 诊断：保留原始内容
-                        # think_tag 模式分离 <think> 推理块；reasoning_content 模式直接用纯正文
-                        stripped = stripper.feed(token) if stripper else token
-                        if stripped:
-                            if strip_leading:
-                                stripped = stripped.lstrip()
-                                if stripped:
-                                    strip_leading = False
-                        if stripped:
-                            if ttft is None:
-                                ttft = time.perf_counter() - t0
+                    body = resp.read().decode(errors="ignore")[:300]
+                except Exception:
+                    body = "(无法读取响应体)"
+                raise RuntimeError(f"LLM 流式调用失败 HTTP {resp.status_code}: {body}")
+            for line in resp.iter_lines():
+                if line.startswith("data: ") and line != "data: [DONE]":
+                    try:
+                        chunk = json.loads(line[6:])
+                        delta = (chunk.get("choices") or [{}])[0].get("delta") or {}
+                        # 追踪 finish_reason（诊断截断根因）
+                        fr = (chunk.get("choices") or [{}])[0].get("finish_reason")
+                        if fr:
+                            finish_reason = fr
+                        # 推理内容解析：think_tag 模式从 content 内联 <think> 标签提取（stripper）；
+                        # reasoning_content 模式从独立字段读推理，content 已是纯正文（无 stripper）
+                        if reasoning_mode == "reasoning_content":
+                            rc = delta.get("reasoning_content", "")
+                            if rc:
+                                _on_thinking(rc)
+                        token = delta.get("content", "")
+                        if token:
+                            accumulated_raw += token  # 诊断：保留原始内容
+                            # think_tag 模式分离 <think> 推理块；reasoning_content 模式直接用纯正文
+                            stripped = stripper.feed(token) if stripper else token
+                            if stripped:
+                                if strip_leading:
+                                    stripped = stripped.lstrip()
+                                    if stripped:
+                                        strip_leading = False
+                            if stripped:
+                                if ttft is None:
+                                    ttft = time.perf_counter() - t0
+                                    chunk = _chunk_target()
+                                    if chunk is not None:
+                                        # 分块模式：正文开始输出，清空思考内容只显示正文
+                                        chunk["status"] = "summarizing"
+                                        chunk["text"] = ""
+                                        thinking_shown = False
+                                    else:
+                                        # 第一个正文 token 到达：清空思考内容，进入正文流式阶段
+                                        pg.set("")
+                                        pg.stage = "summary"
+                                        thinking_shown = False
+                                accumulated += stripped
+                                token_count += len(stripped)
                                 chunk = _chunk_target()
                                 if chunk is not None:
-                                    # 分块模式：正文开始输出，清空思考内容只显示正文
-                                    chunk["status"] = "summarizing"
-                                    chunk["text"] = ""
-                                    thinking_shown = False
+                                    if len(chunk["text"]) < 3000:
+                                        chunk["text"] += stripped
                                 else:
-                                    # 第一个正文 token 到达：清空思考内容，进入正文流式阶段
-                                    pg.set("")
-                                    pg.stage = "summary"
-                                    thinking_shown = False
-                            accumulated += stripped
-                            token_count += len(stripped)
-                            chunk = _chunk_target()
-                            if chunk is not None:
-                                if len(chunk["text"]) < 3000:
-                                    chunk["text"] += stripped
-                            else:
-                                pg.append(stripped)
-                except (json.JSONDecodeError, KeyError, IndexError):
-                    pass
+                                    pg.append(stripped)
+                    except (json.JSONDecodeError, KeyError, IndexError):
+                        pass
+    except httpx.HTTPError as e:
+        # 平台已知现象：多模态端点间歇性断开（siliconflow 401/ReadTimeout 自愈）。
+        # 流已收到内容时保留降级返回——不把「已完成/半完成」的总结变成错误
+        # （2026-08-14 用户反馈：总结已完整显示但批量工具报错）
+        if not accumulated:
+            raise
+        logger.warning(
+            "⚠️ 流式中断（finish_reason=%s，已收到 %d 字）: %s —— 保留已生成内容降级返回",  # noqa: E501
+            finish_reason or "?", len(accumulated), e,
+        )
 
     # 流结束：清空 stripper 残留，同时推送到 progress（reasoning_content 模式无 stripper）
     flushed = stripper.flush() if stripper else None

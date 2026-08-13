@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import random
 import re
 from pathlib import Path
@@ -563,6 +564,7 @@ async def _download_note_media(note: dict, target: Path,
             )
         return {"status": "error", "error": "未找到可下载的视频链接"}
 
+    part = None  # 先写 .part 再原子替换：流中断的残片不得命中缓存
     try:
         async with httpx.AsyncClient(
             proxy=_get_proxy(), timeout=120, follow_redirects=True,
@@ -572,13 +574,20 @@ async def _download_note_media(note: dict, target: Path,
                 total = int(resp.headers.get("content-length", 0))
                 downloaded = 0
                 target.parent.mkdir(parents=True, exist_ok=True)
-                with open(target, "wb") as f:
+                part = target.with_name(target.name + ".part")
+                with open(part, "wb") as f:
                     async for chunk in resp.aiter_bytes(65536):
                         f.write(chunk)
                         downloaded += len(chunk)
                         if total > 0 and progress_callback:
                             progress_callback(int(downloaded / total * 100))
+                os.replace(part, target)
     except Exception as e:
+        if part is not None:
+            try:
+                part.unlink(missing_ok=True)
+            except Exception:
+                pass
         return {"status": "error", "error": f"视频文件下载失败: {e}"}
 
     if progress_callback:

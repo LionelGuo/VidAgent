@@ -59,7 +59,13 @@ def extract_audio(video_path: str | Path, mp3_name: str | None = None) -> Path:
         str(out),
     ]
     t0 = time.perf_counter()
-    res = subprocess.run(cmd, capture_output=True)
+    try:
+        # 超时防护：损坏/截断的视频文件可能让 ffmpeg 挂起（无进度信号）
+        res = subprocess.run(cmd, capture_output=True, timeout=120)
+    except subprocess.TimeoutExpired as e:
+        raise RuntimeError(
+            f"ffmpeg 抽音超时（120s），视频文件可能损坏或截断: {video_path}"
+        ) from e
     elapsed = time.perf_counter() - t0
 
     if res.returncode != 0 or not out.exists():

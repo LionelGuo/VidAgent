@@ -20,6 +20,7 @@ import json
 import logging
 import os
 import re
+from pathlib import Path
 from typing import Any, Callable, ClassVar
 
 import httpx
@@ -849,6 +850,7 @@ async def _download_via_cdp(video_url: str, file_name: str,
 
     # 4. 下载视频文件（需要 Referer + UA 模拟正常请求，流式写入 + 进度回调）
     logger.info("  httpx 下载中…")
+    part: Path | None = None  # 先写 .part 再原子替换：流中断的残片不得命中缓存
     try:
         dl_headers = {
             **DEFAULT_HEADERS,
@@ -863,15 +865,22 @@ async def _download_via_cdp(video_url: str, file_name: str,
                 total = int(resp.headers.get("content-length", 0))
                 downloaded = 0
                 target.parent.mkdir(parents=True, exist_ok=True)
-                with open(target, "wb") as f:
+                part = target.with_name(target.name + ".part")
+                with open(part, "wb") as f:
                     async for chunk in resp.aiter_bytes(65536):
                         f.write(chunk)
                         downloaded += len(chunk)
                         if total > 0 and progress_callback:
                             pct = int(downloaded / total * 100)
                             progress_callback(pct)
+                os.replace(part, target)
                 logger.info("  ✅ 下载完成: %d KB → %s", downloaded // 1024, target)
     except Exception as e:
+        if part is not None:
+            try:
+                part.unlink(missing_ok=True)
+            except Exception:
+                pass
         logger.error("  视频文件下载失败: %s", e)
         return {"status": "error", "error": f"视频文件下载失败: {e}", "video_url": video_url}
 
