@@ -376,7 +376,8 @@ function extractVideoResults(toolInvocations: any[]): VideoInfo[] {
 // ThinkingSection — 可折叠思考过程（grid-template-rows 过渡动画）
 //
 // 替代原生 <details>（display:none 无法过渡）。
-// 处理中（inProgress）强制展开，完成后可手动折叠/展开，均带平滑动画。
+// 未手动干预时：处理中自动展开、完成后自动收起；用户点击箭头后以用户
+// 选择为准（流式输出过程中也可自由折叠）。新一轮思考开始重置用户干预。
 // ---------------------------------------------------------------------------
 
 function ThinkingSection({
@@ -388,21 +389,32 @@ function ThinkingSection({
   lengthText: string;
   children: ReactNode;
 }) {
-  const [manualOpen, setManualOpen] = useState(false);
+  // null = 未手动干预（跟随自动展开/收起）；true/false = 用户选择
+  const [manualOpen, setManualOpen] = useState<boolean | null>(null);
   const [collapseAnim, setCollapseAnim] = useState(false);
-  const isOpen = inProgress || manualOpen;
-  // 尾部视图：处理中限高显示最新内容；收起动画期间保持，避免内容突变
-  const showTail = inProgress || collapseAnim;
+  const isOpen = manualOpen ?? inProgress;
+  // 尾部视图：展开且处理中限高显示最新内容；收起动画期间保持尾部，
+  // 避免"先闪全文再收起"的突变
+  const showTail = (isOpen && inProgress) || collapseAnim;
 
-  // 处理结束后自动收起：收起动画完成前保持尾部视图，之后切换为全文（不可见）
+  // 新一轮思考开始（inProgress false→true）：重置用户干预，自动展开
+  const prevInProgressRef = useRef(false);
   useEffect(() => {
-    if (!inProgress && !manualOpen) {
+    if (inProgress && !prevInProgressRef.current) {
+      setManualOpen(null);
+    }
+    prevInProgressRef.current = inProgress;
+  }, [inProgress]);
+
+  // 收起时（自动或用户折叠）：收起动画完成前保持尾部视图，之后切换为全文（不可见）
+  useEffect(() => {
+    if (!isOpen) {
       setCollapseAnim(true);
       const t = setTimeout(() => setCollapseAnim(false), 250);
       return () => clearTimeout(t);
     }
     setCollapseAnim(false);
-  }, [inProgress, manualOpen]);
+  }, [isOpen]);
 
   return (
     <div>
