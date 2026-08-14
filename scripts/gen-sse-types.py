@@ -27,7 +27,13 @@ ENUM_SOURCES: list[tuple[Path, str]] = [
     (REPO_ROOT / "src" / "vidagent" / "tools" / "summarize" / "progress.py", "ProgressStage"),
 ]
 
-CHUNK_STATUS_SOURCE = REPO_ROOT / "src" / "vidagent" / "tools" / "summarize" / "multimodal.py"
+# 分段状态写入点分布在两个文件（#4 拆包所致）：
+# multimodal.py（waiting/done）+ transport.py（thinking/summarizing）——
+# 漏源会使 TS union 收窄、wire 契约漂移（评审曾抓到单源漏收）。
+CHUNK_STATUS_SOURCES: list[Path] = [
+    REPO_ROOT / "src" / "vidagent" / "tools" / "summarize" / "multimodal.py",
+    REPO_ROOT / "src" / "vidagent" / "tools" / "summarize" / "transport.py",
+]
 
 HEADER = """\
 // ⚠️ GENERATED FILE — 勿手改。
@@ -61,22 +67,23 @@ def extract_str_enum_values(path: Path, class_name: str) -> list[str]:
 
 
 def extract_chunk_status_values() -> list[str]:
-    """提取 summarize/multimodal.py 的分段状态字面量（两种写入形态，文件出现序）。
+    """提取分段状态字面量（两种写入形态，多源按文件出现序）。
 
     chunk["status"] = "…" 赋值与 "status": "…" 字典字面量。用正则而非 AST：
     这是守卫而非解析器——宁多收（--check 提醒，假阳性安全方向），不漏收。
     """
-    text = CHUNK_STATUS_SOURCE.read_text(encoding="utf-8")
     pattern = r'\["status"\]\s*=\s*"([^"]*)"|"status":\s*"([^"]*)"'
     values: list[str] = []
     seen: set[str] = set()
-    for match in re.finditer(pattern, text):
-        value = match.group(1) or match.group(2)
-        if value not in seen:
-            seen.add(value)
-            values.append(value)
+    for source in CHUNK_STATUS_SOURCES:
+        text = source.read_text(encoding="utf-8")
+        for match in re.finditer(pattern, text):
+            value = match.group(1) or match.group(2)
+            if value not in seen:
+                seen.add(value)
+                values.append(value)
     if not values:
-        raise SystemExit(f"{CHUNK_STATUS_SOURCE}: 未提取到分段状态字面量")
+        raise SystemExit(f"{CHUNK_STATUS_SOURCES}: 未提取到分段状态字面量")
     return values
 
 
@@ -101,7 +108,7 @@ export const TASK_STATUSES = [
 export type TaskStatus = (typeof TASK_STATUSES)[number];
 
 /** 长视频分段进度条目（progress 事件 chunks 数组元素）。
- *  status 字面量自动提取自 summarize/multimodal.py 的 chunk["status"] 赋值点。 */
+ *  status 字面量自动提取自 summarize/ 的 chunk["status"] 赋值点（multimodal + transport）。 */
 export interface SummaryChunk {{
   index: number;
   total: number;

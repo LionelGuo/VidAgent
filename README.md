@@ -151,7 +151,7 @@ LLM_MODEL=Qwen/Qwen3-Omni-30B-A3B-Thinking
 server/           FastAPI 后端（main.py 编排 + sse_relay.py 协议转换）
 src/vidagent/
 ├── tools/
-│   ├── crawler.py · downloader.py · summarizer.py   检索/下载/总结工具
+│   ├── crawler.py · downloader.py · summarize/   检索/下载/总结工具（summarize 为 #4 拆分的深模块包）
 │   └── platforms/   五平台适配（bilibili/youtube/douyin/xiaohongshu/kuaishou + CDP 共享层）
 ├── utils/        wbi.py · dates.py · storage.py · audio.py · frames.py · timer.py
 ├── llm_provider.py   provider 预设系统（relay/媒体格式/推理模式；端点/密钥/模型名由 .env 显式配置）

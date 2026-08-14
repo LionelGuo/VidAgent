@@ -14,7 +14,12 @@ from pathlib import Path
 
 from vidagent import llm_provider
 from vidagent.tools.summarize.progress import Progress, ProgressStage
-from vidagent.tools.summarize.prompts import _CHUNK_SUMMARY_SYS, _MERGE_SYS, _SUMMARY_SYS_MULTIMODAL
+from vidagent.tools.summarize.prompts import (
+    _CHUNK_SUMMARY_SYS,
+    _MERGE_SYS,
+    _SUMMARY_SYS_MULTIMODAL,
+    build_meta_block,
+)
 from vidagent.tools.summarize.transport import _chat_completion_stream
 from vidagent.utils.frames import extract_frames
 
@@ -83,9 +88,7 @@ def _summarize_chunk(
     import base64 as b64
 
     mp3_b64 = b64.b64encode(chunk_mp3.read_bytes()).decode()
-    meta_block = ""
-    if metadata:
-        meta_block = f"【标题】{metadata.get('title', '')}\n【简介】{metadata.get('desc', '')}\n"
+    meta_block = build_meta_block(metadata)
 
     # 筛选本段落时间范围内的帧
     chunk_frames = [
@@ -142,9 +145,7 @@ def _merge_summaries(
     if len(chunk_summaries) <= 1:
         return chunk_summaries[0] if chunk_summaries else ""
 
-    meta_block = ""
-    if metadata:
-        meta_block = f"【标题】{metadata.get('title', '')}\n【简介】{metadata.get('desc', '')}\n"
+    meta_block = build_meta_block(metadata)
 
     parts = "\n\n---\n\n".join(
         f"**段落 {i+1}**：{s}" for i, s in enumerate(chunk_summaries)
@@ -178,7 +179,7 @@ def _summarize_multimodal(
     将 mp3 作为 input_audio，搭配按时长自适应采样的关键帧，
     一起发给多模态 LLM（如 Qwen3-Omni），模型原生理解音视频内容并总结。
 
-    超长音频（>_MAX_AUDIO_CHUNK_SECONDS）自动分块处理：
+    超长音频（base64 超过 _MAX_AUDIO_B64_KB）自动分块处理：
     切分为多个段落 → 逐段总结 → 合并为完整总结。
     """
     _ep = llm_provider.agent_endpoint()
@@ -234,9 +235,7 @@ def _summarize_multimodal(
         })
     frames_encode_elapsed = time.perf_counter() - t0_frames_encode
 
-    meta_block = ""
-    if metadata:
-        meta_block = f"【标题】{metadata.get('title', '')}\n【简介】{metadata.get('desc', '')}\n"
+    meta_block = build_meta_block(metadata)
     prompt_text = f"{meta_block}\n请结合音频和关键帧画面，输出结构化总结。"
 
     content_parts.insert(0, llm_provider.build_audio_part(mp3_b64))

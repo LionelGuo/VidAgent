@@ -13,7 +13,7 @@ from pathlib import Path
 from vidagent import llm_provider
 from vidagent.tools.summarize.multimodal import _summarize_multimodal
 from vidagent.tools.summarize.progress import create_progress, get_progress
-from vidagent.tools.summarize.prompts import _SUMMARY_SYS
+from vidagent.tools.summarize.prompts import _SUMMARY_SYS, build_meta_block
 from vidagent.tools.summarize.short_video import _summarize_short_video
 from vidagent.tools.summarize.transport import _chat_completion
 from vidagent.utils.audio import extract_audio
@@ -80,6 +80,8 @@ def extract_and_summarize(
                 )
 
         # ── 长视频：并行音频提取 + 均匀帧抽取 → 流式总结（超长音频自动分块）──
+        # 行为变化 2（#4 已批准）：batch 长视频 prompt 由章节专用
+        # _SUMMARY_SYS_CHAPTER 改回 _SUMMARY_SYS_MULTIMODAL（不再要求 ## 话题段落结构）
         from concurrent.futures import ThreadPoolExecutor
 
         t0_pre = time.perf_counter()
@@ -125,9 +127,7 @@ def _summarize(transcript: str, metadata: dict) -> str:
             f" 转写文本({len(transcript)} 字)已就绪，配好 key 后重试即可。"
         )
 
-    meta_block = ""
-    if metadata:
-        meta_block = f"【标题】{metadata.get('title', '')}\n【简介】{metadata.get('desc', '')}\n"
+    meta_block = build_meta_block(metadata)
     user = f"{meta_block}\n【语音转写】\n{transcript or '(空)'}\n\n请输出结构化总结。"
 
     payload = {

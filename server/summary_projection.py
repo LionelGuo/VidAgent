@@ -47,6 +47,7 @@ def project(
         return events, True
 
     if task.status is TaskStatus.DONE:
+        # 行为变化 4（#4 Q2 已批准）：done 事件不再携带 chapters 字段
         events.append({
             "type": "done",
             "result": task.result or "",

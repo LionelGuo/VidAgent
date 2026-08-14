@@ -1,6 +1,6 @@
-"""总结域系统 prompt 常量（#4 深模块：自原 summarizer.py 拆出，纯数据）。
+"""总结域系统 prompt 常量与公共文本构建（#4 深模块：自原 summarizer.py 拆出）。
 
-每个常量 1:1 绑定一个消费函数（见各管线模块），集中于此便于调优与审查。
+每个 prompt 常量 1:1 绑定一个消费函数（见各管线模块），集中于此便于调优与审查。
 """
 
 _SUMMARY_SYS = (
@@ -48,3 +48,10 @@ _SUMMARY_SYS_SHORT = (
     "3. **画面分析**（关键视觉元素：场景变化、屏幕文字、人物动作、转场等）\n\n"
     "请输出完整详尽的分析，覆盖视频中所有有价值的信息。短视频不容错过任何细节。"
 )
+
+
+def build_meta_block(metadata: dict) -> str:
+    """【标题】+【简介】元数据块——各管线请求文本的公共前缀。"""
+    if not metadata:
+        return ""
+    return f"【标题】{metadata.get('title', '')}\n【简介】{metadata.get('desc', '')}\n"

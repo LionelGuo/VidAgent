@@ -30,13 +30,13 @@ export const TASK_STATUSES = [
 export type TaskStatus = (typeof TASK_STATUSES)[number];
 
 /** 长视频分段进度条目（progress 事件 chunks 数组元素）。
- *  status 字面量自动提取自 summarize/multimodal.py 的 chunk["status"] 赋值点。 */
+ *  status 字面量自动提取自 summarize/ 的 chunk["status"] 赋值点（multimodal + transport）。 */
 export interface SummaryChunk {
   index: number;
   total: number;
   time_start: number;
   time_end: number;
-  status: "waiting" | "done";
+  status: "waiting" | "done" | "thinking" | "summarizing";
   text: string;
 }
 

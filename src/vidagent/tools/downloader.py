@@ -84,7 +84,6 @@ def download_video_with_retry(
     video_url: str,
     video_id: str,
     progress_callback: Callable[[int], None] | None = None,
-    max_retries: int = MAX_RETRIES,
 ) -> tuple[str | None, str | None]:
     """带指数退避重试的下载（批量总结管线用；#4 Q3 自 server/main.py 移入）。
 
@@ -96,7 +95,7 @@ def download_video_with_retry(
     """
     last_err: str | None = None
 
-    for retry in range(1, max_retries + 1):
+    for retry in range(1, MAX_RETRIES + 1):
         try:
             result = download_video(video_url, video_id, progress_callback=progress_callback)
             if result.get("status") == "success":
@@ -107,11 +106,11 @@ def download_video_with_retry(
                 break
         except Exception as e:
             last_err = str(e)
-        if retry < max_retries:
+        if retry < MAX_RETRIES:
             delay = RETRY_BASE_DELAY ** retry
             logger.warning(
                 "下载重试 %d/%d (%.0fs 后退避): %s",
-                retry, max_retries, delay, video_id,
+                retry, MAX_RETRIES, delay, video_id,
             )
             time.sleep(delay)
 
