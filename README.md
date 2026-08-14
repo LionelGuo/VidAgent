@@ -44,7 +44,7 @@ FastAPI 后端 :8000
 ### ① 跑起服务（Docker，推荐）
 
 ```bash
-git clone <repo> && cd VidAgent
+git clone https://github.com/LionelGuo/VidAgent.git && cd VidAgent
 cp .env.example .env            # 填 OPENAI_API_KEY（默认 SiliconFlow，填 key 即用）
 docker build -t vidagent .
 docker run --network=host --env-file .env vidagent
