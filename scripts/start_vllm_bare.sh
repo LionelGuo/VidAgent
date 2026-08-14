@@ -31,7 +31,7 @@ nohup "$VLLM_BIN" serve \
   --max-num-seqs 2 \
   --enable-prefix-caching \
   --allowed-local-media-path "$DATA_PATH" \
-  --limit-mm-per-prompt '{"video": {"count": 1, "num_frames": 10, "width": 512, "height": 512}}' \
+  --limit-mm-per-prompt '{"video": {"count": 1, "num_frames": 10}}' \
   > "$LOG_FILE" 2>&1 &
 
 echo "vLLM starting... PID=$!"

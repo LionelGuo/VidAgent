@@ -98,19 +98,22 @@ do_start() {
 
     local BG=""; [[ "${1:-}" == "--bg" ]] && BG=1
 
-    # 注意：vllm-omni 当前文档要求 --omni 标志启用 Qwen3-Omni 模式；
-    # 但部分预装版本（如 AutoDL 镜像）的 vllm-omni 二进制已默认 omni、不认此标志。
-    # 若启动报未知参数，删除下面的 --omni 即可（对齐 legacy scripts/start_vllm_bare.sh）。
+    # 注意：**不加 --omni**（与生产实例一致）。
+    # --omni 启用多阶段 omni 流水线（thinker+talker+code2wav），其 stage-0 加载路径
+    # 对 AWQ compressed-tensors 量化有 bug（vllm-omni issue #5573，MoE 路由加载错误）。
+    # 本项目只需音频/帧入、文本出（thinker 路径），普通 serve 模式即可，且可正常加载量化模型。
+    # --allowed-local-media-path 默认取模型目录的上级（AutoDL 习惯：模型在 <data>/models/ 下，
+    # 允许访问 <data>/ 整体；可用 DATA_PATH 环境变量覆盖）。
+    local data_path="${DATA_PATH:-$(dirname "$(dirname "${MODEL_DIR}")")}"
     local cmd=(
         vllm-omni serve "${MODEL_DIR}"
-        --omni
         --port "${PORT}"
         --gpu-memory-utilization "${GPU_MEM_UTIL}"
         --max-num-batched-tokens 49152
         --max-num-seqs 2
         --enable-prefix-caching
-        --allowed-local-media-path "$(dirname "${MODEL_DIR}")"
-        --limit-mm-per-prompt '{"video": {"count": 1, "num_frames": 10, "width": 512, "height": 512}}'
+        --allowed-local-media-path "${data_path}"
+        --limit-mm-per-prompt '{"video": {"count": 1, "num_frames": 10}}'
     )
 
     log "启动 vLLM-omni（端口 ${PORT}）…"
