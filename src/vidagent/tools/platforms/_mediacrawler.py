@@ -169,14 +169,15 @@ class MediaCrawlerPlatform(Platform):
     _client: ClassVar[Any] = None
     _client_page: ClassVar[Any] = None
     _client_cls: ClassVar[Any] = None
+    _client_cls_name: ClassVar[str] = ""
     _client_timeout: ClassVar[float] = 30
     _home_url: ClassVar[str] = ""
     _cookie_urls: ClassVar[tuple[str, ...]] = ()
 
     @classmethod
     async def ensure_client(cls) -> Any:
-        """MC client 懒构造模板：取页面 → 前置 hook → cookies → headers → 构造
-        → 登录检查 → 扫码引导 → 失败处置。
+        """MC client 懒构造模板：门户加载（配置注入+模块导入）→ 取页面 →
+        前置 hook → cookies → headers → 构造 → 登录检查 → 扫码引导 → 失败处置。
 
         注意：模板内不加锁——调用方（如 douyin 的 _client_call）持 mc_lock
         调用本方法，内部再加锁会死锁。锁纪律保持在各平台调用点。
@@ -190,6 +191,10 @@ class MediaCrawlerPlatform(Platform):
             # page 已关闭 → 重建
             cls._client = None
             cls._client_page = None
+
+        # 门户加载：配置注入（平台键唯一写入者）→ 模块导入 → 解析 client 类
+        cls.inject_config()
+        cls._client_cls = getattr(cls.import_mc()["client"], cls._client_cls_name)
 
         page = await cls._acquire_page()
         await cls._pre_client_hook(page)

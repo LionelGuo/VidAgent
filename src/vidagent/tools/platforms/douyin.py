@@ -27,13 +27,13 @@ from typing import Any, ClassVar
 import httpx
 
 from vidagent.config import settings
-from vidagent.tools.platforms import Platform, register
+from vidagent.tools.platforms import register
 
 from ._cdp_browser import (
-    get_mc_utils,
     get_page_for_platform,
     invalidate_page,
 )
+from ._mediacrawler import MediaCrawlerPlatform, import_mc_platform
 
 logger = logging.getLogger(__name__)
 
@@ -82,10 +82,9 @@ class DouyinLoginError(DouyinClientError):
 
 
 # ---------------------------------------------------------------------------
-# MediaCrawler 模块一次性导入（导入期 chdir，运行时零 cwd 依赖）
+# MediaCrawler 模块一次性导入（#3：chdir 语义与缓存由 _mediacrawler 门户负责）
 # ---------------------------------------------------------------------------
 
-_DouYinClientCls: Any = None
 _SearchChannelType: Any = None
 _ParseVideoInfo: Any = None
 _ParseCreatorInfo: Any = None
@@ -95,43 +94,16 @@ def _import_mediacrawler() -> None:
     """导入 MediaCrawler 抖音模块（首次调用时执行）。
 
     MediaCrawler 唯一的导入期 cwd 依赖是 douyin/help.py 模块级编译
-    libs/douyin.js，因此只在导入时 chdir 一次，之后永久切回。
+    libs/douyin.js——由门户 import_mc_platform 在 chdir 块内完成，之后永久切回。
     """
-    global _DouYinClientCls, _SearchChannelType, _ParseVideoInfo, _ParseCreatorInfo
-    if _DouYinClientCls is not None:
+    global _SearchChannelType, _ParseVideoInfo, _ParseCreatorInfo
+    if _SearchChannelType is not None:
         return
 
-    from ._cdp_browser import chdir_mc
-    mc_root = chdir_mc()
-    prev_cwd = os.getcwd()
-    os.chdir(mc_root)
-    try:
-        import config as mc_config
-        # VidAgent 专属配置：CDP 连接现有浏览器（不启动新进程、不保存登录态）
-        mc_config.PLATFORM = "dy"
-        mc_config.ENABLE_CDP_MODE = True
-        mc_config.CDP_CONNECT_EXISTING = True
-        mc_config.CDP_HEADLESS = False
-        mc_config.AUTO_CLOSE_BROWSER = False
-        mc_config.SAVE_LOGIN_STATE = False
-        mc_config.LOGIN_TYPE = "qrcode"
-        mc_config.BROWSER_LAUNCH_TIMEOUT = 15
-        mc_config.ENABLE_GET_MEIDAS = False
-        mc_config.ENABLE_GET_COMMENTS = False
-        mc_config.CRAWLER_MAX_NOTES_COUNT = 20
-
-        from media_platform.douyin.client import DouYinClient
-        from media_platform.douyin.field import SearchChannelType
-        from media_platform.douyin.help import (
-            parse_creator_info_from_url,
-            parse_video_info_from_url,
-        )
-        _DouYinClientCls = DouYinClient
-        _SearchChannelType = SearchChannelType
-        _ParseVideoInfo = parse_video_info_from_url
-        _ParseCreatorInfo = parse_creator_info_from_url
-    finally:
-        os.chdir(prev_cwd)
+    mods = import_mc_platform("douyin", "client", "field", "help")
+    _SearchChannelType = mods["field"].SearchChannelType
+    _ParseVideoInfo = mods["help"].parse_video_info_from_url
+    _ParseCreatorInfo = mods["help"].parse_creator_info_from_url
 
     logger.info("MediaCrawler 抖音模块已导入（签名 JS 已编译）")
 
@@ -141,80 +113,9 @@ def _get_proxy() -> str | None:
 
 
 # ---------------------------------------------------------------------------
-# 客户端管理（CDP 连接 Windows Chrome，复用登录态）
+# 客户端管理（#3：client 状态与懒构造生命周期在 DouyinPlatform 类上，
+# 模板见 _mediacrawler.MediaCrawlerPlatform.ensure_client）
 # ---------------------------------------------------------------------------
-
-_client: Any = None
-_client_page: Any = None
-# 串行化 DouYinClient 调用：MediaCrawler 按单爬虫设计（共享单 page，
-# 每次请求 evaluate 读 localStorage），并发调用同一 client 有竞态风险。
-_client_lock = asyncio.Lock()
-
-
-async def _ensure_client() -> Any:
-    """初始化/恢复 DouYinClient（CDP 连接 Windows Chrome）。"""
-    global _client, _client_page
-
-    _import_mediacrawler()
-
-    # page 失效检测：client 持有的 page 已关闭 → 重建
-    if _client is not None and _client_page is not None:
-        try:
-            if not _client_page.is_closed():
-                return _client
-        except Exception:
-            pass
-        _client = None
-        _client_page = None
-
-    try:
-        page = await get_page_for_platform("dy", "https://www.douyin.com")
-    except RuntimeError:
-        raise DouyinClientError(CDP_GUIDE_MSG) from None
-    except Exception as e:
-        await invalidate_page("dy")
-        raise DouyinClientError(f"抖音页面加载失败: {e}") from e
-
-    await _wait_xmst(page)
-
-    mc_utils = get_mc_utils()
-    cookie_str, cookie_dict = await mc_utils.convert_browser_context_cookies(
-        page.context, urls=["https://douyin.com", "https://www.douyin.com"],
-    )
-    ua = await page.evaluate("() => navigator.userAgent")
-
-    headers = dict(DEFAULT_HEADERS)
-    headers["User-Agent"] = ua
-    headers["Cookie"] = cookie_str
-
-    _client = _DouYinClientCls(
-        timeout=_CLIENT_TIMEOUT,
-        proxy=_get_proxy(),
-        headers=headers,
-        playwright_page=page,
-        cookie_dict=cookie_dict,
-    )
-    _client_page = page
-
-    # 登录态检查：未登录 → 弹登录框引导扫码
-    if not await _is_logged_in(page, cookie_dict):
-        await _guide_qr_login(page)
-        if await _is_logged_in(page, cookie_dict):
-            # 登录后刷新 cookie 到 client
-            await _client.update_cookies(
-                page.context,
-                urls=["https://douyin.com", "https://www.douyin.com"],
-            )
-        else:
-            _client = None
-            _client_page = None
-            raise DouyinLoginError(
-                f"抖音未登录：扫码登录超时（{_LOGIN_POLL_SECONDS}s），"
-                "请先在 Chrome 中登录抖音后重试"
-            )
-
-    logger.info("DouYinClient 已就绪 (CDP)")
-    return _client
 
 
 async def _wait_xmst(page: Any) -> None:
@@ -283,9 +184,8 @@ async def _guide_qr_login(page: Any) -> None:
 
 async def _client_call(coro_factory: Callable[[Any], Any]) -> Any:
     """串行化执行 client 调用 + 超时防护；挂起时失效重建 page/client。"""
-    global _client, _client_page
-    async with _client_lock:
-        client = await _ensure_client()
+    async with DouyinPlatform.mc_lock:
+        client = await DouyinPlatform.ensure_client()
         try:
             return await asyncio.wait_for(
                 coro_factory(client), timeout=_CALL_TIMEOUT,
@@ -294,20 +194,12 @@ async def _client_call(coro_factory: Callable[[Any], Any]) -> Any:
             logger.warning(
                 "抖音 client 调用超时（%ds），判定 page 挂起，重建", _CALL_TIMEOUT,
             )
-            await invalidate_page("dy")
-            _client = None
-            _client_page = None
+            await invalidate_page(DouyinPlatform.cdp_page_key)
+            DouyinPlatform._client = None
+            DouyinPlatform._client_page = None
             raise DouyinClientError(
                 "抖音请求超时（浏览器页面异常），请重试"
             ) from None
-
-
-async def _close_client() -> None:
-    """重置客户端引用（不关闭 CDP 浏览器——那是用户的真实浏览器）。"""
-    global _client, _client_page
-    await invalidate_page("dy")
-    _client = None
-    _client_page = None
 
 
 # ---------------------------------------------------------------------------
@@ -471,7 +363,7 @@ async def _fetch_hot_list_via_page(limit: int = 10) -> list[dict]:
     直接 httpx / DouYinClient 签名请求会被风控拒绝，而页面自身 XHR 会被
     webmssdk 的 XHR hook 自动补签名，与真实浏览行为一致（同旧方案）。
     """
-    from ._cdp_browser import check_mediacrawler_available, get_page_for_platform
+    from ._cdp_browser import check_mediacrawler_available
 
     if (msg := check_mediacrawler_available()) is not None:
         logger.warning(msg)
@@ -554,6 +446,7 @@ async def _search_first_video_for_word(word: str) -> dict | None:
     """
     if not word:
         return None
+    _import_mediacrawler()
     for attempt in range(2):
         try:
             resp = await _client_call(
@@ -599,6 +492,7 @@ async def _search_via_cdp(keyword: str, limit: int = 10) -> list[dict]:
     if (msg := check_mediacrawler_available()) is not None:
         logger.warning(msg)
         return []
+    _import_mediacrawler()
     try:
         resp = await _client_call(
             lambda c: c.search_info_by_keyword(
@@ -666,7 +560,6 @@ async def _resolve_creator_sec_uid(creator_id: str) -> str | None:
             return None
 
     # 昵称 → 「用户」tab 页面内 XHR
-    from ._cdp_browser import get_page_for_platform
 
     try:
         page = await get_page_for_platform("dy", "https://www.douyin.com")
@@ -733,6 +626,7 @@ async def _get_creator_via_cdp(creator_id: str, limit: int = 10) -> list[dict]:
     _import_mediacrawler 的 chdir 块内或之后导入（2026-08-14 复现）。
     因此 DataFetchError（风控拦截）等 MediaCrawler 异常统一走宽泛降级。
     """
+    _import_mediacrawler()
     try:
         sec_user_id = await _resolve_creator_sec_uid(creator_id)
         if not sec_user_id:
@@ -771,6 +665,7 @@ async def _download_via_cdp(video_url: str, file_name: str,
         return {"status": "success", "local_path": str(target), "platform": "douyin", "cached": True}
 
     logger.info("📥 抖音下载开始: url=%s", video_url)
+    _import_mediacrawler()
 
     # 0. 搜索页 URL → 解析为真实视频
     search_match = _SEARCH_URL_RE.search(video_url)
@@ -911,9 +806,64 @@ async def _download_via_cdp(video_url: str, file_name: str,
 # Platform 实例
 # ---------------------------------------------------------------------------
 
-class DouyinPlatform(Platform):
+class DouyinPlatform(MediaCrawlerPlatform):
     name: ClassVar[str] = "douyin"
     aliases: ClassVar[tuple[str, ...]] = ("dy", "抖音")
+
+    # -- MediaCrawlerPlatform 声明（#3） --
+    cdp_page_key: ClassVar[str] = "dy"
+    mc_lock: ClassVar[asyncio.Lock] = asyncio.Lock()
+    mc_submodules: ClassVar[tuple[str, ...]] = ("client", "field", "help")
+    _client_cls_name: ClassVar[str] = "DouYinClient"
+    _client_timeout: ClassVar[float] = _CLIENT_TIMEOUT
+    _home_url: ClassVar[str] = "https://www.douyin.com"
+    _cookie_urls: ClassVar[tuple[str, ...]] = ("https://douyin.com", "https://www.douyin.com")
+
+    # -- 客户端生命周期 hooks（模板见 MediaCrawlerPlatform.ensure_client） --
+
+    @classmethod
+    async def _acquire_page(cls) -> Any:
+        """CDP 页面取用（含抖音错误翻译与失效重建）。"""
+        try:
+            page = await cls.get_page(cls._home_url)
+        except RuntimeError:
+            raise DouyinClientError(CDP_GUIDE_MSG) from None
+        except Exception as e:
+            await invalidate_page(cls.cdp_page_key)
+            raise DouyinClientError(f"抖音页面加载失败: {e}") from e
+        return page
+
+    @classmethod
+    async def _pre_client_hook(cls, page: Any) -> None:
+        await _wait_xmst(page)
+
+    @classmethod
+    async def _build_headers(cls, page: Any, cookie_str: str) -> dict:
+        ua = await page.evaluate("() => navigator.userAgent")
+        headers = dict(DEFAULT_HEADERS)
+        headers["User-Agent"] = ua
+        headers["Cookie"] = cookie_str
+        return headers
+
+    @classmethod
+    async def _is_logged_in(cls, page: Any, cookie_dict: dict) -> bool:
+        return await _is_logged_in(page, cookie_dict)
+
+    @classmethod
+    async def _guide_login(cls, page: Any, client: Any) -> None:
+        await _guide_qr_login(page)
+
+    @classmethod
+    async def _handle_login_failure(cls, client: Any, page: Any) -> Any:
+        """抖音登录是硬门槛：未登录 → 清 client 并抛错。"""
+        cls._client = None
+        cls._client_page = None
+        raise DouyinLoginError(
+            f"抖音未登录：扫码登录超时（{_LOGIN_POLL_SECONDS}s），"
+            "请先在 Chrome 中登录抖音后重试"
+        )
+
+    # -- 检索 / 下载 --
 
     @staticmethod
     def extract_video_id(url: str) -> str | None:
@@ -927,34 +877,32 @@ class DouyinPlatform(Platform):
     def make_client(timeout: float = 15.0) -> httpx.AsyncClient:
         return make_client(timeout)
 
-    @staticmethod
-    async def get_hot(client: httpx.AsyncClient, limit: int = 20) -> list[dict]:
+    @classmethod
+    async def get_hot(cls, client: httpx.AsyncClient, limit: int = 20) -> list[dict]:
         """热搜榜（CDP 页面内 XHR，与 douyin.com/hot 页面一致，webmssdk 自动签名）。"""
-        from ._cdp_browser import run_on_cdp_loop_async
-        return await run_on_cdp_loop_async(_fetch_hot_list_via_page(limit))
+        return await cls.run_on_cdp_async(_fetch_hot_list_via_page(limit))
 
-    @staticmethod
-    async def search(client: httpx.AsyncClient, keyword: str, limit: int = 10) -> list[dict]:
+    @classmethod
+    async def search(cls, client: httpx.AsyncClient, keyword: str, limit: int = 10) -> list[dict]:
         """关键词搜索（MediaCrawler CDP，提交到 CDP 专用循环执行）。"""
-        from ._cdp_browser import run_on_cdp_loop_async
-        return await run_on_cdp_loop_async(_search_via_cdp(keyword, limit))
+        return await cls.run_on_cdp_async(_search_via_cdp(keyword, limit))
 
-    @staticmethod
-    async def get_creator(client: httpx.AsyncClient, creator: str, limit: int = 10) -> list[dict]:
+    @classmethod
+    async def get_creator(cls, client: httpx.AsyncClient, creator: str, limit: int = 10) -> list[dict]:
         """获取创作者视频（MediaCrawler CDP，提交到 CDP 专用循环执行）。"""
-        from ._cdp_browser import run_on_cdp_loop_async
-        return await run_on_cdp_loop_async(_get_creator_via_cdp(creator, limit))
+        return await cls.run_on_cdp_async(_get_creator_via_cdp(creator, limit))
 
-    @staticmethod
-    def download(video_url: str, file_name: str,
+    @classmethod
+    def download(cls, video_url: str, file_name: str,
                  progress_callback: Callable[[int], None] | None = None) -> dict:
         """下载抖音无水印视频（MediaCrawler CDP → httpx）。
 
         同步入口：提交到 CDP 专用常驻循环执行，避免 asyncio.run 临时循环
         与模块级 Playwright 单例的跨循环复用问题。
         """
-        from ._cdp_browser import run_on_cdp_loop
-        return run_on_cdp_loop(_download_via_cdp(video_url, file_name, progress_callback=progress_callback))
+        return cls.run_on_cdp(
+            _download_via_cdp(video_url, file_name, progress_callback=progress_callback)
+        )
 
 
 # 注册到全局注册表

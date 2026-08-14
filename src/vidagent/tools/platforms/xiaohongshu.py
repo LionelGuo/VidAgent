@@ -19,7 +19,9 @@ from urllib.parse import quote
 import httpx
 
 from vidagent.config import settings
-from vidagent.tools.platforms import Platform, register
+from vidagent.tools.platforms import register
+
+from ._mediacrawler import MediaCrawlerPlatform, import_mc_platform
 
 logger = logging.getLogger(__name__)
 
@@ -49,72 +51,28 @@ def _get_proxy() -> str | None:
 # 客户端管理（通过共享 CDP 连接 Windows Chrome）
 # ---------------------------------------------------------------------------
 
-_client = None
-_client_initialized = False
+# MediaCrawler 模块一次性导入（#3：chdir 语义与缓存由 _mediacrawler 门户负责；
+# 配置注入与 client 生命周期在 XiaohongshuPlatform 类上，
+# 模板见 _mediacrawler.MediaCrawlerPlatform.ensure_client）
+_SearchNoteType: Any = None
+_GetSearchId: Any = None
+_ParseCreatorInfo: Any = None
+_ParseNoteInfo: Any = None
 
 
-async def _ensure_client():
-    global _client, _client_initialized
+def _import_mediacrawler() -> None:
+    """导入 MediaCrawler 小红书模块（首次调用时执行）。"""
+    global _SearchNoteType, _GetSearchId, _ParseCreatorInfo, _ParseNoteInfo
+    if _GetSearchId is not None:
+        return
 
-    if _client_initialized and _client is not None:
-        return _client
+    mods = import_mc_platform("xiaohongshu", "client", "field", "help")
+    _SearchNoteType = mods["field"].SearchNoteType
+    _GetSearchId = mods["help"].get_search_id
+    _ParseCreatorInfo = mods["help"].parse_creator_info_from_url
+    _ParseNoteInfo = mods["help"].parse_note_info_from_note_url
 
-    # 注意：xhs 模块无导入期 cwd 依赖（xhshow 签名纯算法、无文件访问），
-    # MediaCrawler 根目录已由 _cdp_browser 加入 sys.path，此处无需 chdir。
-    # 顺序约束：_cdp_browser 的 import 必须先于 `import config`——前者负责把
-    # MediaCrawler 根加入 sys.path（首次调用时无此顺序依赖会 ModuleNotFoundError）
-    import config as mc_config
-
-    from ._cdp_browser import get_mc_utils, get_page_for_platform  # noqa: F401
-    mc_config.PLATFORM = "xhs"
-    mc_config.ENABLE_GET_MEIDAS = False
-    mc_config.ENABLE_GET_COMMENTS = False
-
-    from media_platform.xhs.client import XiaoHongShuClient
-
-    _page = await get_page_for_platform("xhs", "https://www.xiaohongshu.com")
-
-    ctx = _page.context
-    cookie_str, cookie_dict = await get_mc_utils().convert_browser_context_cookies(
-        ctx, urls=["https://www.xiaohongshu.com"],
-    )
-
-    # 请求头完全复刻 MediaCrawler create_xhs_client（core.py:361-392）——
-    # 完整的浏览器式请求头是 xhs 风控放行的关键，缺任何一项都可能被静默拒绝
-    headers = {
-        "accept": "application/json, text/plain, */*",
-        "accept-language": "zh-CN,zh;q=0.9",
-        "cache-control": "no-cache",
-        "content-type": "application/json;charset=UTF-8",
-        "origin": "https://www.xiaohongshu.com",
-        "pragma": "no-cache",
-        "priority": "u=1, i",
-        "referer": "https://www.xiaohongshu.com/",
-        "sec-ch-ua": '"Chromium";v="136", "Google Chrome";v="136", "Not.A/Brand";v="99"',
-        "sec-ch-ua-mobile": "?0",
-        "sec-ch-ua-platform": '"Windows"',
-        "sec-fetch-dest": "empty",
-        "sec-fetch-mode": "cors",
-        "sec-fetch-site": "same-site",
-        "user-agent": (
-            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
-            "(KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36"
-        ),
-        "Cookie": cookie_str,
-    }
-
-    _client = XiaoHongShuClient(
-        timeout=30, proxy=_get_proxy(), headers=headers,
-        playwright_page=_page, cookie_dict=cookie_dict,
-    )
-    _client_initialized = True
-    logger.info("XiaoHongShuClient 已就绪 (CDP)")
-
-    # 登录态检查（MediaCrawler 同款 pong() 判定），未登录引导扫码
-    if not await client_pong_safe(_client):
-        await _guide_login(_page, _client)
-
-    return _client
+    logger.info("MediaCrawler 小红书模块已导入")
 
 
 async def client_pong_safe(client) -> bool:
@@ -151,14 +109,11 @@ async def _guide_login(page, client) -> None:
         await asyncio.sleep(1)
         try:
             if await client_pong_safe(client):
-                await client.update_cookies(
-                    page.context, urls=["https://www.xiaohongshu.com"],
-                )
                 logger.info("小红书扫码登录成功")
                 return
         except Exception:
             pass
-    logger.warning("小红书登录等待超时（%ds），继续尝试", _LOGIN_POLL_SECONDS)
+    # cookie 刷新由 ensure_client 模板在登录成功后统一执行
 
 
 # ---------------------------------------------------------------------------
@@ -240,7 +195,7 @@ def _fmt_duration(sec: int) -> str:
 
 async def _search_via_cdp(keyword: str, limit: int = 10) -> list[dict]:
     try:
-        client = await _ensure_client()
+        client = await XiaohongshuPlatform.ensure_client()
     except Exception as e:
         # CDP 连不上 Windows Chrome（对齐抖音搜索的优雅降级：不 500）
         logger.warning("小红书搜索失败（无法连接 Windows Chrome 调试端口 9222）: %s", e)
@@ -250,13 +205,12 @@ async def _search_via_cdp(keyword: str, limit: int = 10) -> list[dict]:
         # 显式 search_id + 默认 page_size=20（不传小 page_size）
         # note_type=VIDEO：服务端只返回视频笔记（对齐网页端「视频」tab，
         # SearchNoteType.VIDEO=1，见 MediaCrawler field.py:65-72）
-        from media_platform.xhs.field import SearchNoteType
-        from media_platform.xhs.help import get_search_id
+        _import_mediacrawler()
         resp = await client.get_note_by_keyword(
             keyword=keyword,
-            search_id=get_search_id(),
+            search_id=_GetSearchId(),
             page=1,
-            note_type=SearchNoteType.VIDEO,
+            note_type=_SearchNoteType.VIDEO,
         )
     except Exception as e:
         err_msg = str(e)
@@ -349,9 +303,6 @@ async def _search_via_cdp(keyword: str, limit: int = 10) -> list[dict]:
     return results
 
 
-_creator_lock = asyncio.Lock()
-
-
 async def _resolve_creator_user_id(nickname: str) -> tuple[str, str] | None:
     """昵称 → (user_id, xsec_token)。
 
@@ -368,7 +319,7 @@ async def _resolve_creator_user_id(nickname: str) -> tuple[str, str] | None:
         logger.warning("小红书用户搜索失败: %s", e)
         return None
 
-    async with _creator_lock:
+    async with XiaohongshuPlatform.mc_lock:
         try:
             async with page.expect_response(
                 lambda r: "search/usersearch" in r.url, timeout=20000,
@@ -417,15 +368,15 @@ async def _get_creator_via_cdp(creator_id: str, limit: int = 10) -> list[dict]:
     if (msg := check_mediacrawler_available()) is not None:
         logger.warning(msg)
         return []
-    from media_platform.xhs.help import parse_creator_info_from_url
+    _import_mediacrawler()
 
     try:
-        client = await _ensure_client()
+        client = await XiaohongshuPlatform.ensure_client()
     except Exception as e:
         logger.warning("小红书创作者查询失败（CDP）: %s", e)
         return []
     try:
-        info = parse_creator_info_from_url(creator_id)
+        info = _ParseCreatorInfo(creator_id)
         user_id, xsec_token = info.user_id, info.xsec_token
         xsec_source = info.xsec_source
     except (ValueError, AttributeError):
@@ -464,9 +415,9 @@ async def _download_via_cdp(note_url: str, file_name: str,
 
     # 1. 解析 note_id + xsec_token/xsec_source（分享 URL 自带，裸 URL 则留空走兜底）
     xsec_token, xsec_source = "", ""
+    _import_mediacrawler()
     try:
-        from media_platform.xhs.help import parse_note_info_from_note_url
-        note_info = parse_note_info_from_note_url(note_url)
+        note_info = _ParseNoteInfo(note_url)
         note_id = note_info.note_id
         xsec_token = note_info.xsec_token
         xsec_source = note_info.xsec_source
@@ -475,7 +426,7 @@ async def _download_via_cdp(note_url: str, file_name: str,
     if not note_id:
         return {"status": "error", "error": f"无法解析小红书笔记 ID: {note_url}", "video_url": note_url}
 
-    client = await _ensure_client()
+    client = await XiaohongshuPlatform.ensure_client()
 
     # 2. 笔记详情：API（带 token）→ 短链接口 → HTML 兜底
     note_card = None
@@ -611,9 +562,68 @@ async def _download_note_media(note: dict, target: Path,
 # Platform 实例
 # ---------------------------------------------------------------------------
 
-class XiaohongshuPlatform(Platform):
+class XiaohongshuPlatform(MediaCrawlerPlatform):
     name: ClassVar[str] = "xiaohongshu"
     aliases: ClassVar[tuple[str, ...]] = ("xhs", "小红书", "红书")
+
+    # -- MediaCrawlerPlatform 声明（#3） --
+    cdp_page_key: ClassVar[str] = "xhs"
+    mc_lock: ClassVar[asyncio.Lock] = asyncio.Lock()
+    mc_submodules: ClassVar[tuple[str, ...]] = ("client", "field", "help")
+    _client_cls_name: ClassVar[str] = "XiaoHongShuClient"
+    _client_timeout: ClassVar[float] = 30
+    _home_url: ClassVar[str] = "https://www.xiaohongshu.com"
+    _cookie_urls: ClassVar[tuple[str, ...]] = ("https://www.xiaohongshu.com",)
+
+    # -- 客户端生命周期 hooks（模板见 MediaCrawlerPlatform.ensure_client） --
+
+    @classmethod
+    async def _acquire_page(cls) -> Any:
+        # 无错误翻译：异常原样抛给调用方（各调用点宽泛捕获降级，不 500）
+        return await cls.get_page(cls._home_url)
+
+    @classmethod
+    async def _build_headers(cls, page: Any, cookie_str: str) -> dict:
+        # 请求头完全复刻 MediaCrawler create_xhs_client（core.py:361-392）——
+        # 完整的浏览器式请求头是 xhs 风控放行的关键，缺任何一项都可能被静默拒绝
+        return {
+            "accept": "application/json, text/plain, */*",
+            "accept-language": "zh-CN,zh;q=0.9",
+            "cache-control": "no-cache",
+            "content-type": "application/json;charset=UTF-8",
+            "origin": "https://www.xiaohongshu.com",
+            "pragma": "no-cache",
+            "priority": "u=1, i",
+            "referer": "https://www.xiaohongshu.com/",
+            "sec-ch-ua": '"Chromium";v="136", "Google Chrome";v="136", "Not.A/Brand";v="99"',
+            "sec-ch-ua-mobile": "?0",
+            "sec-ch-ua-platform": '"Windows"',
+            "sec-fetch-dest": "empty",
+            "sec-fetch-mode": "cors",
+            "sec-fetch-site": "same-site",
+            "user-agent": (
+                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+                "(KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36"
+            ),
+            "Cookie": cookie_str,
+        }
+
+    @classmethod
+    async def _is_logged_in(cls, page: Any, cookie_dict: dict) -> bool:
+        # MediaCrawler 同款 pong() 判定（client 已构造，读类状态）
+        return await client_pong_safe(cls._client)
+
+    @classmethod
+    async def _guide_login(cls, page: Any, client: Any) -> None:
+        await _guide_login(page, client)
+
+    @classmethod
+    async def _handle_login_failure(cls, client: Any, page: Any) -> Any:
+        """xhs 登录非硬门槛：超时放行，继续尝试（可能仅部分接口受限）。"""
+        logger.warning("小红书登录等待超时（%ds），继续尝试", _LOGIN_POLL_SECONDS)
+        return client
+
+    # -- 检索 / 下载 --
 
     @staticmethod
     def extract_video_id(url: str) -> str | None:
@@ -634,21 +644,18 @@ class XiaohongshuPlatform(Platform):
             "请改用关键词搜索（search_videos），例如「搜索小红书的 vlog」"
         )
 
-    @staticmethod
-    async def search(client: httpx.AsyncClient, keyword: str, limit: int = 10) -> list[dict]:
-        from ._cdp_browser import run_on_cdp_loop_async
-        return await run_on_cdp_loop_async(_search_via_cdp(keyword, limit))
+    @classmethod
+    async def search(cls, client: httpx.AsyncClient, keyword: str, limit: int = 10) -> list[dict]:
+        return await cls.run_on_cdp_async(_search_via_cdp(keyword, limit))
 
-    @staticmethod
-    async def get_creator(client: httpx.AsyncClient, creator: str, limit: int = 10) -> list[dict]:
-        from ._cdp_browser import run_on_cdp_loop_async
-        return await run_on_cdp_loop_async(_get_creator_via_cdp(creator, limit))
+    @classmethod
+    async def get_creator(cls, client: httpx.AsyncClient, creator: str, limit: int = 10) -> list[dict]:
+        return await cls.run_on_cdp_async(_get_creator_via_cdp(creator, limit))
 
-    @staticmethod
-    def download(video_url: str, file_name: str,
+    @classmethod
+    def download(cls, video_url: str, file_name: str,
                  progress_callback: Callable[[int], None] | None = None) -> dict:
-        from ._cdp_browser import run_on_cdp_loop
-        return run_on_cdp_loop(_download_via_cdp(video_url, file_name, progress_callback=progress_callback))
+        return cls.run_on_cdp(_download_via_cdp(video_url, file_name, progress_callback=progress_callback))
 
 
 register(XiaohongshuPlatform)

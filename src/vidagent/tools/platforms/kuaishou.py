@@ -38,7 +38,10 @@ from urllib.parse import quote
 import httpx
 from playwright.async_api import TimeoutError as PWTimeoutError
 
-from vidagent.tools.platforms import Platform, register
+from vidagent.tools.platforms import register
+
+from ._cdp_browser import invalidate_page
+from ._mediacrawler import MediaCrawlerPlatform, import_mc_platform
 
 logger = logging.getLogger(__name__)
 
@@ -91,45 +94,35 @@ _ParseCreatorInfo: Any = None
 
 
 def _import_mediacrawler() -> None:
-    """导入 MediaCrawler 快手 URL 解析（官方 help.py，首次调用时执行）。"""
+    """导入 MediaCrawler 快手 URL 解析（官方 help.py，首次调用时执行）。
+
+    chdir 语义由门户 import_mc_platform 负责（kuaishou 包 __init__ 会级联
+    core/client，门户只导入 help 子模块，不拖 GraphQL 链）。
+    """
     global _ParseVideoInfo, _ParseCreatorInfo
     if _ParseVideoInfo is not None:
         return
 
-    from ._cdp_browser import chdir_mc
-    mc_root = chdir_mc()
-    prev_cwd = os.getcwd()
-    os.chdir(mc_root)
-    try:
-        from media_platform.kuaishou.help import (
-            parse_creator_info_from_url,
-            parse_video_info_from_url,
-        )
-        _ParseVideoInfo = parse_video_info_from_url
-        _ParseCreatorInfo = parse_creator_info_from_url
-    finally:
-        os.chdir(prev_cwd)
+    mods = import_mc_platform("kuaishou", "help")
+    _ParseVideoInfo = mods["help"].parse_video_info_from_url
+    _ParseCreatorInfo = mods["help"].parse_creator_info_from_url
 
     logger.info("MediaCrawler 快手 URL 解析已导入")
 
 
 # ---------------------------------------------------------------------------
-# 页面管理（共享 CDP 设施）
+# 页面管理（#3：共享 CDP 设施；串行锁在 KuaishouPlatform.mc_lock）
 # ---------------------------------------------------------------------------
-
-_page_lock = asyncio.Lock()  # 串行化页面导航/监听（共享单 page）
 
 
 async def _get_page(url: str) -> Any:
     """获取快手 CDP 页面（失效自动重建，绝不关闭用户浏览器）。"""
-    from ._cdp_browser import get_page_for_platform, invalidate_page
-
     try:
-        return await get_page_for_platform("ks", url)
+        return await KuaishouPlatform.get_page(url)
     except RuntimeError:
         raise KuaishouClientError(CDP_GUIDE_MSG) from None
     except Exception as e:
-        await invalidate_page("ks")
+        await invalidate_page(KuaishouPlatform.cdp_page_key)
         raise KuaishouClientError(f"快手页面加载失败: {e}") from e
 
 
@@ -300,7 +293,7 @@ async def _collect_user_responses(page: Any, goto_coro: Any) -> list[dict]:
 
 async def _search_via_cdp(keyword: str, limit: int = 10) -> list[dict]:
     """关键词搜索：导航搜索页，监听页面自身的 /rest/v/search/feed 响应。"""
-    async with _page_lock:
+    async with KuaishouPlatform.mc_lock:
         page = await _get_page("https://www.kuaishou.com?isHome=1")
         search_url = (
             "https://www.kuaishou.com/search/video?searchKey=" + quote(keyword)
@@ -341,7 +334,7 @@ async def _resolve_creator_user_id(creator: str) -> str | None:
     if _KS_USER_ID_RE.match(creator):
         return creator
 
-    async with _page_lock:
+    async with KuaishouPlatform.mc_lock:
         page = await _get_page("https://www.kuaishou.com?isHome=1")
         users = await _collect_user_responses(
             page,
@@ -379,7 +372,7 @@ async def _get_creator_via_cdp(creator: str, limit: int = 10) -> list[dict]:
         logger.warning("快手创作者解析失败: '%s'", creator)
         return []
 
-    async with _page_lock:
+    async with KuaishouPlatform.mc_lock:
         page = await _get_page("https://www.kuaishou.com?isHome=1")
         profile_url = f"https://www.kuaishou.com/profile/{quote(user_id)}"
         try:
@@ -456,7 +449,7 @@ async def _download_via_cdp(video_url: str, file_name: str,
     # 2. 详情页：SSR 数据在 window.__APOLLO_STATE__（页面无数据 XHR）
     detail_url = f"https://www.kuaishou.com/short-video/{photo_id}"
     logger.info("  获取详情页数据: photo_id=%s", photo_id)
-    async with _page_lock:
+    async with KuaishouPlatform.mc_lock:
         page = await _get_page(detail_url)
         try:
             await page.goto(detail_url, wait_until="domcontentloaded", timeout=15000)
@@ -519,9 +512,17 @@ async def _download_via_cdp(video_url: str, file_name: str,
 # Platform 实例
 # ---------------------------------------------------------------------------
 
-class KuaishouPlatform(Platform):
+class KuaishouPlatform(MediaCrawlerPlatform):
     name: ClassVar[str] = "kuaishou"
     aliases: ClassVar[tuple[str, ...]] = ("ks", "快手")
+
+    # -- MediaCrawlerPlatform 声明（#3） --
+    # 无 client（页面监听方案）：不用 ensure_client 模板，只走门户 + 锁 + page 设施
+    cdp_page_key: ClassVar[str] = "ks"
+    mc_lock: ClassVar[asyncio.Lock] = asyncio.Lock()
+    mc_submodules: ClassVar[tuple[str, ...]] = ("help",)
+
+    # -- 检索 / 下载 --
 
     @staticmethod
     def extract_video_id(url: str) -> str | None:
@@ -542,28 +543,25 @@ class KuaishouPlatform(Platform):
             "请改用关键词搜索（search_videos）"
         )
 
-    @staticmethod
-    async def search(client: httpx.AsyncClient, keyword: str, limit: int = 10) -> list[dict]:
+    @classmethod
+    async def search(cls, client: httpx.AsyncClient, keyword: str, limit: int = 10) -> list[dict]:
         """关键词搜索（CDP 页面监听，提交到 CDP 专用循环执行）。"""
-        from ._cdp_browser import run_on_cdp_loop_async
-        return await run_on_cdp_loop_async(_search_via_cdp(keyword, limit))
+        return await cls.run_on_cdp_async(_search_via_cdp(keyword, limit))
 
-    @staticmethod
-    async def get_creator(client: httpx.AsyncClient, creator: str, limit: int = 10) -> list[dict]:
+    @classmethod
+    async def get_creator(cls, client: httpx.AsyncClient, creator: str, limit: int = 10) -> list[dict]:
         """获取创作者视频（CDP 页面监听，提交到 CDP 专用循环执行）。"""
-        from ._cdp_browser import run_on_cdp_loop_async
-        return await run_on_cdp_loop_async(_get_creator_via_cdp(creator, limit))
+        return await cls.run_on_cdp_async(_get_creator_via_cdp(creator, limit))
 
-    @staticmethod
-    def download(video_url: str, file_name: str,
+    @classmethod
+    def download(cls, video_url: str, file_name: str,
                  progress_callback: Callable[[int], None] | None = None) -> dict:
         """下载快手视频（详情页 Apollo 数据 → httpx）。
 
         同步入口：提交到 CDP 专用常驻循环执行，避免 asyncio.run 临时循环
         与模块级 Playwright 单例的跨循环复用问题。
         """
-        from ._cdp_browser import run_on_cdp_loop
-        return run_on_cdp_loop(_download_via_cdp(video_url, file_name, progress_callback=progress_callback))
+        return cls.run_on_cdp(_download_via_cdp(video_url, file_name, progress_callback=progress_callback))
 
 
 register(KuaishouPlatform)
