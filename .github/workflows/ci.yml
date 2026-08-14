@@ -17,6 +17,8 @@ jobs:
         run: uv sync --extra server --extra douyin --extra dev
       - name: Lint
         run: uv run ruff check .
+      - name: Check generated SSE types
+        run: uv run python scripts/gen-sse-types.py --check
 
   frontend:
     name: Frontend (build)
