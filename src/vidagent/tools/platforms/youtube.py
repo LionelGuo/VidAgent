@@ -409,6 +409,7 @@ def _find_result(base_name: str) -> Path | None:
 class YoutubePlatform(Platform):
     name: ClassVar[str] = "youtube"
     aliases: ClassVar[tuple[str, ...]] = ("yt", "ytb", "油管")
+    url_patterns: ClassVar[tuple[str, ...]] = ("youtube.com", "youtu.be")
 
     @staticmethod
     def extract_video_id(url: str) -> str | None:

@@ -357,13 +357,10 @@ def _extract_video_id(video_url: str) -> str | None:
 
     支持：B站 BV 号、YouTube video ID 等。
     """
-    # 确保平台模块已注册
-    import vidagent.tools.platforms.bilibili  # noqa: F401
-    import vidagent.tools.platforms.douyin  # noqa: F401
-    import vidagent.tools.platforms.kuaishou  # noqa: F401
-    import vidagent.tools.platforms.xiaohongshu  # noqa: F401
-    import vidagent.tools.platforms.youtube  # noqa: F401
-    from vidagent.tools.platforms import detect_platform
+    # 确保平台模块已注册（清单单一来源，见 platforms/__init__.py）
+    from vidagent.tools.platforms import detect_platform, ensure_platforms_imported
+
+    ensure_platforms_imported()
 
     platform = detect_platform(video_url)
     if platform is not None:

@@ -15,28 +15,16 @@ from __future__ import annotations
 import logging
 
 from vidagent.config import settings
-from vidagent.tools.platforms import get_platform
+# 平台模块清单单一来源在 platforms/__init__.py（#3 Q6）：
+# 别名保留原私有名，避免改动 3 处调用点
+from vidagent.tools.platforms import (
+    ensure_platforms_imported as _ensure_platforms_imported,
+    get_platform,
+)
 from vidagent.utils.dates import filter_today
 from vidagent.utils.timer import Timer
 
 logger = logging.getLogger(__name__)
-
-# 延迟导入：避免循环引用（platforms 模块在注册时会导入回来）
-_platforms_loaded = False
-
-
-def _ensure_platforms_imported() -> None:
-    """确保所有平台模块已加载并注册。"""
-    global _platforms_loaded
-    if _platforms_loaded:
-        return
-    # 导入平台模块触发 register() 调用
-    import vidagent.tools.platforms.bilibili  # noqa: F401
-    import vidagent.tools.platforms.douyin  # noqa: F401
-    import vidagent.tools.platforms.kuaishou  # noqa: F401
-    import vidagent.tools.platforms.xiaohongshu  # noqa: F401
-    import vidagent.tools.platforms.youtube  # noqa: F401
-    _platforms_loaded = True
 
 
 def _get_client(platform_name: str, **kwargs: object):

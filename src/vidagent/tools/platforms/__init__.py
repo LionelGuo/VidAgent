@@ -4,13 +4,16 @@
 - 检索：search / get_hot / get_creator（异步）
 - 下载：download（同步，在线程池中调用）
 - 工具：extract_video_id / normalize / make_client
+- url_patterns：平台 URL 域名模式（小写子串），detect_platform() 据此推断
 
 注册表按 name 和 aliases 索引，get_platform() 按名称查找，
-detect_platform() 从 URL 推断平台。
+detect_platform() 从 URL 推断平台（遍历注册表匹配 url_patterns——
+新增平台只需声明模式，无需改检测分支）。
 """
 
 from __future__ import annotations
 
+import importlib
 import logging
 from collections.abc import Callable
 from typing import Any, ClassVar
@@ -47,6 +50,9 @@ class Platform:
 
     name: ClassVar[str] = ""
     aliases: ClassVar[tuple[str, ...]] = ()
+    # 平台 URL 域名模式（小写子串，如 "bilibili.com" / "b23.tv"）：
+    # detect_platform 遍历注册表按此匹配，新平台在此声明即可
+    url_patterns: ClassVar[tuple[str, ...]] = ()
 
     # -- 工具方法（子类必须实现） --
 
@@ -136,30 +142,46 @@ def get_platform(name: str) -> Platform:
 
 
 def detect_platform(url: str) -> Platform | None:
-    """从视频 URL 推测平台。
+    """从视频 URL 推测平台（遍历注册表匹配 url_patterns 声明）。
 
     Returns:
         Platform 实例，无法识别时返回 None。
     """
     u = url.lower()
-    # Bilibili
-    if "bilibili.com" in u or "b23.tv" in u:
-        return _registry.get("bilibili")
-    # YouTube
-    if "youtube.com" in u or "youtu.be" in u:
-        return _registry.get("youtube")
-    # 抖音
-    if "douyin.com" in u:
-        return _registry.get("douyin")
-    # 小红书 (must check before kuaishou since xhslink is not kuaishou)
-    if "xiaohongshu.com" in u or "xhslink.com" in u:
-        return _registry.get("xiaohongshu")
-    # 快手
-    if "kuaishou.com" in u or "chenzhongtech.com" in u:
-        return _registry.get("kuaishou")
+    # dict.fromkeys 去重：注册表按 name+aliases 多键索引同一实例
+    for platform in dict.fromkeys(_registry.values()):
+        if any(pattern in u for pattern in platform.url_patterns):
+            return platform
     return None
 
 
 def list_platforms() -> list[str]:
     """返回所有已注册平台名称（去重）。"""
     return sorted(set(p.name for p in _registry.values()))
+
+
+# ---------------------------------------------------------------------------
+# 平台模块清单（单一来源）
+# ---------------------------------------------------------------------------
+# 新增平台时在此加一行；crawler / downloader / server 的「确保已注册」
+# 共用 ensure_platforms_imported()（#3 Q6：原三处重复的 5 平台 import 列表）
+
+PLATFORM_MODULES: tuple[str, ...] = (
+    "vidagent.tools.platforms.bilibili",
+    "vidagent.tools.platforms.douyin",
+    "vidagent.tools.platforms.kuaishou",
+    "vidagent.tools.platforms.xiaohongshu",
+    "vidagent.tools.platforms.youtube",
+)
+
+_platforms_loaded = False
+
+
+def ensure_platforms_imported() -> None:
+    """确保所有平台模块已加载并注册（幂等；模块导入触发 register()）。"""
+    global _platforms_loaded
+    if _platforms_loaded:
+        return
+    for module_name in PLATFORM_MODULES:
+        importlib.import_module(module_name)
+    _platforms_loaded = True

@@ -9,7 +9,12 @@ import logging
 import time
 from collections.abc import Callable
 
-from vidagent.tools.platforms import detect_platform
+# 确保平台已注册（清单单一来源在 platforms/__init__.py，#3 Q6）：
+# 别名保留原私有名，避免改动调用点
+from vidagent.tools.platforms import (
+    detect_platform,
+    ensure_platforms_imported as _ensure_platforms,
+)
 from vidagent.utils import storage
 
 logger = logging.getLogger(__name__)
@@ -17,21 +22,6 @@ logger = logging.getLogger(__name__)
 # 批量管线下载重试策略（#4 Q3：自 server/main.py 移入 downloader 域）
 MAX_RETRIES = 5
 RETRY_BASE_DELAY = 2  # 秒，指数退避：2s / 4s / 8s / 16s
-
-# 确保平台已注册
-_platforms_loaded = False
-
-
-def _ensure_platforms() -> None:
-    global _platforms_loaded
-    if _platforms_loaded:
-        return
-    import vidagent.tools.platforms.bilibili  # noqa: F401
-    import vidagent.tools.platforms.douyin  # noqa: F401
-    import vidagent.tools.platforms.kuaishou  # noqa: F401
-    import vidagent.tools.platforms.xiaohongshu  # noqa: F401
-    import vidagent.tools.platforms.youtube  # noqa: F401
-    _platforms_loaded = True
 
 
 def _platform_of(url: str) -> str:

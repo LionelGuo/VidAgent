@@ -565,6 +565,7 @@ async def _download_note_media(note: dict, target: Path,
 class XiaohongshuPlatform(MediaCrawlerPlatform):
     name: ClassVar[str] = "xiaohongshu"
     aliases: ClassVar[tuple[str, ...]] = ("xhs", "小红书", "红书")
+    url_patterns: ClassVar[tuple[str, ...]] = ("xiaohongshu.com", "xhslink.com")
 
     # -- MediaCrawlerPlatform 声明（#3） --
     cdp_page_key: ClassVar[str] = "xhs"

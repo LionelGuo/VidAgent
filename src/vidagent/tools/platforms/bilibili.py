@@ -375,6 +375,7 @@ def _find_result(base_name: str) -> Path | None:
 class BilibiliPlatform(Platform):
     name: ClassVar[str] = "bilibili"
     aliases: ClassVar[tuple[str, ...]] = ("bili", "b站")
+    url_patterns: ClassVar[tuple[str, ...]] = ("bilibili.com", "b23.tv")
 
     @staticmethod
     def extract_video_id(url: str) -> str | None:

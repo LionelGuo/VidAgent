@@ -809,6 +809,7 @@ async def _download_via_cdp(video_url: str, file_name: str,
 class DouyinPlatform(MediaCrawlerPlatform):
     name: ClassVar[str] = "douyin"
     aliases: ClassVar[tuple[str, ...]] = ("dy", "抖音")
+    url_patterns: ClassVar[tuple[str, ...]] = ("douyin.com",)
 
     # -- MediaCrawlerPlatform 声明（#3） --
     cdp_page_key: ClassVar[str] = "dy"
