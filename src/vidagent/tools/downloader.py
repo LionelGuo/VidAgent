@@ -13,6 +13,8 @@ from collections.abc import Callable
 # 别名保留原私有名，避免改动调用点
 from vidagent.tools.platforms import (
     detect_platform,
+)
+from vidagent.tools.platforms import (
     ensure_platforms_imported as _ensure_platforms,
 )
 from vidagent.utils import storage
