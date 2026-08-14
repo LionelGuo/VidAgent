@@ -1,0 +1,16 @@
+VidAgent — Third-Party Software Notice
+=======================================
+
+This repository includes source code from **MediaCrawler**
+(https://github.com/NanmiCoder/MediaCrawler) under the `vendor/MediaCrawler/`
+directory.
+
+MediaCrawler is licensed under the **Non-Commercial Learning License 1.1**
+(see `vendor/MediaCrawler/LICENSE`). It is provided for non-commercial learning
+and research purposes only; commercial use is prohibited without the written
+consent of the copyright owner. The license and copyright notice are also
+retained in every vendored source file.
+
+VidAgent's own source code (everything outside `vendor/MediaCrawler/`) is
+licensed under the **MIT License** (see `LICENSE`). The vendored MediaCrawler
+subtree retains its original license and is not relicensed.

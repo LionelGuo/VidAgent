@@ -23,19 +23,38 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
-# MediaCrawler 根目录：可通过 MEDIACRAWLER_ROOT 环境变量覆盖（Docker/自定义路径），
-# 默认 ~/Code/MediaCrawler（开发机约定）
-_MEDIACRAWLER_ROOT = os.getenv("MEDIACRAWLER_ROOT") or str(Path.home() / "Code" / "MediaCrawler")
-_mc_venv = str(Path(_MEDIACRAWLER_ROOT) / ".venv" / "lib" / f"python{sys.version_info.major}.{sys.version_info.minor}" / "site-packages")
-if not os.path.isdir(_mc_venv):
-    _venv_lib = Path(_MEDIACRAWLER_ROOT) / ".venv" / "lib"
-    _candidates = sorted(_venv_lib.glob("python*/site-packages")) if _venv_lib.exists() else []
-    _mc_venv = str(_candidates[0]) if _candidates else ""
-for _p in [_mc_venv, _MEDIACRAWLER_ROOT]:
-    if _p not in sys.path:
-        sys.path.insert(0, _p)
+# MediaCrawler 源码已 vendored 入仓（vendor/MediaCrawler/，详见 ADR-0007）。
+# 其 Python 依赖收敛进 VidAgent 的 [douyin] extra，无需独立 .venv——
+# sys.path 只需指向 vendor root（MC 的 media_platform/ config/ tools/ 等顶层包在此）。
+# MEDIACRAWLER_ROOT 可覆盖：指向自定义/外部 MediaCrawler 副本（如已有 ~/Code/MediaCrawler）。
+_REPO_ROOT = Path(__file__).resolve().parents[4]   # platforms→tools→vidagent→src→repo
+_MEDIACRAWLER_ROOT = os.getenv("MEDIACRAWLER_ROOT") or str(_REPO_ROOT / "vendor" / "MediaCrawler")
+if _MEDIACRAWLER_ROOT not in sys.path:
+    sys.path.insert(0, _MEDIACRAWLER_ROOT)
 
 _original_cwd = os.getcwd()
+
+def check_mediacrawler_available() -> str | None:
+    """MediaCrawler 可用返回 None；否则返回可操作的中文提示（供 CDP 平台优雅降级）。
+
+    vendor 后依赖齐备时几乎不触发；但 MEDIACRAWLER_ROOT 指向空目录、或外部副本缺依赖时，
+    避免向上抛裸 ModuleNotFoundError/FileNotFoundError（调用方据此返回 [] 或 error）。
+    """
+    if not Path(_MEDIACRAWLER_ROOT).is_dir():
+        return (
+            "MediaCrawler 未就位（抖音/小红书/快手不可用）。"
+            "源码应 vendored 于 vendor/MediaCrawler/（见 README）；"
+            "或设置 MEDIACRAWLER_ROOT 指向已有 MediaCrawler 目录。"
+        )
+    try:
+        import execjs  # noqa: F401  # [douyin] extra 标志性依赖（douyin/help.py 顶层 import）
+    except Exception:
+        return (
+            "MediaCrawler 已就位但 [douyin] 依赖未安装（缺 execjs/xhshow/tenacity 等）。"
+            "请执行 `uv sync --extra douyin` 安装（见 README）。"
+        )
+    return None
+
 
 # 单例
 _cdp_manager = None
@@ -105,6 +124,9 @@ async def get_cdp_context():
         mc_config.ENABLE_CDP_MODE = True
         mc_config.CDP_CONNECT_EXISTING = True
         mc_config.CDP_DEBUG_PORT = 9222
+        # CDP 主机（vendor 补丁）：裸机/WSL2 用默认 localhost；
+        # Windows Docker（桥接网络）需 CDP_HOST=host.docker.internal（容器内 localhost ≠ 宿主）
+        mc_config.CDP_DEBUG_HOST = os.getenv("CDP_HOST", "localhost")
         mc_config.CDP_HEADLESS = False
         mc_config.AUTO_CLOSE_BROWSER = False
         mc_config.SAVE_LOGIN_STATE = True

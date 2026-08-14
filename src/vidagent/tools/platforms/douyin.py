@@ -465,7 +465,11 @@ async def _fetch_hot_list_via_page(limit: int = 10) -> list[dict]:
     直接 httpx / DouYinClient 签名请求会被风控拒绝，而页面自身 XHR 会被
     webmssdk 的 XHR hook 自动补签名，与真实浏览行为一致（同旧方案）。
     """
-    from ._cdp_browser import get_page_for_platform
+    from ._cdp_browser import check_mediacrawler_available, get_page_for_platform
+
+    if (msg := check_mediacrawler_available()) is not None:
+        logger.warning(msg)
+        return []
 
     try:
         page = await get_page_for_platform("dy", "https://www.douyin.com/hot")
@@ -585,6 +589,10 @@ async def _search_first_video_for_word(word: str) -> dict | None:
 
 async def _search_via_cdp(keyword: str, limit: int = 10) -> list[dict]:
     """通过 MediaCrawler DouYinClient 搜索视频。"""
+    from ._cdp_browser import check_mediacrawler_available
+    if (msg := check_mediacrawler_available()) is not None:
+        logger.warning(msg)
+        return []
     try:
         resp = await _client_call(
             lambda c: c.search_info_by_keyword(

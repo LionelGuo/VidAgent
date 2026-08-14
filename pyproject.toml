@@ -15,8 +15,30 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# 抖音/小红书/快手（MediaCrawler CDP，需本机 Chrome + Node.js）
-douyin = ["playwright>=1.61"]
+# 抖音/小红书/快手（MediaCrawler 源码 vendored 于 vendor/MediaCrawler/，详见 ADR-0007）
+# 本机还需 Chrome :9222 调试端口 + Node.js（execjs 运行 libs/douyin.js 签名）
+douyin = [
+    "playwright>=1.61",
+    # ── 签名 / client（功能必需）──
+    "pyexecjs>=1.5",        # douyin help.py: execjs.compile(libs/douyin.js) a_bogus 签名
+    "tenacity>=8",          # MediaCrawler client 重试装饰器
+    "xhshow>=0.2",          # 小红书请求签名（XiaoHongShuClient 运行时调用）
+    "pyhumps>=3.8",         # 小红书 extractor 字段转换
+    "aiofiles>=23",         # tools / store 异步文件写入
+    # ── 以下为 MediaCrawler import 链顶层强制依赖（VidAgent 功能上不用，但导入即触发；
+    #    属 vendor 未改源码的「税」，未来可补丁改惰性以瘦身，见 ADR-0007 后果节）──
+    "pillow>=10",           # tools/crawler_util 顶层 import
+    "opencv-python-headless>=4.8",  # tools/slider_util 顶层 import（滑块验证码，本工程不用）
+    "aiomysql>=0.2",        # var.py 顶层 import（MC 遗留，未实际连库）
+    "sqlalchemy>=2.0",      # database/ + store/ 顶层 import（MC 存储后端，本工程不用）
+    "motor>=3.3",           # database/mongodb_store_base 顶层 import（同上）
+    "redis>=4.6",           # store/cache 链顶层 import（MC __init__→core→store 强制加载）
+    "aiosqlite>=0.21",      # store SQLAlchemy URL 驱动（同上）
+    "asyncmy>=0.2.10",      # store SQLAlchemy URL 驱动（同上）
+    "jieba>=0.42",          # tools/words.py 顶层 import（wordcloud 链）
+    "wordcloud>=1.9",       # tools/words.py 顶层 import（wordcloud 链）
+    "matplotlib>=3.7",      # tools/words.py 顶层 import（wordcloud 链）
+]
 # 后端服务 (FastAPI + SSE Relay)
 server = ["fastapi>=0.115", "uvicorn[standard]>=0.30"]
 # 开发
@@ -37,6 +59,8 @@ testpaths = ["tests"]
 [tool.ruff]
 line-length = 100
 target-version = "py311"
+# vendor/MediaCrawler 是第三方源码（非商用学习许可，详见 NOTICE），不适用本项目 lint 标准
+extend-exclude = ["vendor"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B"]

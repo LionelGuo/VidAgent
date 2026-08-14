@@ -410,6 +410,10 @@ async def _get_creator_via_cdp(creator_id: str, limit: int = 10) -> list[dict]:
 
     单页取回（page_size=30 ≥ 默认 limit=10），不翻页（防风控，与抖音同策）。
     """
+    from ._cdp_browser import check_mediacrawler_available
+    if (msg := check_mediacrawler_available()) is not None:
+        logger.warning(msg)
+        return []
     from media_platform.xhs.help import parse_creator_info_from_url
 
     try:
@@ -444,6 +448,9 @@ async def _get_creator_via_cdp(creator_id: str, limit: int = 10) -> list[dict]:
 
 async def _download_via_cdp(note_url: str, file_name: str,
                             progress_callback=None) -> dict:
+    from ._cdp_browser import check_mediacrawler_available
+    if (msg := check_mediacrawler_available()) is not None:
+        return {"status": "error", "error": msg, "video_url": note_url}
     from vidagent.utils import storage as _storage
 
     target = _storage.media_path(file_name, ".mp4")

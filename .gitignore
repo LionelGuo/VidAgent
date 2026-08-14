@@ -27,8 +27,9 @@ workspace/
 *.flv
 *.webm
 
-# 第三方爬虫（按需 vendor）
-vendor/
+# 第三方爬虫：MediaCrawler 源码已 vendored 入仓（vendor/MediaCrawler/，详见 ADR-0007）
+vendor/*
+!vendor/MediaCrawler/
 
 # IDE / OS
 .vscode/

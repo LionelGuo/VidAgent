@@ -365,6 +365,10 @@ async def _resolve_creator_user_id(creator: str) -> str | None:
 async def _get_creator_via_cdp(creator: str, limit: int = 10) -> list[dict]:
     """创作者视频：URL → 官方解析；昵称 → 用户搜索解析 user_id；
     导航主页监听页面自身的 /rest/v/profile/feed 响应。"""
+    from ._cdp_browser import check_mediacrawler_available
+    if (msg := check_mediacrawler_available()) is not None:
+        logger.warning(msg)
+        return []
     _import_mediacrawler()
     user_id = await _resolve_creator_user_id(creator)
     if not user_id:
@@ -420,6 +424,9 @@ async def _wait_detail_photo(page: Any, photo_id: str) -> dict | None:
 async def _download_via_cdp(video_url: str, file_name: str,
                             progress_callback: Callable[[int], None] | None = None) -> dict:
     """详情页提取 photoUrl（实时 tag 直链），httpx 流式下载。"""
+    from ._cdp_browser import check_mediacrawler_available
+    if (msg := check_mediacrawler_available()) is not None:
+        return {"status": "error", "error": msg, "video_url": video_url}
     from vidagent.utils import storage as _storage
 
     target = _storage.media_path(file_name, ".mp4")
