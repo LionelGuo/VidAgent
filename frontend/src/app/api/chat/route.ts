@@ -101,6 +101,8 @@ const SYSTEM_PROMPT = `你是 VidAgent，一个自媒体视频采集与总结助
 
 【其它】
 - 平台支持 bilibili、youtube、douyin、kuaishou、xiaohongshu；用户未指定时默认 bilibili。
+  **search_videos 与 get_creator_videos 在五个平台均可用**（含 douyin/xiaohongshu/kuaishou，
+  后端经 CDP 复用浏览器登录态实现）——不要以「平台不支持」为由拒绝调用。
 - **小红书和快手没有热榜**：不要对 xiaohongshou/kuaishou 调用 get_hot_videos。用户想看这些平台的热门内容时，改用关键词搜索（search_videos），并向用户说明该平台无热榜、已改为搜索。
 - **工具调用策略：收到工具结果后，先判断用户任务是否已完成。**
   如果用户仅需检索/列表（如「列出热榜」「搜索xx教程」），检索完成后按模式 A 逐条列出结果，
@@ -212,7 +214,7 @@ export async function POST(req: Request) {
         description:
           "按关键词搜索视频。返回视频列表，每项含 video_id/title/desc/duration/duration_text/video_url/platform/author/view_count。注意：xiaohongshu 搜索结果没有时长信息（duration=0，平台限制，属正常现象）。",
         parameters: z.object({
-          platform: z.string().nullable().default("bilibili").describe("平台：bilibili / youtube"),
+          platform: z.string().nullable().default("bilibili").describe("平台：bilibili / youtube / douyin / xiaohongshu / kuaishou（五平台均支持搜索）"),
           keyword: z.string().describe("搜索关键词（必填）"),
           limit: z.number().nullable().default(10).describe("返回条数上限"),
           date_filter: z.string().nullable().optional().describe("时间过滤：today 表示仅当日"),
@@ -230,7 +232,7 @@ export async function POST(req: Request) {
         description:
           "获取指定创作者（UP 主）的视频列表。creator 可为昵称（如「老番茄」）或数字 UID。返回视频列表，每项含 video_id/title/desc/duration/duration_text/video_url/platform/author/view_count。",
         parameters: z.object({
-          platform: z.string().nullable().default("bilibili").describe("平台：bilibili / youtube"),
+          platform: z.string().nullable().default("bilibili").describe("平台：bilibili / youtube / douyin / xiaohongshu / kuaishou（五平台均支持创作者查询）"),
           creator: z.string().describe("创作者昵称或数字 UID（必填）"),
           limit: z.number().nullable().default(10).describe("返回条数上限"),
           date_filter: z.string().nullable().optional().describe("时间过滤：today 表示仅当日"),
