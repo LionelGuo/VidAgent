@@ -27,6 +27,9 @@ workspace/
 *.flv
 *.webm
 
+# 临时下载（构建产物/模型 wheel 等，曾误入 5.4GB 见 ADR-0008）
+tmp/
+
 # 第三方爬虫：MediaCrawler 源码已 vendored 入仓（vendor/MediaCrawler/，详见 ADR-0007）
 vendor/*
 !vendor/MediaCrawler/
