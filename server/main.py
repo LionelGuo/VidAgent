@@ -294,82 +294,27 @@ async def tool_summarize_start(req: SummarizeRequest):
 
 @app.get("/api/tools/summarize/{task_id}/stream")
 async def tool_summarize_stream(task_id: str):
-    """SSE 进度流：实时推送总结进度（per-task 隔离）。"""
-    from vidagent.tools.summarizer import ProgressStage, get_progress
+    """SSE 进度流：实时推送总结进度（per-task 隔离）。
+
+    投影逻辑（哨兵去重）已内聚到 server.summary_projection.project（#4），
+    本端点只负责「取快照 → 投影 → yield」。
+    """
+    from server.summary_projection import ProjectionState, project
+    from vidagent.tools.summarizer import get_progress
 
     async def _stream():
         import json
 
-        last_summary = ""
-        last_summary_stage = ""
-        last_download_pct = -1
-        last_chunks_snapshot = ""
-        last_local_path_sent = False
-        last_summary_active_flag = False
-        # 预初始化：任务已注册但 Progress 尚未创建（SSE 抢跑 create_progress 的窗口）
-        # 时 get_progress 返回 None，这两个局部变量必须在循环外定义（NameError 回归）
-        summary_active = False
-        summary_text = ""
+        state = ProjectionState()
 
         while True:
             task = _summarize_tasks.get(task_id)
-            if task is None:
-                yield f"data: {json.dumps({'type': 'error', 'message': '任务不存在'}, ensure_ascii=False)}\n\n"
+            events, finished = project(state, task, get_progress(task_id))
+            for event in events:
+                yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+            if finished:
                 yield "data: [DONE]\n\n"
                 return
-
-            if task.status in (TaskStatus.DONE, TaskStatus.ERROR):
-                if task.status is TaskStatus.DONE:
-                    done_payload = {
-                        'type': 'done',
-                        'result': task.result or '',
-                        'chapters': task.chapters,
-                        'local_path': task.local_path or '',
-                    }
-                    yield f"data: {json.dumps(done_payload, ensure_ascii=False)}\n\n"
-                else:
-                    yield f"data: {json.dumps({'type': 'error', 'message': task.result}, ensure_ascii=False)}\n\n"
-                yield "data: [DONE]\n\n"
-                return
-
-            # ★ 下载完成即推送 local_path（不等总结完成）
-            if not last_local_path_sent and task.local_path:
-                last_local_path_sent = True
-                downloaded_payload = {
-                    'type': 'progress', 'stage': ProgressStage.DOWNLOADED, 'local_path': task.local_path
-                }
-                yield f"data: {json.dumps(downloaded_payload, ensure_ascii=False)}\n\n"
-
-            # 轮询 per-task progress
-            progress = get_progress(task_id)
-            if progress is not None:
-                summary_active = progress.active
-                summary_text = progress.partial if progress.active else ""
-                # ★ 推送阶段事件：stage 变化 或 download_pct 变化（下载进度实时更新）
-                stage = progress.stage or ''
-                download_pct = progress.download_pct
-                if stage != last_summary_stage or download_pct != last_download_pct:
-                    last_summary_stage = stage
-                    last_download_pct = download_pct
-                    progress_payload = {
-                        'type': 'progress', 'stage': stage, 'download_pct': download_pct
-                    }
-                    yield f"data: {json.dumps(progress_payload, ensure_ascii=False)}\n\n"
-
-                # ★ 分块进度推送：chunks 内容变化时（长视频分段总结的逐段状态）
-                chunks = progress.chunks
-                chunks_snapshot = json.dumps(chunks, ensure_ascii=False)
-                if chunks_snapshot != last_chunks_snapshot:
-                    last_chunks_snapshot = chunks_snapshot
-                    yield f"data: {json.dumps({'type': 'progress', 'chunks': chunks}, ensure_ascii=False)}\n\n"
-
-            if summary_active != last_summary_active_flag or summary_text != last_summary:
-                last_summary_active_flag = summary_active
-                last_summary = summary_text
-                if summary_text:
-                    # 纯文本事件：不带 stage，避免覆盖阶段事件设置的 task_status
-                    yield f"data: {json.dumps({'type': 'progress', 'message': summary_text}, ensure_ascii=False)}\n\n"
-
             await asyncio.sleep(0.05)  # ~20fps，感知为逐 token 流式
 
     return StreamingResponse(
