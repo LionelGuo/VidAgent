@@ -3,8 +3,6 @@
 自然语言驱动的多平台视频分析：**采集 → 下载 → 多模态总结** 全链路对话式完成。
 多模态 LLM（如 Qwen3-Omni）直接聆听音频、观看画面生成结构化总结（无 ASR 中间层）。
 
-> 设计文档：[`docs/项目开发文档v1.md`](docs/项目开发文档v1.md) ｜ 部署指南：[`docs/服务部署与配置指南.md`](docs/服务部署与配置指南.md)
-
 ## 功能特性
 
 | 能力 | 支持 |
@@ -56,8 +54,7 @@ docker run --network=host --env-file .env vidagent
 
 ### ② 配置平台访问（按需 —— B站/YouTube 开箱即用；抖音/小红书/快手需一次性配置）
 
-抖音/小红书/快手通过 CDP 复用你**已登录的 Chrome**（不存密码），需一次性配置（详见
-[部署指南](docs/服务部署与配置指南.md)）：
+抖音/小红书/快手通过 CDP 复用你**已登录的 Chrome**（不存密码），需一次性配置：
 - Windows Chrome 以 `--remote-debugging-port=9222` 启动，并在其中登录对应平台（含 Chrome 146+
   调试模式注意事项，见部署指南故障排查）；
 - **Docker 部署需额外设 `CDP_HOST`**：Windows Docker Desktop 桥接网络下容器内 `localhost` 不是宿主，
@@ -157,10 +154,9 @@ src/vidagent/
 ├── llm_provider.py   provider 预设系统（端点/relay/媒体格式/推理模式）
 └── config.py     配置读取（.env → Pydantic Settings）
 frontend/         Next.js 前端（chat 路由 + 组件 + stores）
-vendor/MediaCrawler/   抖音/小红书/快手 CDP 平台依赖（vendored 源码，非商用许可，见 NOTICE / ADR-0007）
+vendor/MediaCrawler/   抖音/小红书/快手 CDP 平台依赖（vendored 源码，非商用许可，见 NOTICE）
 scripts/          bench*.py · debug_tools.py · serve_omni.py · deploy_vllm_omni.sh
 tests/            pytest（33 passed + 3 xfailed）
-docs/             方案文档 + ADR（docs/adr/）+ 历史归档（docs/archive/）
 ```
 
 ## 常见问题

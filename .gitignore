@@ -30,6 +30,16 @@ workspace/
 # 临时下载（构建产物/模型 wheel 等，曾误入 5.4GB 见 ADR-0008）
 tmp/
 
+# 运行日志
+logs/
+
+# 内部文档（设计/部署/ADR 等仅本地维护，公开仓库不含）
+docs/
+CONTEXT.md
+
+# Claude Code 工作流配置
+.claude/
+
 # 第三方爬虫：MediaCrawler 源码已 vendored 入仓（vendor/MediaCrawler/，详见 ADR-0007）
 vendor/*
 !vendor/MediaCrawler/
