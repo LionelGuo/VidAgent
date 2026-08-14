@@ -448,7 +448,7 @@ async def tool_batch_summarize(req: BatchSummarizeRequest):
                 return
 
             # ── 预处理：音频 + 均匀帧（Phase 1 立即启动）──
-            from vidagent.tools.summarize.chapters import _summarize_multimodal_with_chapters
+            from vidagent.tools.summarize.multimodal import _summarize_multimodal
             from vidagent.tools.summarize.short_video import _summarize_short_video
             from vidagent.utils.audio import extract_audio
             from vidagent.utils.frames import extract_frames
@@ -494,36 +494,24 @@ async def tool_batch_summarize(req: BatchSummarizeRequest):
                     base_url=base_url, api_key=api_key, model=model,
                     progress=pg,
                 )
-                chapters: list[dict] = []
             else:
                 # ═══════ 长视频管线（≥90s）═══════
-                # Phase 1: 均匀采样帧
+                # 均匀采样帧 + 完整音频 → 流式总结（超长音频自动分块）
                 phase1_frames = extract_frames(video_path, duration=duration)
-
-                def _do_phase1():
-                    """Phase 1: 完整音频 + 均匀帧 → 流式总结"""
-                    logger.info("📦 Phase 1 开始（%d 帧）…", len(phase1_frames))
-                    chapters, summary = _summarize_multimodal_with_chapters(
-                        mp3_path=Path(mp3),
-                        metadata=metadata,
-                        candidate_boundaries=[],  # 空 → 无章节模式（Phase 2 已随旧栈删除）
-                        candidate_frames=phase1_frames,
-                        base_url=base_url, api_key=api_key, model=model,
-                        progress=pg,
-                    )
-                    return {"summary": summary, "chapters": chapters}
-
-                phase1_result = _do_phase1()
-                summary = phase1_result.get("summary", "")
-                chapters: list[dict] = []
+                logger.info("📦 长视频总结开始（%d 帧）…", len(phase1_frames))
+                summary = _summarize_multimodal(
+                    mp3_path=Path(mp3),
+                    metadata=metadata,
+                    pre_extracted_frames=phase1_frames,
+                    progress=pg,
+                )
 
             _summarize_tasks[task_id].status = TaskStatus.DONE
             _summarize_tasks[task_id].result = summary
-            _summarize_tasks[task_id].chapters = chapters
             task_entry["status"] = "done"
             logger.info(
-                "✅ 批量总结完成: %s (%s) | chapters=%d",
-                video_id, video.get("title", ""), len(chapters),
+                "✅ 批量总结完成: %s (%s)",
+                video_id, video.get("title", ""),
             )
 
         except Exception as e:

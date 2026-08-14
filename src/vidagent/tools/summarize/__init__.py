@@ -5,7 +5,7 @@
 - 管线入口：extract_and_summarize
 
 内部模块：progress / prompts / transport / multimodal / short_video /
-chapters / pipeline。除公开面外均视为包内私有。
+pipeline。除公开面外均视为包内私有。
 """
 
 from vidagent.tools.summarize.pipeline import extract_and_summarize

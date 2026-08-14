@@ -586,9 +586,6 @@ function _connectSSE(
       const store = useVideoStore.getState();
       store.setSummary(videoId, result);
       if (extra?.local_path) store.setLocalPath(videoId, extra.local_path);
-      if (extra?.chapters && extra.chapters.length > 0) {
-        store.setChapters(videoId, extra.chapters);
-      }
       store.updateProgress(videoId, { task_status: "done", error: undefined });
       activeStreamsRef.current.delete(videoId);
     },

@@ -50,7 +50,6 @@ def project(
         events.append({
             "type": "done",
             "result": task.result or "",
-            "chapters": task.chapters,
             "local_path": task.local_path or "",
         })
         return events, True

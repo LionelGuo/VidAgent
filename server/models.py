@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from enum import StrEnum
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict
 
 
 class TaskStatus(StrEnum):
@@ -24,7 +24,7 @@ class TaskStatus(StrEnum):
 class TaskRecord(BaseModel):
     """一次总结任务的服务器侧记录（替代此前的 stringly-typed dict）。
 
-    全字段前置声明：旧实现中途加键（下载完成补 local_path、完成时补 chapters），
+    全字段前置声明：旧实现中途加键（下载完成补 local_path），
     现统一为创建即全字段 + 属性赋值。
     """
 
@@ -33,7 +33,6 @@ class TaskRecord(BaseModel):
     status: TaskStatus
     result: str | None = None
     local_path: str | None = None
-    chapters: list[dict] = Field(default_factory=list)
 
     def fail(self, message: str) -> None:
         """记录失败：状态置 ERROR，result 承载错误信息（沿用旧 dict 的字段语义）。"""

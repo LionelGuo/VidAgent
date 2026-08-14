@@ -29,13 +29,6 @@ export const TASK_STATUSES = [
 ] as const;
 export type TaskStatus = (typeof TASK_STATUSES)[number];
 
-/** 章节（done 事件 chapters 数组元素，长视频分段总结产出）。 */
-export interface SummaryChapter {
-  start: number;
-  end: number;
-  title: string;
-}
-
 /** 长视频分段进度条目（progress 事件 chunks 数组元素）。
  *  status 字面量自动提取自 summarize/multimodal.py 的 chunk["status"] 赋值点。 */
 export interface SummaryChunk {
@@ -64,7 +57,6 @@ export type SummarySSEProgress = {
 export type SummarySSEDone = {
   type: "done";
   result: string;
-  chapters: SummaryChapter[];
   local_path: string;
 };
 

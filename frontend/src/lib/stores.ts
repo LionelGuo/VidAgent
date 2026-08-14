@@ -21,13 +21,6 @@ export const useLayoutStore = create<LayoutState>((set) => ({
 // Video Store — 视频元数据（从工具结果中提取，驱动 DetailPanel）
 // ---------------------------------------------------------------------------
 
-export interface VideoChapter {
-  start: number;
-  end: number;
-  title: string;
-  summary?: string;
-}
-
 /** 长视频分段总结的单段进度 */
 export interface VideoChunk {
   index: number;
@@ -79,8 +72,6 @@ export interface VideoInfo {
   download_progress?: number;
   /** 失败原因（task_status=error 时显示） */
   error?: string;
-  /** 章节时间轴 */
-  chapters?: VideoChapter[];
   /** 长视频分段总结进度 */
   chunks?: VideoChunk[];
 }
@@ -95,8 +86,6 @@ interface VideoStore {
   setSummary: (id: string, summary: string) => void;
   /** 更新进度字段 */
   updateProgress: (id: string, data: Partial<Pick<VideoInfo, "task_status" | "download_progress" | "error">>) => void;
-  /** 设置章节列表 */
-  setChapters: (id: string, chapters: VideoChapter[]) => void;
   /** 设置视频时长 */
   setDuration: (id: string, duration: number) => void;
   /** 设置分段总结进度 */
@@ -140,12 +129,6 @@ export const useVideoStore = create<VideoStore>((set) => ({
       const existing = s.videos[id];
       if (!existing) return s;
       return { videos: { ...s.videos, [id]: { ...existing, ...data } } };
-    }),
-  setChapters: (id, chapters) =>
-    set((s) => {
-      const existing = s.videos[id];
-      if (!existing) return s;
-      return { videos: { ...s.videos, [id]: { ...existing, chapters } } };
     }),
   setDuration: (id, duration) =>
     set((s) => {

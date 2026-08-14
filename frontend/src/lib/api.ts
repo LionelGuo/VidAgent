@@ -131,7 +131,7 @@ export function streamSummaryByVideo(
   onProgress: (data: SummarySSEProgress) => void,
   onDone: (
     result: string,
-    extra: Pick<SummarySSEDone, "local_path" | "chapters">,
+    extra: Pick<SummarySSEDone, "local_path">,
   ) => void,
   onError?: (err: Error) => void,
 ): SSEController {
@@ -142,7 +142,7 @@ export function streamSummaryByVideo(
         // 传递完整 data 对象（含 stage / download_pct / message）
         onProgress(data);
       } else if (data.type === "done") {
-        onDone(data.result || "", { local_path: data.local_path, chapters: data.chapters });
+        onDone(data.result || "", { local_path: data.local_path });
       } else if (data.type === "error") {
         onError?.(new Error(data.message || "总结失败"));
       }
