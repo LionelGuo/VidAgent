@@ -19,7 +19,6 @@ from __future__ import annotations
 import asyncio
 import logging
 import sys
-import threading
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
@@ -79,9 +78,6 @@ VLLM_URL = llm_provider.agent_endpoint().base_url
 # Thread pool for sync tools (downloader, summarizer)
 # 5 workers 支持并行下载 + 总结
 _executor = ThreadPoolExecutor(max_workers=5)
-
-# vLLM 并发控制：避免多视频同时 Omni 推理导致显存/队列拥塞
-_llm_semaphore = threading.BoundedSemaphore(2)
 
 # 总结任务追踪（TaskRecord 类型化记录，字段见 server/models.py）
 _summarize_tasks: dict[str, TaskRecord] = {}
@@ -260,7 +256,7 @@ async def tool_summarize_start(req: SummarizeRequest):
     若 metadata 含 video_id，同时建立 video_id → task_id 映射，
     供浏览器通过 GET /api/tools/summarize/by-video/{video_id}/stream 连接。
     """
-    from vidagent.tools.summarizer import cleanup_progress, extract_and_summarize
+    from vidagent.tools.summarize import cleanup_progress, extract_and_summarize
 
     task_id = uuid.uuid4().hex[:12]
     _summarize_tasks[task_id] = TaskRecord(status=TaskStatus.PROCESSING)
@@ -300,7 +296,7 @@ async def tool_summarize_stream(task_id: str):
     本端点只负责「取快照 → 投影 → yield」。
     """
     from server.summary_projection import ProjectionState, project
-    from vidagent.tools.summarizer import get_progress
+    from vidagent.tools.summarize import get_progress
 
     async def _stream():
         import json
@@ -389,7 +385,7 @@ async def tool_batch_summarize(req: BatchSummarizeRequest):
     前端可立即按 video_id 连接 SSE 获取各视频流式进度。
     """
     from vidagent.tools.downloader import download_video
-    from vidagent.tools.summarizer import (
+    from vidagent.tools.summarize import (
         ProgressStage,
         cleanup_progress,
         create_progress,
@@ -452,7 +448,8 @@ async def tool_batch_summarize(req: BatchSummarizeRequest):
                 return
 
             # ── 预处理：音频 + 均匀帧（Phase 1 立即启动）──
-            from vidagent.tools.summarizer import _summarize_multimodal_with_chapters, _summarize_short_video
+            from vidagent.tools.summarize.chapters import _summarize_multimodal_with_chapters
+            from vidagent.tools.summarize.short_video import _summarize_short_video
             from vidagent.utils.audio import extract_audio
             from vidagent.utils.frames import extract_frames
 
@@ -490,13 +487,13 @@ async def tool_batch_summarize(req: BatchSummarizeRequest):
                 # ═══════ 短视频管线（<90s）═══════
                 logger.info("🎬 短视频管线: %.0fs", duration)
                 pg.stage = ProgressStage.SUMMARIZING
-                with _llm_semaphore:
-                    summary = _summarize_short_video(
-                        video_path=video_path,
-                        metadata=metadata,
-                        base_url=base_url, api_key=api_key, model=model,
-                        progress=pg,
-                    )
+                # 并发闸已内聚到 transport 层（全局 LLM 并发 ≤2，#4 Q4）
+                summary = _summarize_short_video(
+                    video_path=video_path,
+                    metadata=metadata,
+                    base_url=base_url, api_key=api_key, model=model,
+                    progress=pg,
+                )
                 chapters: list[dict] = []
             else:
                 # ═══════ 长视频管线（≥90s）═══════

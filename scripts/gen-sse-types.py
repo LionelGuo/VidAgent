@@ -2,7 +2,7 @@
 """生成 frontend/src/lib/sse-events.ts（#1 SSE 共享 schema 的 codegen）。
 
 解析后端枚举的字符串字面量（server/models.py 的 TaskStatus 与
-src/vidagent/tools/summarizer.py 的 ProgressStage），与事件 shape 模板
+src/vidagent/tools/summarize/progress.py 的 ProgressStage），与事件 shape 模板
 拼装为 TypeScript 类型文件。枚举是词汇表的单一来源，事件 shape 模板在此
 脚本内，一次重新生成即整体更新，防止前后端词汇漂移（stores.ts 曾残留
 后端已不发出的 asr/analyzing）。
@@ -24,15 +24,15 @@ OUTPUT = REPO_ROOT / "frontend" / "src" / "lib" / "sse-events.ts"
 
 ENUM_SOURCES: list[tuple[Path, str]] = [
     (REPO_ROOT / "server" / "models.py", "TaskStatus"),
-    (REPO_ROOT / "src" / "vidagent" / "tools" / "summarizer.py", "ProgressStage"),
+    (REPO_ROOT / "src" / "vidagent" / "tools" / "summarize" / "progress.py", "ProgressStage"),
 ]
 
-CHUNK_STATUS_SOURCE = REPO_ROOT / "src" / "vidagent" / "tools" / "summarizer.py"
+CHUNK_STATUS_SOURCE = REPO_ROOT / "src" / "vidagent" / "tools" / "summarize" / "multimodal.py"
 
 HEADER = """\
 // ⚠️ GENERATED FILE — 勿手改。
 // 来源：scripts/gen-sse-types.py（解析 server/models.py 的 TaskStatus、
-// src/vidagent/tools/summarizer.py 的 ProgressStage 与分段状态字面量）。
+// src/vidagent/tools/summarize/progress.py 的 ProgressStage 与分段状态字面量）。
 // 重新生成：python scripts/gen-sse-types.py
 // 一致性检查：python scripts/gen-sse-types.py --check
 // 本文件是总结进度 SSE（Channel B）的前后端共享词汇表；wire 字节等价契约
@@ -61,7 +61,7 @@ def extract_str_enum_values(path: Path, class_name: str) -> list[str]:
 
 
 def extract_chunk_status_values() -> list[str]:
-    """提取 summarizer.py 的分段状态字面量（两种写入形态，文件出现序）。
+    """提取 summarize/multimodal.py 的分段状态字面量（两种写入形态，文件出现序）。
 
     chunk["status"] = "…" 赋值与 "status": "…" 字典字面量。用正则而非 AST：
     这是守卫而非解析器——宁多收（--check 提醒，假阳性安全方向），不漏收。
@@ -108,7 +108,7 @@ export interface SummaryChapter {{
 }}
 
 /** 长视频分段进度条目（progress 事件 chunks 数组元素）。
- *  status 字面量自动提取自 summarizer.py 的 chunk["status"] 赋值点。 */
+ *  status 字面量自动提取自 summarize/multimodal.py 的 chunk["status"] 赋值点。 */
 export interface SummaryChunk {{
   index: number;
   total: number;

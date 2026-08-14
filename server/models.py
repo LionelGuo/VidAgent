@@ -2,7 +2,7 @@
 
 TaskRecord 是总结任务的服务器侧终态记录（CONTEXT.md「任务记录 (Task Record)」词条）：
 服务器按 task_id 跟踪，SSE 端点轮询其状态产出 done/error 终态事件。
-与「进度 (Progress)」（vidagent.tools.summarizer，库内实时流式细节）分属两层，
+与「进度 (Progress)」（vidagent.tools.summarize，库内实时流式细节）分属两层，
 见 CONTEXT.md 的 Task / Progress 词条。
 """
 

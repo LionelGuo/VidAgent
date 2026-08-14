@@ -14,7 +14,7 @@ import json
 from dataclasses import dataclass
 
 from server.models import TaskRecord, TaskStatus
-from vidagent.tools.summarizer import Progress, ProgressStage
+from vidagent.tools.summarize import Progress, ProgressStage
 
 
 @dataclass

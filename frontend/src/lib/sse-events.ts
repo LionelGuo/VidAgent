@@ -1,6 +1,6 @@
 // ⚠️ GENERATED FILE — 勿手改。
 // 来源：scripts/gen-sse-types.py（解析 server/models.py 的 TaskStatus、
-// src/vidagent/tools/summarizer.py 的 ProgressStage 与分段状态字面量）。
+// src/vidagent/tools/summarize/progress.py 的 ProgressStage 与分段状态字面量）。
 // 重新生成：python scripts/gen-sse-types.py
 // 一致性检查：python scripts/gen-sse-types.py --check
 // 本文件是总结进度 SSE（Channel B）的前后端共享词汇表；wire 字节等价契约
@@ -37,13 +37,13 @@ export interface SummaryChapter {
 }
 
 /** 长视频分段进度条目（progress 事件 chunks 数组元素）。
- *  status 字面量自动提取自 summarizer.py 的 chunk["status"] 赋值点。 */
+ *  status 字面量自动提取自 summarize/multimodal.py 的 chunk["status"] 赋值点。 */
 export interface SummaryChunk {
   index: number;
   total: number;
   time_start: number;
   time_end: number;
-  status: "thinking" | "summarizing" | "waiting" | "done";
+  status: "waiting" | "done";
   text: string;
 }
 
