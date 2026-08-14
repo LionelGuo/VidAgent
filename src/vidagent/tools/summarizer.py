@@ -14,9 +14,12 @@ import re
 import subprocess
 import tempfile
 import time
+from enum import StrEnum
 from pathlib import Path
+from typing import Literal
 
 import httpx
+from pydantic import BaseModel, ConfigDict, Field
 
 from vidagent import llm_provider
 from vidagent.utils.audio import extract_audio
@@ -26,8 +29,25 @@ from vidagent.utils.timer import Timer
 logger = logging.getLogger(__name__)
 
 
-class _LiveSummary:
-    """多模态总结实时流：SSE 轮询时获取当前已生成的总结文本。
+class ProgressStage(StrEnum):
+    """总结进度阶段词汇表（后端唯一来源；前端 stores.ts 的镜像校准归 #1）。
+
+    DOWNLOADED 由 SSE 端点在 local_path 就绪时合成，从不写入 Progress.stage；
+    空串 "" 是空闲哨兵（初始 / reset 态），不是阶段成员——发射新值会改变前端可见行为。
+    """
+
+    DOWNLOADING = "downloading"
+    DOWNLOADED = "downloaded"
+    EXTRACTING = "extracting"
+    SUMMARIZING = "summarizing"
+    THINKING = "thinking"
+    SUMMARY = "summary"
+    CHUNKING = "chunking"
+    MERGING = "merging"
+
+
+class Progress(BaseModel):
+    """多模态总结实时流：SSE 轮询时获取当前已生成的总结文本（CONTEXT.md「进度」词条）。
 
     单用户 GIL 设计；工具线程写、SSE 协程读，GIL 下单属性读写原子，够用。
     支持两种模式：
@@ -35,20 +55,21 @@ class _LiveSummary:
     - chunked: 逐段追加完整摘要（长音频分块）
     """
 
-    def __init__(self) -> None:
-        self.active = False
-        self.partial = ""
-        # 当前阶段: downloading | extracting | summarizing | chunking | merging | thinking | summary
-        self.stage = ""
-        self.download_pct = 0   # 下载进度 0-100
-        # 分块进度（长视频分段总结）：每段一条 {index, total, time_start, time_end, status, text}
-        self.chunks: list[dict] = []
-        self.current_chunk: int = -1  # 当前流式写入的分块索引（-1 = 主输出 partial）
+    model_config = ConfigDict(validate_assignment=True)
+
+    active: bool = False
+    partial: str = ""
+    # 当前阶段（ProgressStage）；"" 为空闲哨兵（初始 / reset 态）
+    stage: ProgressStage | Literal[""] = ""
+    download_pct: int = 0  # 下载进度 0-100
+    # 分块进度（长视频分段总结）：每段一条 {index, total, time_start, time_end, status, text}
+    chunks: list[dict] = Field(default_factory=list)
+    current_chunk: int = -1  # 当前流式写入的分块索引（-1 = 主输出 partial）
 
     def begin(self, label: str = "") -> None:
         self.active = True
         self.partial = label
-        self.stage = "summarizing"
+        self.stage = ProgressStage.SUMMARIZING
 
     def append(self, text: str) -> None:
         self.partial += text
@@ -64,17 +85,17 @@ class _LiveSummary:
 
 
 # per-task progress（支持并行总结 + 前端流式）
-_task_progress: dict[str, _LiveSummary] = {}
+_task_progress: dict[str, Progress] = {}
 
 
-def create_progress(task_id: str) -> _LiveSummary:
+def create_progress(task_id: str) -> Progress:
     """创建一个 per-task 进度追踪器，存入全局 dict。"""
-    tp = _LiveSummary()
+    tp = Progress()
     _task_progress[task_id] = tp
     return tp
 
 
-def get_progress(task_id: str) -> _LiveSummary | None:
+def get_progress(task_id: str) -> Progress | None:
     """获取 per-task 进度追踪器。"""
     return _task_progress.get(task_id)
 
@@ -284,7 +305,7 @@ class _ThinkStripper:
 
 def _chat_completion_stream(
     base_url: str, api_key: str, payload: dict, timeout: int = 300,
-    progress: _LiveSummary | None = None,
+    progress: Progress | None = None,
 ) -> str:
     """流式 chat completion，返回完整响应文本；同时更新 progress（None 时禁用进度输出）。"""
     payload = {**payload, "stream": True}
@@ -302,7 +323,7 @@ def _chat_completion_stream(
 
     # 分块模式：streaming 内容写入当前分块条目而非主 partial
     def _chunk_target() -> dict | None:
-        if progress is not None and 0 <= getattr(progress, "current_chunk", -1) < len(progress.chunks):
+        if progress is not None and 0 <= progress.current_chunk < len(progress.chunks):
             return progress.chunks[progress.current_chunk]
         return None
 
@@ -319,7 +340,7 @@ def _chat_completion_stream(
             return
         if not thinking_shown:
             # 用 stage 标记思考阶段（前端胶囊指示器显示），不再写入占位文字
-            pg.stage = "thinking"
+            pg.stage = ProgressStage.THINKING
             pg.set("")
             thinking_shown = True
         # 思考内容流式输出（限制长度防止 UI 过载）
@@ -382,7 +403,7 @@ def _chat_completion_stream(
                                     else:
                                         # 第一个正文 token 到达：清空思考内容，进入正文流式阶段
                                         pg.set("")
-                                        pg.stage = "summary"
+                                        pg.stage = ProgressStage.SUMMARY
                                         thinking_shown = False
                                 accumulated += stripped
                                 token_count += len(stripped)
@@ -632,7 +653,7 @@ def _summarize_chunk(
     time_start: float, time_end: float,
     metadata: dict, frames: list[Path],
     base_url: str, api_key: str, model: str,
-    progress: _LiveSummary | None = None,
+    progress: Progress | None = None,
 ) -> str:
     """发送单个音频段落 + 帧到多模态模型，返回段落总结。"""
     import base64 as b64
@@ -691,7 +712,7 @@ def _frame_timestamp(frame_path: Path) -> float | None:
 def _merge_summaries(
     chunk_summaries: list[str], metadata: dict,
     base_url: str, api_key: str, model: str,
-    progress: _LiveSummary | None = None,
+    progress: Progress | None = None,
 ) -> str:
     """将多个段落摘要合并为完整总结。"""
     if len(chunk_summaries) <= 1:
@@ -726,7 +747,7 @@ def _summarize_multimodal(
     metadata: dict,
     video_path: Path | None = None,
     pre_extracted_frames: list[Path] | None = None,
-    progress: _LiveSummary | None = None,
+    progress: Progress | None = None,
 ) -> str:
     """音频直送多模态模型（+ 自适应关键帧），跳过 ASR 转写。
 
@@ -820,7 +841,7 @@ def _summarize_multimodal(
 def _summarize_multimodal_chunked(
     mp3_path: Path, duration: float, metadata: dict,
     all_frames: list[Path], base_url: str, api_key: str, model: str,
-    progress: _LiveSummary | None = None,
+    progress: Progress | None = None,
 ) -> str:
     """长音频分块处理：切分 → 逐段总结 → 合并。"""
     import tempfile
@@ -840,7 +861,7 @@ def _summarize_multimodal_chunked(
         # 初始化分块进度（前端渲染分段圆角框）
         pg.chunks = []
         pg.current_chunk = -1
-        pg.stage = "chunking"
+        pg.stage = ProgressStage.CHUNKING
         pg.set("")
 
         chunk_summaries: list[str] = []
@@ -885,7 +906,7 @@ def _summarize_multimodal_chunked(
 
         # 分块全部完成，进入合并阶段
         pg.current_chunk = -1
-        pg.stage = "merging"
+        pg.stage = ProgressStage.MERGING
         chunks_total = time.perf_counter() - t0_chunks
         logger.info("分块总结全部完成: %d 段 / %.1fs，开始合并…", total, chunks_total)
         return _merge_summaries(
@@ -1029,7 +1050,7 @@ def _summarize_multimodal_with_chapters(
     base_url: str,
     api_key: str,
     model: str,
-    progress: _LiveSummary | None = None,
+    progress: Progress | None = None,
 ) -> tuple[list[dict], str]:
     """章节感知的多模态总结：完整音频 + 候选边界帧 → 章节划分 + 时间线总结。
 
@@ -1231,7 +1252,7 @@ def _summarize_short_video(
     base_url: str,
     api_key: str,
     model: str,
-    progress: _LiveSummary | None = None,
+    progress: Progress | None = None,
 ) -> str:
     """短视频总结：预处理后 base64 video_url + 音频 → 单次 LLM 调用。
 

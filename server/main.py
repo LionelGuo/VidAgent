@@ -24,7 +24,6 @@ import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import Any
 
 # 确保项目根在 sys.path（server/ 从项目根启动）
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -37,6 +36,7 @@ from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
+from server.models import TaskRecord, TaskStatus
 from server.sse_relay import relay_stream, relay_stream_transparent
 
 # 确保 vidagent 模块的 INFO 日志能输出到 uvicorn 控制台
@@ -83,8 +83,8 @@ _executor = ThreadPoolExecutor(max_workers=5)
 # vLLM 并发控制：避免多视频同时 Omni 推理导致显存/队列拥塞
 _llm_semaphore = threading.BoundedSemaphore(2)
 
-# 总结任务追踪：{task_id: {"status": str, "result": str, "partial": str}}
-_summarize_tasks: dict[str, dict[str, Any]] = {}
+# 总结任务追踪（TaskRecord 类型化记录，字段见 server/models.py）
+_summarize_tasks: dict[str, TaskRecord] = {}
 # video_id → task_id 映射（供浏览器按视频 ID 连接 SSE）
 _video_task_map: dict[str, str] = {}
 
@@ -263,11 +263,10 @@ async def tool_summarize_start(req: SummarizeRequest):
     from vidagent.tools.summarizer import cleanup_progress, extract_and_summarize
 
     task_id = uuid.uuid4().hex[:12]
-    _summarize_tasks[task_id] = {
-        "status": "processing",
-        "result": None,
-        "partial": "⏳ 总结任务已创建…",
-    }
+    _summarize_tasks[task_id] = TaskRecord(
+        status=TaskStatus.PROCESSING,
+        partial="⏳ 总结任务已创建…",
+    )
 
     # 建立 video_id → task_id 映射
     video_id = (req.metadata or {}).get("video_id")
@@ -277,12 +276,11 @@ async def tool_summarize_start(req: SummarizeRequest):
     def _run():
         try:
             result = extract_and_summarize(req.local_path, req.metadata, task_id=task_id)
-            _summarize_tasks[task_id]["status"] = "done"
-            _summarize_tasks[task_id]["result"] = result
+            _summarize_tasks[task_id].status = TaskStatus.DONE
+            _summarize_tasks[task_id].result = result
         except Exception as e:
             logger.exception("总结任务 %s 失败", task_id)
-            _summarize_tasks[task_id]["status"] = "error"
-            _summarize_tasks[task_id]["result"] = str(e)
+            _summarize_tasks[task_id].fail(str(e))
         finally:
             cleanup_progress(task_id)
             if video_id:
@@ -300,7 +298,7 @@ async def tool_summarize_start(req: SummarizeRequest):
 @app.get("/api/tools/summarize/{task_id}/stream")
 async def tool_summarize_stream(task_id: str):
     """SSE 进度流：实时推送总结进度（per-task 隔离）。"""
-    from vidagent.tools.summarizer import get_progress
+    from vidagent.tools.summarizer import ProgressStage, get_progress
 
     async def _stream():
         import json
@@ -319,25 +317,25 @@ async def tool_summarize_stream(task_id: str):
                 yield "data: [DONE]\n\n"
                 return
 
-            if task["status"] in ("done", "error"):
-                if task["status"] == "done":
+            if task.status in (TaskStatus.DONE, TaskStatus.ERROR):
+                if task.status is TaskStatus.DONE:
                     done_payload = {
                         'type': 'done',
-                        'result': task.get('result', ''),
-                        'chapters': task.get('chapters', []),
-                        'local_path': task.get('local_path', ''),
+                        'result': task.result or '',
+                        'chapters': task.chapters,
+                        'local_path': task.local_path or '',
                     }
                     yield f"data: {json.dumps(done_payload, ensure_ascii=False)}\n\n"
                 else:
-                    yield f"data: {json.dumps({'type': 'error', 'message': task['result']}, ensure_ascii=False)}\n\n"
+                    yield f"data: {json.dumps({'type': 'error', 'message': task.result}, ensure_ascii=False)}\n\n"
                 yield "data: [DONE]\n\n"
                 return
 
             # ★ 下载完成即推送 local_path（不等总结完成）
-            if not last_local_path_sent and task.get("local_path"):
+            if not last_local_path_sent and task.local_path:
                 last_local_path_sent = True
                 downloaded_payload = {
-                    'type': 'progress', 'stage': 'downloaded', 'local_path': task['local_path']
+                    'type': 'progress', 'stage': ProgressStage.DOWNLOADED, 'local_path': task.local_path
                 }
                 yield f"data: {json.dumps(downloaded_payload, ensure_ascii=False)}\n\n"
 
@@ -347,8 +345,8 @@ async def tool_summarize_stream(task_id: str):
                 summary_active = progress.active
                 summary_text = progress.partial if progress.active else ""
                 # ★ 推送阶段事件：stage 变化 或 download_pct 变化（下载进度实时更新）
-                stage = getattr(progress, 'stage', '') or ''
-                download_pct = getattr(progress, 'download_pct', 0)
+                stage = progress.stage or ''
+                download_pct = progress.download_pct
                 if stage != last_summary_stage or download_pct != last_download_pct:
                     last_summary_stage = stage
                     last_download_pct = download_pct
@@ -358,7 +356,7 @@ async def tool_summarize_stream(task_id: str):
                     yield f"data: {json.dumps(progress_payload, ensure_ascii=False)}\n\n"
 
                 # ★ 分块进度推送：chunks 内容变化时（长视频分段总结的逐段状态）
-                chunks = getattr(progress, 'chunks', []) or []
+                chunks = progress.chunks
                 chunks_snapshot = json.dumps(chunks, ensure_ascii=False)
                 if chunks_snapshot != last_chunks_snapshot:
                     last_chunks_snapshot = chunks_snapshot
@@ -445,7 +443,12 @@ async def tool_batch_summarize(req: BatchSummarizeRequest):
     前端可立即按 video_id 连接 SSE 获取各视频流式进度。
     """
     from vidagent.tools.downloader import download_video
-    from vidagent.tools.summarizer import cleanup_progress, create_progress, get_progress
+    from vidagent.tools.summarizer import (
+        ProgressStage,
+        cleanup_progress,
+        create_progress,
+        get_progress,
+    )
 
     batch_id = f"batch_{uuid.uuid4().hex[:12]}"
     tasks: list[dict] = []
@@ -460,7 +463,7 @@ async def tool_batch_summarize(req: BatchSummarizeRequest):
         try:
             # ── 提前创建 progress（下载阶段也需要推送进度）──
             pg = create_progress(task_id)
-            pg.stage = "downloading"
+            pg.stage = ProgressStage.DOWNLOADING
 
             # ── 下载（重试）──
             local_path = None
@@ -479,7 +482,7 @@ async def tool_batch_summarize(req: BatchSummarizeRequest):
                     result = download_video(video_url, video_id, progress_callback=_dl_progress)
                     if result.get("status") == "success":
                         local_path = result["local_path"]
-                        _summarize_tasks[task_id]["local_path"] = local_path
+                        _summarize_tasks[task_id].local_path = local_path
                         break
                     last_err = result.get("error", "未知下载错误")
                     if result.get("fatal"):
@@ -496,8 +499,7 @@ async def tool_batch_summarize(req: BatchSummarizeRequest):
                     time.sleep(delay)
 
             if not local_path:
-                _summarize_tasks[task_id]["status"] = "error"
-                _summarize_tasks[task_id]["result"] = f"下载失败(已重试{MAX_RETRIES}次): {last_err}"
+                _summarize_tasks[task_id].fail(f"下载失败(已重试{MAX_RETRIES}次): {last_err}")
                 cleanup_progress(task_id)
                 _video_task_map.pop(video_id, None)
                 task_entry["status"] = "error"
@@ -510,7 +512,7 @@ async def tool_batch_summarize(req: BatchSummarizeRequest):
 
             # 获取已创建的 per-task progress（下载阶段已通过 create_progress 创建）
             pg = get_progress(task_id)
-            pg.stage = "extracting"
+            pg.stage = ProgressStage.EXTRACTING
             pg.begin()  # 激活流式输出 → SSE 端点开始推送
 
             video_path = Path(local_path)
@@ -541,7 +543,7 @@ async def tool_batch_summarize(req: BatchSummarizeRequest):
             if isinstance(duration, (int, float)) and 0 < duration < 90:
                 # ═══════ 短视频管线（<90s）═══════
                 logger.info("🎬 短视频管线: %.0fs", duration)
-                pg.stage = "summarizing"
+                pg.stage = ProgressStage.SUMMARIZING
                 with _llm_semaphore:
                     summary = _summarize_short_video(
                         video_path=video_path,
@@ -572,9 +574,9 @@ async def tool_batch_summarize(req: BatchSummarizeRequest):
                 summary = phase1_result.get("summary", "")
                 chapters: list[dict] = []
 
-            _summarize_tasks[task_id]["status"] = "done"
-            _summarize_tasks[task_id]["result"] = summary
-            _summarize_tasks[task_id]["chapters"] = chapters
+            _summarize_tasks[task_id].status = TaskStatus.DONE
+            _summarize_tasks[task_id].result = summary
+            _summarize_tasks[task_id].chapters = chapters
             task_entry["status"] = "done"
             logger.info(
                 "✅ 批量总结完成: %s (%s) | chapters=%d",
@@ -583,8 +585,7 @@ async def tool_batch_summarize(req: BatchSummarizeRequest):
 
         except Exception as e:
             logger.exception("批量总结任务 %s 异常", video_id)
-            _summarize_tasks[task_id]["status"] = "error"
-            _summarize_tasks[task_id]["result"] = str(e)
+            _summarize_tasks[task_id].fail(str(e))
             task_entry["status"] = "error"
         finally:
             cleanup_progress(task_id)
@@ -601,11 +602,10 @@ async def tool_batch_summarize(req: BatchSummarizeRequest):
         video["_task_id"] = task_id
         video["_video_id"] = video_id
         _video_task_map[video_id] = task_id
-        _summarize_tasks[task_id] = {
-            "status": "processing",
-            "result": None,
-            "partial": f"⏳ {video.get('title', video_id)} 排队中…",
-        }
+        _summarize_tasks[task_id] = TaskRecord(
+            status=TaskStatus.PROCESSING,
+            partial=f"⏳ {video.get('title', video_id)} 排队中…",
+        )
         tasks.append({"task_id": task_id, "video_id": video_id, "status": "processing"})
 
     # 所有视频并行提交到线程池（task_entry 按序对应：多线程各自写自己的状态，
@@ -630,23 +630,25 @@ async def tool_batch_summarize(req: BatchSummarizeRequest):
             req_by_id[rid] = v.model_dump()
     results = []
     for t in tasks:
-        task_data = _summarize_tasks.get(t["task_id"], {})
+        task_data = _summarize_tasks.get(t["task_id"])
         video_id = t["video_id"]
         req_v = req_by_id.get(video_id, {})
-        if task_data.get("status") == "done":
+        if task_data is not None and task_data.status is TaskStatus.DONE:
             results.append({
                 "video_id": video_id,
                 "video_url": req_v.get("video_url", ""),
                 "title": req_v.get("title") or video_id,
                 "status": "done",
-                "summary": task_data.get("result", ""),
-                "local_path": task_data.get("local_path", ""),
+                "summary": task_data.result or "",
+                "local_path": task_data.local_path or "",
             })
         else:
             results.append({
                 "video_id": video_id,
                 "status": "error",
-                "error": task_data.get("result", "未知错误"),
+                # 旧 .get("result", 默认) 只在键缺失时兜底；此处等价改为仅 None 兜底，
+                # 空串错误信息（str(e) == ""）必须原样透传而非被默认值遮蔽
+                "error": task_data.result if task_data is not None and task_data.result is not None else "未知错误",
             })
 
     # 清理 video_id → task_id 映射
