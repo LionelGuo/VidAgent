@@ -188,8 +188,8 @@ export async function POST(req: Request) {
     maxSteps: 10,
     onError: (err: any) => {
       const msg = err?.error?.message || err?.message || String(err);
-      console.error("[streamText ERROR]", msg.slice(0, 1000));
-      if (err?.error?.cause) console.error("[streamText CAUSE]", JSON.stringify(err.error.cause).slice(0, 500));
+      console.error("[api] streamText error:", msg.slice(0, 1000));
+      if (err?.error?.cause) console.error("[api] streamText cause:", JSON.stringify(err.error.cause).slice(0, 500));
     },
     tools: {
       // ── 检索工具 ──
@@ -303,7 +303,7 @@ export async function POST(req: Request) {
             throw new Error(`批量总结失败 HTTP ${res.status}: ${text.slice(0, 200)}`);
           }
           const data = await res.json();
-          console.log("[batch_summarize_videos] response:", JSON.stringify(data).slice(0, 300));
+          console.log("[api] batch_summarize response:", JSON.stringify(data).slice(0, 300));
           const results: any[] = data.results || [];
           const summaries = results
             .filter((r: any) => r.status === "done")
