@@ -12,27 +12,6 @@
 | 视频总结 | 多模态模型直送（音频 + 关键帧），短视频 / 长视频双管线（长视频含章节结构化） |
 | 对话界面 | Next.js 聊天 UI：流式思考过程、工具调用实时进度、批量总结卡片 |
 
-## 架构
-
-```
-Next.js 前端 :3000（AI SDK 流式对话 + 视频卡片 / 总结详情）
-   │
-   ▼
-FastAPI 后端 :8000
-   ├─ /v1/chat/completions   SSE Relay（按 provider 预设分流 xml / transparent）
-   ├─ /api/tools/{search,hot,creator,download,summarize}   工具 REST + SSE 进度
-   └─ 批量总结编排（并行下载 + 总结，失败重试 + 重试端点）
-   │
-   ├─▶ LLM 提供方（LLM_PROVIDER 单点切换）
-   │     ├─ vllm        自托管 vLLM-omni（bare mode，<tool_call> XML 协议）
-   │     ├─ siliconflow 远程 API（原生 function calling，audio_url）
-   │     └─ generic     任意 OpenAI 兼容端点（原生透传）
-   │
-   └─▶ 平台层
-         ├─ B站 / YouTube   httpx + yt-dlp（WBI 签名 / Data API v3 / JS runtime）
-         └─ 抖音 / 小红书 / 快手   MediaCrawler CDP（连接现有 Chrome :9222，页面监听）
-```
-
 ## 快速开始
 
 > 先试这个：服务跑起来后输入「**搜索 B站 Python 教程并总结第一个**」即可体验完整链路（B站无需任何配置）。
@@ -92,39 +71,7 @@ docker run --network=host --env-file .env vidagent
 > **YouTube 下载需要 Node.js ≥ 22**（yt-dlp 2026+ 依赖 JS runtime 解密签名/求解挑战，否则格式退化到 240p）。
 > Docker 镜像已内置 node；裸机部署请确认 `node --version ≥ 22`。挑战求解脚本首次使用会从 GitHub 拉取一次（走 `YOUTUBE_PROXY`，缓存于 `~/.cache/yt-dlp`）。
 
-## 部署
 
-### Docker（主逻辑镜像：FastAPI + 前端）
-
-```bash
-docker build -t vidagent .
-# 场景二：远程 API（.env 填 LLM_PROVIDER/LLM_API_KEY/LLM_BASE_URL/LLM_MODEL 四项）
-docker run --network=host --env-file .env vidagent
-# 场景一：配合本地 vLLM（.env 改 LLM_PROVIDER=vllm，LLM_BASE_URL 指向宿主模型服务，LLM_MODEL 为本地模型目录）
-docker run --network=host --env-file .env vidagent
-```
-
-`--network=host` 推荐：CDP 平台复用宿主 Chrome `:9222`，浏览器直达 localhost。
-若宿主 3000/8000 端口被占用（如同时跑开发服务器），可改桥接 + 端口映射：
-`docker run -p 18000:8000 -p 13000:3000 --env-file .env vidagent`（容器内访问第三方 API 走 NAT 直连）。
-抖音/小红书/快手需宿主 Chrome 开调试端口（见②）。
-
-### 本地 vLLM-omni 模型服务（场景一，独立部署）
-
-```bash
-bash scripts/deploy_vllm_omni.sh    # 装 vllm-omni + 下载模型（≥24GB VRAM，默认到项目根目录 models/）
-bash scripts/start_vllm_bare.sh     # 前台启动（端口 6006；默认 models/，可传参数指定模型路径）
-```
-
-### 裸机开发
-
-```bash
-uv sync --extra server --extra douyin --extra dev    # 后端依赖
-uv run uvicorn server.main:app --host 0.0.0.0 --port 8000   # 后端
-cd frontend && npm install && npm run dev            # 前端 :3000
-```
-
-进程管理说明：后端 + 前端为两个独立进程，无内置编排。`uv run uvicorn` 是包装进程——直接 kill 它子进程会变孤儿继续占用 8000 端口，**必须按监听 PID 操作**（`ss -tlnp | grep :8000` 拿 PID 再 kill）。生产部署推荐 Docker（入口 `docker/entrypoint.sh` 统一管理）。
 
 ## 技术选型要点
 
@@ -133,7 +80,8 @@ cd frontend && npm install && npm run dev            # 前端 :3000
 | 包管理 | uv + pyproject.toml | 与 MediaCrawler 一致；重依赖走 optional extras |
 | 后端 | FastAPI + uvicorn | SSE relay（OpenAI 兼容协议转换）+ 工具 REST |
 | 前端 | Next.js 15 + AI SDK | 流式对话 + SSE 进度消费，零 UI 库依赖 |
-| Agent | AI SDK 工具流（无 agent 框架） | 工具调用经 SSE relay 规范化，双 provider 协议兼容 |
+| Agent | AI SDK 工具流（无 agent 框架） | 工具调用经 SSE relay 规范化，多 provider 协议兼容 |
+| 模型服务 | OpenAI 兼容端点（`LLM_PROVIDER` 单点切换） | `.env` 显式配置端点/密钥/模型名，无硬编码；SiliconFlow 远程或 vLLM-omni 自托管 |
 | B站爬虫 | 直连 REST API + WBI 签名 | 公开数据免登录、无 Playwright 开销 |
 | YouTube | Data API v3 + yt-dlp | 检索走官方 API；下载含 PO 门控降级链 |
 | 抖音/小红书/快手 | MediaCrawler CDP | 连接现有 Chrome，页面监听（不碰签名，规避风控） |
@@ -149,8 +97,8 @@ src/vidagent/
 ├── tools/
 │   ├── crawler.py · downloader.py · summarizer.py   检索/下载/总结工具
 │   └── platforms/   五平台适配（bilibili/youtube/douyin/xiaohongshu/kuaishou + CDP 共享层）
-├── utils/        wbi.py · dates.py · storage.py · audio.py · frames.py · timer.py
-├── llm_provider.py   provider 预设系统（端点/relay/媒体格式/推理模式）
+├── utils/        wbi.py · dates.py · storage.py · audio.py · frames.py · timer.py · logging.py
+├── llm_provider.py   provider 预设（relay/媒体格式/推理模式；端点/密钥/模型名由 .env 显式配置）
 └── config.py     配置读取（.env → Pydantic Settings）
 frontend/         Next.js 前端（chat 路由 + 组件 + stores）
 vendor/MediaCrawler/   抖音/小红书/快手 CDP 平台依赖（vendored 源码，非商用许可，见 NOTICE）
