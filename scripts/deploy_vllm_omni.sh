@@ -14,18 +14,20 @@
 #   bash scripts/deploy_vllm_omni.sh stop       # 停止服务
 #
 # 可用环境变量覆盖（带默认值）：
-#   MODEL_ID        模型 ID（默认 Qwen/Qwen3-Omni-30B-A3B-Thinking，AWQ 4bit）
+#   MODEL_ID        模型 ID（默认 Qwen/Qwen3-Omni-Thinking-AWQ-4bit，AWQ 4bit 约 18GB）
 #   MODEL_DIR       模型本地目录（默认 ./models/Qwen3-Omni-Thinking）
-#   MODEL_SOURCE    下载源：hf（HuggingFace，默认）/ modelscope（国内更快）
+#   MODEL_SOURCE    下载源：modelscope（默认，国内可用）/ hf（HuggingFace）
+#                   ⚠️ hf 源的 Qwen 仓库是 gated：需 huggingface-cli login 授权，
+#                      且 hf 对应仓库名为 Qwen/Qwen3-Omni-30B-A3B-Thinking-AWQ（非同名）
 #   PORT            服务端口（默认 6006）
 #   GPU_MEM_UTIL    显存利用率（默认 0.85）
 # =============================================================================
 
 set -euo pipefail
 
-MODEL_ID="${MODEL_ID:-Qwen/Qwen3-Omni-30B-A3B-Thinking}"
+MODEL_ID="${MODEL_ID:-Qwen/Qwen3-Omni-Thinking-AWQ-4bit}"
 MODEL_DIR="${MODEL_DIR:-$(pwd)/models/Qwen3-Omni-Thinking}"
-MODEL_SOURCE="${MODEL_SOURCE:-hf}"
+MODEL_SOURCE="${MODEL_SOURCE:-modelscope}"
 PORT="${PORT:-6006}"
 GPU_MEM_UTIL="${GPU_MEM_UTIL:-0.85}"
 LOG_FILE="${LOG_FILE:-./vllm-omni.log}"
