@@ -15,6 +15,7 @@ from __future__ import annotations
 import logging
 
 from vidagent.config import settings
+
 # 平台模块清单单一来源在 platforms/__init__.py（#3 Q6）：
 # 别名保留原私有名，避免改动 3 处调用点
 from vidagent.tools.platforms import (
