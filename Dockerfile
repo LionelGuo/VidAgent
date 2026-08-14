@@ -21,12 +21,12 @@ RUN npm run build
 FROM python:3.11-slim AS runtime
 
 # 系统依赖：ffmpeg（音视频处理）、git（MediaCrawler 等）、curl、
-# libgomp1（ctranslate2/faster-whisper 运行时）、Node 20（Next standalone server）
+# libgl1/libglib2.0（playwright 运行时）、Node 22（yt-dlp JS runtime ≥22 + Next standalone server）
 RUN apt-get update && apt-get install -y --no-install-recommends \
         ffmpeg git curl ca-certificates \
-        libgomp1 libgl1 libglib2.0-0 \
+        libgl1 libglib2.0-0 \
     && rm -rf /var/lib/apt/lists/* \
-    && curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
+    && curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
     && apt-get install -y --no-install-recommends nodejs \
     && rm -rf /var/lib/apt/lists/*
 
@@ -38,8 +38,8 @@ WORKDIR /app
 # 先装依赖（利用层缓存：仅 pyproject/uv.lock 变化才重装）
 # README.md 也是 pyproject 的 hatchling readme 字段引用，构建包时需要
 COPY pyproject.toml uv.lock README.md ./
-# 安装运行所需 extras：server（FastAPI）+ asr（faster-whisper）+ douyin（playwright）+ agent
-RUN uv sync --frozen --extra server --extra asr --extra douyin --extra agent
+# 安装运行所需 extras：server（FastAPI）+ douyin（playwright + MediaCrawler 依赖）
+RUN uv sync --frozen --extra server --extra douyin
 
 # 安装 Playwright 驱动（CDP 连接外部 Chrome，无需下载浏览器二进制）
 RUN uv run playwright install-deps || true
@@ -52,6 +52,8 @@ COPY --from=frontend-build /build/public ./frontend/public
 # 后端代码
 COPY src/ ./src/
 COPY server/ ./server/
+# MediaCrawler vendored 源码（抖音/小红书/快手 CDP 平台，详见 ADR-0007）
+COPY vendor/ ./vendor/
 
 # 运行时目录
 RUN mkdir -p workspace logs
