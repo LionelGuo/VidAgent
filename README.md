@@ -37,22 +37,37 @@ FastAPI 后端 :8000
 
 ## 快速开始
 
+> 先试这个：服务跑起来后输入「**搜索 B站 Python 教程并总结第一个**」即可体验完整链路（B站无需任何配置）。
+
+部署分三步：**① 跑起服务**（必做）→ **② 配置平台访问**（按需）→ **③ 本地模型**（可选）。
+
+### ① 跑起服务（Docker，推荐）
+
 ```bash
-# 1. 安装依赖（uv）
-uv sync --extra server --extra douyin --extra dev   # 后端 + CDP 平台 + 测试/lint
-
-# 2. 配置 LLM（复制模板并填 key）
-cp .env.example .env        # 至少填 OPENAI_API_KEY（默认指向 SiliconFlow）
-
-# 3. 启动后端
-uv run uvicorn server.main:app --host 0.0.0.0 --port 8000
-
-# 4. 启动前端（另开终端）
-cd frontend && npm install && npm run dev
+git clone <repo> && cd VidAgent
+cp .env.example .env            # 填 OPENAI_API_KEY（默认 SiliconFlow，填 key 即用）
+docker build -t vidagent .
+docker run --network=host --env-file .env vidagent
 #   浏览器打开 http://localhost:3000
 ```
 
-> 抖音/小红书/快手需 Windows Chrome 以调试端口 `:9222` 运行且平台已登录。
+`--network=host` 让容器复用宿主 Chrome `:9222`（见②）与 localhost。仅 B站/YouTube 无需 Chrome，
+可改桥接 + 端口映射（见「部署」）。裸机开发（非 Docker）亦见「部署」节。
+
+### ② 配置平台访问（按需 —— B站/YouTube 开箱即用；抖音/小红书/快手需一次性配置）
+
+抖音/小红书/快手通过 CDP 复用你**已登录的 Chrome**（不存密码），需一次性配置（详见
+[部署指南](docs/服务部署与配置指南.md)）：
+- Windows Chrome 以 `--remote-debugging-port=9222` 启动，并在其中登录对应平台（含 Chrome 146+
+  调试模式注意事项，见部署指南故障排查）；
+- **Docker 部署需额外设 `CDP_HOST`**：Windows Docker Desktop 桥接网络下容器内 `localhost` 不是宿主，
+  在 `.env` 加 `CDP_HOST=host.docker.internal`（裸机/WSL2 部署无需设置）；
+- （可选）`.env` 填 `BILI_COOKIE`（B站创作者主页/高清）、`YOUTUBE_API_KEY`（YouTube 检索配额）。
+
+### ③ 本地模型（可选）
+
+默认用 SiliconFlow 等远程 OpenAI 兼容 API（填 `OPENAI_API_KEY` 即用，无需本地 GPU）。有
+≥24GB GPU 可自托管 Qwen3-Omni：`bash scripts/deploy_vllm_omni.sh install`（傻瓜脚本）。
 
 ## 配置
 
@@ -67,7 +82,7 @@ cd frontend && npm install && npm run dev
 | `MULTIMODAL_BASE_URL` / `MULTIMODAL_MODEL` | 多模态端点（留空复用上面的 base_url + model，单端点平台直接留空） | 空 |
 | `BILI_COOKIE` | B站 Cookie（含 `SESSDATA`；下载高清流与创作者主页接口均需，避免 CDN 412） | 空 |
 | `YOUTUBE_API_KEY` / `YOUTUBE_COOKIE` / `YOUTUBE_PROXY` | YouTube 采集（可选）。`YOUTUBE_PROXY` 同时供抖音等 CDP 平台的部分请求复用 | 空 |
-| `MEDIACRAWLER_ROOT` | MediaCrawler 目录（抖音/小红书/快手 CDP 平台需要） | `~/Code/MediaCrawler` |
+| `MEDIACRAWLER_ROOT` | MediaCrawler 目录（已 vendored 于仓库 `vendor/MediaCrawler/`，见 ADR-0007；可覆盖指向外部副本） | `vendor/MediaCrawler` |
 | `WORKSPACE_DIR` | 媒体缓存目录（>7 天自动清理） | `workspace/` |
 
 **前端 `frontend/.env`**（复制 `frontend/.env.example`）：
@@ -142,9 +157,10 @@ src/vidagent/
 ├── llm_provider.py   provider 预设系统（端点/relay/媒体格式/推理模式）
 └── config.py     配置读取（.env → Pydantic Settings）
 frontend/         Next.js 前端（chat 路由 + 组件 + stores）
+vendor/MediaCrawler/   抖音/小红书/快手 CDP 平台依赖（vendored 源码，非商用许可，见 NOTICE / ADR-0007）
 scripts/          bench*.py · debug_tools.py · serve_omni.py · deploy_vllm_omni.sh
-tests/            pytest（36 项）
-docs/             方案文档 + ADR（docs/adr/）
+tests/            pytest（33 passed + 3 xfailed）
+docs/             方案文档 + ADR（docs/adr/）+ 历史归档（docs/archive/）
 ```
 
 ## 常见问题
@@ -159,6 +175,6 @@ docs/             方案文档 + ADR（docs/adr/）
 ## 测试
 
 ```bash
-uv run pytest -q      # 36 项：33 绿 + 3 红（3 红为多模态用例断言形状问题，随视频→总结深模块重构修复）
+uv run pytest -q      # 33 passed + 3 xfailed（3 个 xfail 为多模态用例断言形状问题，随视频→总结深模块重构修复后转绿）
 uv run ruff check .   # lint
 ```

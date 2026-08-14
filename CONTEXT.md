@@ -33,7 +33,7 @@
 
 | 术语 | 定义 |
 |------|------|
-| **vLLM Bare Mode** | Qwen3-Omni-30B-A3B 运行在 AutoDL 云 GPU 实例（或本地 ≥24GB GPU）上，仅提供 `/v1/chat/completions`（无原生 tool_choice）。模型自由输出 `<tool_call>` XML，由 SSE Relay 转换。 |
+| **vLLM Bare Mode** | Qwen3-Omni-30B-A3B 运行在自托管 GPU 服务器（本地 ≥24GB 或云实例）上，仅提供 `/v1/chat/completions`（无原生 tool_choice）。模型自由输出 `<tool_call>` XML，由 SSE Relay 转换。 |
 | **模型提供方 (Provider)** | LLM 服务的来源。本项目支持三种预设：`vllm`（自托管 vLLM-omni，XML 协议）、`siliconflow`（SiliconFlow 平台，原生 function calling）、`generic`（任意标准 OpenAI 兼容端点）。由 `LLM_PROVIDER` 切换，差异集中在 `src/vidagent/llm_provider.py`。 |
 | **Provider 预设 (Provider Preset)** | 承载平台差异的三维映射：relay 模式（xml 手写协议 vs 原生透传）、多模态 wire format（input_audio vs audio_url）、推理解析模式（`<think>` 标签 vs reasoning_content 字段）。是迈向「统一 OpenAI API」终态的过渡抽象。 |
 | **FastAPI Server** | 本地 `server/main.py`，承担 SSE Relay + 工具 REST API + 静态文件服务。 |
