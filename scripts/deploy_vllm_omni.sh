@@ -64,19 +64,23 @@ do_install() {
         exit 1
     }
 
-    log "下载模型（源=${MODEL_SOURCE}）→ ${MODEL_DIR} …"
-    mkdir -p "$(dirname "${MODEL_DIR}")"
-    if [ "${MODEL_SOURCE}" = "modelscope" ]; then
-        pip install -U modelscope >/dev/null
-        python -c "from modelscope import snapshot_download; snapshot_download('${MODEL_ID}', local_dir='${MODEL_DIR}')"
-    elif [ "${MODEL_SOURCE}" = "hf" ]; then
-        # 官方 HF：Qwen gated 仓库需先 HF_TOKEN=... huggingface-cli login 并同意 license
-        pip install -U "huggingface_hub[cli]" >/dev/null
-        huggingface-cli download "${MODEL_ID}" --local-dir "${MODEL_DIR}"
+    if [ -f "${MODEL_DIR}/config.json" ]; then
+        log "模型已存在（${MODEL_DIR}），跳过下载"
     else
-        # hf-mirror（默认）：国内镜像，公开仓库免登录
-        pip install -U "huggingface_hub[cli]" >/dev/null
-        HF_ENDPOINT=https://hf-mirror.com huggingface-cli download "${MODEL_ID}" --local-dir "${MODEL_DIR}"
+        log "下载模型（源=${MODEL_SOURCE}）→ ${MODEL_DIR} …"
+        mkdir -p "$(dirname "${MODEL_DIR}")"
+        if [ "${MODEL_SOURCE}" = "modelscope" ]; then
+            pip install -U modelscope >/dev/null
+            python -c "from modelscope import snapshot_download; snapshot_download('${MODEL_ID}', local_dir='${MODEL_DIR}')"
+        elif [ "${MODEL_SOURCE}" = "hf" ]; then
+            # 官方 HF：Qwen gated 仓库需先 HF_TOKEN=... huggingface-cli login 并同意 license
+            pip install -U "huggingface_hub[cli]" >/dev/null
+            huggingface-cli download "${MODEL_ID}" --local-dir "${MODEL_DIR}"
+        else
+            # hf-mirror（默认）：国内镜像，公开仓库免登录
+            pip install -U "huggingface_hub[cli]" >/dev/null
+            HF_ENDPOINT=https://hf-mirror.com huggingface-cli download "${MODEL_ID}" --local-dir "${MODEL_DIR}"
+        fi
     fi
     log "✅ 安装完成。模型位于 ${MODEL_DIR}"
     log "下一步：bash scripts/deploy_vllm_omni.sh start"
