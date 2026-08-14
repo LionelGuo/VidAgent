@@ -19,7 +19,6 @@ from __future__ import annotations
 import asyncio
 import logging
 import sys
-import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -384,21 +383,23 @@ async def tool_batch_summarize(req: BatchSummarizeRequest):
         { batch_id, tasks: [{ task_id, video_id, status }] }
     前端可立即按 video_id 连接 SSE 获取各视频流式进度。
     """
-    from vidagent.tools.downloader import download_video
+    from vidagent.tools.downloader import MAX_RETRIES, download_video_with_retry
     from vidagent.tools.summarize import (
         ProgressStage,
         cleanup_progress,
         create_progress,
-        get_progress,
+        extract_and_summarize,
     )
 
     batch_id = f"batch_{uuid.uuid4().hex[:12]}"
     tasks: list[dict] = []
 
-    MAX_RETRIES = 5
-    RETRY_BASE_DELAY = 2  # 秒，指数退避：2s / 4s / 8s / 16s
-
     def _run_one(video: dict, task_entry: dict) -> None:
+        """单个视频的批处理 worker：下载（重试）→ 总结 → 簿记。
+
+        总结管线本体（分流/抽取/降级）在 summarize.extract_and_summarize
+        （#4 Q3 深模块）；此处只剩 HTTP 层簿记与下载编排。
+        """
         task_id = video["_task_id"]
         video_id = video["_video_id"]
 
@@ -407,9 +408,6 @@ async def tool_batch_summarize(req: BatchSummarizeRequest):
             pg = create_progress(task_id)
             pg.stage = ProgressStage.DOWNLOADING
 
-            # ── 下载（重试）──
-            local_path = None
-            last_err = None
             video_url = video.get("video_url", "")
 
             # 下载进度回调（pg 已在 try 开头创建）
@@ -419,26 +417,9 @@ async def tool_batch_summarize(req: BatchSummarizeRequest):
                 if pct > pg.download_pct:
                     pg.download_pct = pct
 
-            for retry in range(1, MAX_RETRIES + 1):
-                try:
-                    result = download_video(video_url, video_id, progress_callback=_dl_progress)
-                    if result.get("status") == "success":
-                        local_path = result["local_path"]
-                        _summarize_tasks[task_id].local_path = local_path
-                        break
-                    last_err = result.get("error", "未知下载错误")
-                    if result.get("fatal"):
-                        # 确定性业务错误（如小红书图文笔记），重试无意义
-                        break
-                except Exception as e:
-                    last_err = str(e)
-                if retry < MAX_RETRIES:
-                    delay = RETRY_BASE_DELAY ** retry
-                    logger.warning(
-                        "下载重试 %d/%d (%.0fs 后退避): %s",
-                        retry, MAX_RETRIES, delay, video_id,
-                    )
-                    time.sleep(delay)
+            local_path, last_err = download_video_with_retry(
+                video_url, video_id, progress_callback=_dl_progress,
+            )
 
             if not local_path:
                 _summarize_tasks[task_id].fail(f"下载失败(已重试{MAX_RETRIES}次): {last_err}")
@@ -447,18 +428,8 @@ async def tool_batch_summarize(req: BatchSummarizeRequest):
                 task_entry["status"] = "error"
                 return
 
-            # ── 预处理：音频 + 均匀帧（Phase 1 立即启动）──
-            from vidagent.tools.summarize.multimodal import _summarize_multimodal
-            from vidagent.tools.summarize.short_video import _summarize_short_video
-            from vidagent.utils.audio import extract_audio
-            from vidagent.utils.frames import extract_frames
+            _summarize_tasks[task_id].local_path = local_path
 
-            # 获取已创建的 per-task progress（下载阶段已通过 create_progress 创建）
-            pg = get_progress(task_id)
-            pg.stage = ProgressStage.EXTRACTING
-            pg.begin()  # 激活流式输出 → SSE 端点开始推送
-
-            video_path = Path(local_path)
             metadata = {
                 "title": video.get("title", ""),
                 "desc": video.get("desc", ""),
@@ -467,44 +438,7 @@ async def tool_batch_summarize(req: BatchSummarizeRequest):
                 "duration_text": video.get("duration_text"),
                 "duration": video.get("duration"),
             }
-
-            # 提取音频（短视频和长视频都需要）
-            mp3 = extract_audio(local_path)
-            duration = metadata.get("duration") or 0
-            # 补充缺失的 duration：从本地文件 ffprobe 获取（热搜/搜索结果常缺 duration）
-            if not duration:
-                from vidagent.utils.frames import get_duration as _get_dur
-                duration = _get_dur(local_path)
-                metadata["duration"] = duration
-                metadata["duration_text"] = f"{int(duration // 60):02d}:{int(duration % 60):02d}"
-                logger.info("📐 补充 duration: %.0fs", duration)
-
-            _ep = llm_provider.agent_endpoint()
-            base_url, api_key, model = _ep.base_url, _ep.api_key, _ep.model
-
-            # ── 分流：短视频 vs 长视频 ──
-            if isinstance(duration, (int, float)) and 0 < duration < 90:
-                # ═══════ 短视频管线（<90s）═══════
-                logger.info("🎬 短视频管线: %.0fs", duration)
-                pg.stage = ProgressStage.SUMMARIZING
-                # 并发闸已内聚到 transport 层（全局 LLM 并发 ≤2，#4 Q4）
-                summary = _summarize_short_video(
-                    video_path=video_path,
-                    metadata=metadata,
-                    base_url=base_url, api_key=api_key, model=model,
-                    progress=pg,
-                )
-            else:
-                # ═══════ 长视频管线（≥90s）═══════
-                # 均匀采样帧 + 完整音频 → 流式总结（超长音频自动分块）
-                phase1_frames = extract_frames(video_path, duration=duration)
-                logger.info("📦 长视频总结开始（%d 帧）…", len(phase1_frames))
-                summary = _summarize_multimodal(
-                    mp3_path=Path(mp3),
-                    metadata=metadata,
-                    pre_extracted_frames=phase1_frames,
-                    progress=pg,
-                )
+            summary = extract_and_summarize(local_path, metadata, task_id=task_id)
 
             _summarize_tasks[task_id].status = TaskStatus.DONE
             _summarize_tasks[task_id].result = summary

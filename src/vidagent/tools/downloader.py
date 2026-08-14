@@ -6,12 +6,17 @@
 from __future__ import annotations
 
 import logging
+import time
 from collections.abc import Callable
 
 from vidagent.tools.platforms import detect_platform
 from vidagent.utils import storage
 
 logger = logging.getLogger(__name__)
+
+# 批量管线下载重试策略（#4 Q3：自 server/main.py 移入 downloader 域）
+MAX_RETRIES = 5
+RETRY_BASE_DELAY = 2  # 秒，指数退避：2s / 4s / 8s / 16s
 
 # 确保平台已注册
 _platforms_loaded = False
@@ -73,3 +78,41 @@ def download_video(video_url: str, file_name: str,
 
     storage.random_delay()  # 随机抖动降风控
     return platform.download(video_url, file_name, progress_callback=progress_callback)
+
+
+def download_video_with_retry(
+    video_url: str,
+    video_id: str,
+    progress_callback: Callable[[int], None] | None = None,
+    max_retries: int = MAX_RETRIES,
+) -> tuple[str | None, str | None]:
+    """带指数退避重试的下载（批量总结管线用；#4 Q3 自 server/main.py 移入）。
+
+    单次下载工具仍用 download_video（无重试，行为不变）。
+
+    Returns:
+        (local_path, last_error)：成功时 error 为 None；失败（含 fatal 短路、
+        重试耗尽）时 path 为 None。
+    """
+    last_err: str | None = None
+
+    for retry in range(1, max_retries + 1):
+        try:
+            result = download_video(video_url, video_id, progress_callback=progress_callback)
+            if result.get("status") == "success":
+                return result["local_path"], None
+            last_err = result.get("error", "未知下载错误")
+            if result.get("fatal"):
+                # 确定性业务错误（如小红书图文笔记），重试无意义
+                break
+        except Exception as e:
+            last_err = str(e)
+        if retry < max_retries:
+            delay = RETRY_BASE_DELAY ** retry
+            logger.warning(
+                "下载重试 %d/%d (%.0fs 后退避): %s",
+                retry, max_retries, delay, video_id,
+            )
+            time.sleep(delay)
+
+    return None, last_err
