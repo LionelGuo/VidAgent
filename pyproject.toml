@@ -41,8 +41,8 @@ douyin = [
 ]
 # 后端服务 (FastAPI + SSE Relay)
 server = ["fastapi>=0.115", "uvicorn[standard]>=0.30"]
-# 开发
-dev = ["pytest>=8.0", "pytest-asyncio>=0.23", "ruff>=0.6"]
+# 开发（本地测试不入公开仓库，见 .gitignore）；ruff 锁定已修复的规则集，避免 CI 被新规则随机击穿
+dev = ["ruff>=0.6,<0.17"]
 
 [build-system]
 requires = ["hatchling"]
@@ -51,16 +51,15 @@ build-backend = "hatchling.build"
 [tool.hatch.build.targets.wheel]
 packages = ["src/vidagent"]
 
-[tool.pytest.ini_options]
-asyncio_mode = "auto"
-asyncio_default_fixture_loop_scope = "function"
-testpaths = ["tests"]
-
 [tool.ruff]
-line-length = 100
+line-length = 120
 target-version = "py311"
 # vendor/MediaCrawler 是第三方源码（非商用学习许可，详见 NOTICE），不适用本项目 lint 标准
 extend-exclude = ["vendor"]
+
+[tool.ruff.lint.per-file-ignores]
+# main.py 顶部需先做 sys.path bootstrap 才能 import 项目模块，E402 是刻意的
+"server/main.py" = ["E402"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B"]

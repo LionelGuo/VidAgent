@@ -70,6 +70,9 @@ app.mount("/workspace", StaticFiles(directory=str(_workspace_dir)), name="worksp
 
 from vidagent import llm_provider
 
+# 启动校验：缺必填配置（vllm 缺 base_url/model、其余缺 key）时快速失败并给中文提示
+llm_provider.validate_required()
+
 # Agent 端点（relay 上游）+ provider 模式：由 provider 预设解析（vllm/siliconflow/generic）
 VLLM_URL = llm_provider.agent_endpoint().base_url
 
@@ -168,7 +171,7 @@ async def tool_get_hot_videos(
         return {"status": "ok", "results": [], "count": 0, "message": str(e)}
     except Exception as e:
         logger.exception("get_hot_videos 失败")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=str(e)) from e
 
 
 @app.get("/api/tools/search")
@@ -187,12 +190,12 @@ async def tool_search_videos(
         )
         return {"status": "ok", "results": results, "count": len(results)}
     except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e)) from e
     except NotImplementedError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e)) from e
     except Exception as e:
         logger.exception("search_videos 失败")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=str(e)) from e
 
 
 @app.get("/api/tools/creator")
@@ -211,12 +214,12 @@ async def tool_get_creator_videos(
         )
         return {"status": "ok", "results": results, "count": len(results)}
     except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e)) from e
     except NotImplementedError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e)) from e
     except Exception as e:
         logger.exception("get_creator_videos 失败")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=str(e)) from e
 
 
 # ---------------------------------------------------------------------------
@@ -241,7 +244,7 @@ async def tool_download_video(req: DownloadRequest):
         raise
     except Exception as e:
         logger.exception("download_video 失败")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=str(e)) from e
 
 
 # ---------------------------------------------------------------------------
@@ -257,7 +260,7 @@ async def tool_summarize_start(req: SummarizeRequest):
     若 metadata 含 video_id，同时建立 video_id → task_id 映射，
     供浏览器通过 GET /api/tools/summarize/by-video/{video_id}/stream 连接。
     """
-    from vidagent.tools.summarizer import extract_and_summarize, cleanup_progress
+    from vidagent.tools.summarizer import cleanup_progress, extract_and_summarize
 
     task_id = uuid.uuid4().hex[:12]
     _summarize_tasks[task_id] = {
@@ -318,7 +321,13 @@ async def tool_summarize_stream(task_id: str):
 
             if task["status"] in ("done", "error"):
                 if task["status"] == "done":
-                    yield f"data: {json.dumps({'type': 'done', 'result': task.get('result', ''), 'chapters': task.get('chapters', []), 'local_path': task.get('local_path', '')}, ensure_ascii=False)}\n\n"
+                    done_payload = {
+                        'type': 'done',
+                        'result': task.get('result', ''),
+                        'chapters': task.get('chapters', []),
+                        'local_path': task.get('local_path', ''),
+                    }
+                    yield f"data: {json.dumps(done_payload, ensure_ascii=False)}\n\n"
                 else:
                     yield f"data: {json.dumps({'type': 'error', 'message': task['result']}, ensure_ascii=False)}\n\n"
                 yield "data: [DONE]\n\n"
@@ -327,7 +336,10 @@ async def tool_summarize_stream(task_id: str):
             # ★ 下载完成即推送 local_path（不等总结完成）
             if not last_local_path_sent and task.get("local_path"):
                 last_local_path_sent = True
-                yield f"data: {json.dumps({'type': 'progress', 'stage': 'downloaded', 'local_path': task['local_path']}, ensure_ascii=False)}\n\n"
+                downloaded_payload = {
+                    'type': 'progress', 'stage': 'downloaded', 'local_path': task['local_path']
+                }
+                yield f"data: {json.dumps(downloaded_payload, ensure_ascii=False)}\n\n"
 
             # 轮询 per-task progress
             progress = get_progress(task_id)
@@ -340,7 +352,10 @@ async def tool_summarize_stream(task_id: str):
                 if stage != last_summary_stage or download_pct != last_download_pct:
                     last_summary_stage = stage
                     last_download_pct = download_pct
-                    yield f"data: {json.dumps({'type': 'progress', 'stage': stage, 'download_pct': download_pct}, ensure_ascii=False)}\n\n"
+                    progress_payload = {
+                        'type': 'progress', 'stage': stage, 'download_pct': download_pct
+                    }
+                    yield f"data: {json.dumps(progress_payload, ensure_ascii=False)}\n\n"
 
                 # ★ 分块进度推送：chunks 内容变化时（长视频分段总结的逐段状态）
                 chunks = getattr(progress, 'chunks', []) or []
@@ -402,11 +417,11 @@ def _extract_video_id(video_url: str) -> str | None:
     支持：B站 BV 号、YouTube video ID 等。
     """
     # 确保平台模块已注册
-    import vidagent.tools.platforms.bilibili     # noqa: F401
-    import vidagent.tools.platforms.youtube      # noqa: F401
-    import vidagent.tools.platforms.douyin       # noqa: F401
-    import vidagent.tools.platforms.kuaishou     # noqa: F401
+    import vidagent.tools.platforms.bilibili  # noqa: F401
+    import vidagent.tools.platforms.douyin  # noqa: F401
+    import vidagent.tools.platforms.kuaishou  # noqa: F401
     import vidagent.tools.platforms.xiaohongshu  # noqa: F401
+    import vidagent.tools.platforms.youtube  # noqa: F401
     from vidagent.tools.platforms import detect_platform
 
     platform = detect_platform(video_url)
@@ -429,8 +444,8 @@ async def tool_batch_summarize(req: BatchSummarizeRequest):
         { batch_id, tasks: [{ task_id, video_id, status }] }
     前端可立即按 video_id 连接 SSE 获取各视频流式进度。
     """
-    from vidagent.tools.summarizer import cleanup_progress, get_progress, create_progress
     from vidagent.tools.downloader import download_video
+    from vidagent.tools.summarizer import cleanup_progress, create_progress, get_progress
 
     batch_id = f"batch_{uuid.uuid4().hex[:12]}"
     tasks: list[dict] = []
@@ -489,9 +504,9 @@ async def tool_batch_summarize(req: BatchSummarizeRequest):
                 return
 
             # ── 预处理：音频 + 均匀帧（Phase 1 立即启动）──
-            from vidagent.utils.frames import extract_frames
-            from vidagent.utils.audio import extract_audio
             from vidagent.tools.summarizer import _summarize_multimodal_with_chapters, _summarize_short_video
+            from vidagent.utils.audio import extract_audio
+            from vidagent.utils.frames import extract_frames
 
             # 获取已创建的 per-task progress（下载阶段已通过 create_progress 创建）
             pg = get_progress(task_id)
@@ -519,7 +534,7 @@ async def tool_batch_summarize(req: BatchSummarizeRequest):
                 metadata["duration_text"] = f"{int(duration // 60):02d}:{int(duration % 60):02d}"
                 logger.info("📐 补充 duration: %.0fs", duration)
 
-            _ep = llm_provider.multimodal_endpoint()
+            _ep = llm_provider.agent_endpoint()
             base_url, api_key, model = _ep.base_url, _ep.api_key, _ep.model
 
             # ── 分流：短视频 vs 长视频 ──

@@ -9,8 +9,9 @@ import asyncio
 import logging
 import os
 import re
+from collections.abc import Callable
 from pathlib import Path
-from typing import Callable, ClassVar
+from typing import ClassVar
 
 import httpx
 import yt_dlp

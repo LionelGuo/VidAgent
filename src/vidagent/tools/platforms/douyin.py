@@ -20,16 +20,18 @@ import json
 import logging
 import os
 import re
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Callable, ClassVar
+from typing import Any, ClassVar
 
 import httpx
 
 from vidagent.config import settings
 from vidagent.tools.platforms import Platform, register
+
 from ._cdp_browser import (
-    get_page_for_platform,
     get_mc_utils,
+    get_page_for_platform,
     invalidate_page,
 )
 
@@ -121,8 +123,8 @@ def _import_mediacrawler() -> None:
         from media_platform.douyin.client import DouYinClient
         from media_platform.douyin.field import SearchChannelType
         from media_platform.douyin.help import (
-            parse_video_info_from_url,
             parse_creator_info_from_url,
+            parse_video_info_from_url,
         )
         _DouYinClientCls = DouYinClient
         _SearchChannelType = SearchChannelType
@@ -288,7 +290,7 @@ async def _client_call(coro_factory: Callable[[Any], Any]) -> Any:
             return await asyncio.wait_for(
                 coro_factory(client), timeout=_CALL_TIMEOUT,
             )
-        except asyncio.TimeoutError:
+        except TimeoutError:
             logger.warning(
                 "抖音 client 调用超时（%ds），判定 page 挂起，重建", _CALL_TIMEOUT,
             )
@@ -385,7 +387,11 @@ def _normalize_video(item: dict) -> dict:
     # duration 在 video.duration 字段中（毫秒）
     video_info = aweme.get("video", {}) or {}
     duration_ms = aweme.get("duration") or video_info.get("duration", 0)
-    duration_sec = int(duration_ms / 1000) if duration_ms and duration_ms > 1000 else (int(duration_ms) if duration_ms else 0)
+    duration_sec = (
+        int(duration_ms / 1000)
+        if duration_ms and duration_ms > 1000
+        else (int(duration_ms) if duration_ms else 0)
+    )
     create_time = aweme.get("create_time", 0)
 
     return {
@@ -789,7 +795,11 @@ async def _download_via_cdp(video_url: str, file_name: str,
                         break
                 else:
                     logger.error("  ❌ 搜索结果中无有效视频")
-                    return {"status": "error", "error": f"关键词 '{keyword}' 搜索结果无有效视频", "video_url": video_url}
+                    return {
+                        "status": "error",
+                        "error": f"关键词 '{keyword}' 搜索结果无有效视频",
+                        "video_url": video_url,
+                    }
             else:
                 logger.error("  ❌ 搜索 '%s' 无结果", keyword)
                 return {"status": "error", "error": f"关键词 '{keyword}' 搜索失败：无结果", "video_url": video_url}

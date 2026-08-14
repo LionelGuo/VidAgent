@@ -43,7 +43,7 @@ FastAPI 后端 :8000
 
 ```bash
 git clone https://github.com/LionelGuo/VidAgent.git && cd VidAgent
-cp .env.example .env            # 填 OPENAI_API_KEY（默认 SiliconFlow，填 key 即用）
+cp .env.example .env            # 填 LLM_API_KEY（默认 SiliconFlow，填 key 即用）
 docker build -t vidagent .
 docker run --network=host --env-file .env vidagent
 #   浏览器打开 http://localhost:3000
@@ -63,7 +63,7 @@ docker run --network=host --env-file .env vidagent
 
 ### ③ 本地模型（可选）
 
-默认用 SiliconFlow 等远程 OpenAI 兼容 API（填 `OPENAI_API_KEY` 即用，无需本地 GPU）。有
+默认用 SiliconFlow 等远程 OpenAI 兼容 API（填 `LLM_API_KEY` 即用，无需本地 GPU）。有
 ≥24GB GPU 可自托管 Qwen3-Omni：`bash scripts/deploy_vllm_omni.sh install`（傻瓜脚本）。
 
 ## 配置
@@ -72,14 +72,12 @@ docker run --network=host --env-file .env vidagent
 
 | 变量 | 说明 | 默认 |
 |---|---|---|
-| `LLM_PROVIDER` | `vllm` / `siliconflow` / `generic`（`cloud`≡vllm 兼容旧值） | `siliconflow` |
-| `OPENAI_API_KEY` | 模型 API 密钥（**必填**） | — |
-| `OPENAI_BASE_URL` | OpenAI 兼容端点（留空用 provider 预设默认，如 SiliconFlow 官方端点） | preset |
-| `LLM_MODEL` | 模型名（留空用 provider 预设默认） | preset |
-| `MULTIMODAL_BASE_URL` / `MULTIMODAL_MODEL` | 多模态端点（留空复用上面的 base_url + model，单端点平台直接留空） | 空 |
+| `LLM_PROVIDER` | 模型服务切换开关：`vllm`（自托管）/ `siliconflow` / `generic`（任意 OpenAI 兼容端点） | `siliconflow` |
+| `LLM_API_KEY` | 模型服务密钥（`vllm` 自托管可随意填） | — |
+| `LLM_BASE_URL` | 模型服务端点（留空用 provider 预设端点；`vllm` 必填） | preset |
+| `LLM_MODEL` | 模型名（留空用 provider 预设模型；`vllm` 填本地模型目录路径） | preset |
 | `BILI_COOKIE` | B站 Cookie（含 `SESSDATA`；下载高清流与创作者主页接口均需，避免 CDN 412） | 空 |
 | `YOUTUBE_API_KEY` / `YOUTUBE_COOKIE` / `YOUTUBE_PROXY` | YouTube 采集（可选）。`YOUTUBE_PROXY` 同时供抖音等 CDP 平台的部分请求复用 | 空 |
-| `MEDIACRAWLER_ROOT` | MediaCrawler 目录（已 vendored 于仓库 `vendor/MediaCrawler/`，见 ADR-0007；可覆盖指向外部副本） | `vendor/MediaCrawler` |
 | `WORKSPACE_DIR` | 媒体缓存目录（>7 天自动清理） | `workspace/` |
 
 **前端 `frontend/.env`**（复制 `frontend/.env.example`）：
@@ -100,15 +98,15 @@ docker run --network=host --env-file .env vidagent
 ```bash
 docker build -t vidagent .
 # 场景二：远程 API（最简）
-docker run --network=host -e LLM_PROVIDER=siliconflow -e OPENAI_API_KEY=sk-xxx vidagent
-# 场景一：配合本地 vLLM（OPENAI_BASE_URL 指向宿主模型服务）
-docker run --network=host -e LLM_PROVIDER=vllm -e OPENAI_BASE_URL=http://127.0.0.1:6006/v1 vidagent
+docker run --network=host -e LLM_PROVIDER=siliconflow -e LLM_API_KEY=sk-xxx vidagent
+# 场景一：配合本地 vLLM（LLM_BASE_URL 指向宿主模型服务）
+docker run --network=host -e LLM_PROVIDER=vllm -e LLM_BASE_URL=http://127.0.0.1:6006/v1 vidagent
 ```
 
 `--network=host` 推荐：CDP 平台复用宿主 Chrome `:9222`，浏览器直达 localhost。
 若宿主 3000/8000 端口被占用（如同时跑开发服务器），可改桥接 + 端口映射：
-`docker run -p 18000:8000 -p 13000:3000 -e LLM_PROVIDER=siliconflow -e OPENAI_API_KEY=sk-xxx vidagent`（容器内访问第三方 API 走 NAT 直连）。
-抖音/小红书/快手需额外挂载 MediaCrawler（`-e MEDIACRAWLER_ROOT=...`）+ 宿主 Chrome 开调试端口。
+`docker run -p 18000:8000 -p 13000:3000 -e LLM_PROVIDER=siliconflow -e LLM_API_KEY=sk-xxx vidagent`（容器内访问第三方 API 走 NAT 直连）。
+抖音/小红书/快手需宿主 Chrome 开调试端口（见②）。
 
 ### 本地 vLLM-omni 模型服务（场景一，独立部署）
 
@@ -156,21 +154,14 @@ src/vidagent/
 frontend/         Next.js 前端（chat 路由 + 组件 + stores）
 vendor/MediaCrawler/   抖音/小红书/快手 CDP 平台依赖（vendored 源码，非商用许可，见 NOTICE）
 scripts/          deploy_vllm_omni.sh（vLLM-omni 部署）· start_vllm_bare.sh（bare mode 启动）
-tests/            pytest（33 passed + 3 xfailed）
 ```
 
 ## 常见问题
 
 - **创作者主页报错 `code=-352` / 非 JSON**：B站风控。在 `.env` 设 `BILI_COOKIE`（浏览器复制含 `SESSDATA` 的 Cookie）。综合热门 / 关键词搜索**无需** Cookie。
-- **总结提示「未配置 API key」**：在 `.env` 填 `OPENAI_API_KEY`。
+- **总结提示「未配置 API key」**：在 `.env` 填 `LLM_API_KEY`。
 - **下载失败**：yt-dlp 偶发被限流，工具内置随机抖动与降级链；重试即可。
 - **YouTube 高清不可用**：确认 `node --version ≥ 22`（JS runtime 必需）；部分视频默认客户端 403 会经 web_embedded 降级链自动重试。
 - **工具调用输出 `<tool_call>` 文本而非执行**：`LLM_PROVIDER` 与端点不匹配（vLLM 需 xml 模式）；详见部署指南故障排查。
 - **抖音/小红书/快手无结果**：确认 Windows Chrome 带 `:9222` 调试端口运行且平台已登录（快手未登录时 profile 接口返回 `result=109`）。注意：Chrome 146+ 经 chrome://inspect 勾选开启的调试模式**不提供 `/json/*` HTTP 端点**——`curl http://127.0.0.1:9222/json/version` 返回 404 属正常，不代表调试未开启；判断标准：Windows 上 `netstat -ano | findstr :9222` 有 `chrome.exe` LISTENING 即正常。
 
-## 测试
-
-```bash
-uv run pytest -q      # 33 passed + 3 xfailed（3 个 xfail 为多模态用例断言形状问题，随视频→总结深模块重构修复后转绿）
-uv run ruff check .   # lint
-```

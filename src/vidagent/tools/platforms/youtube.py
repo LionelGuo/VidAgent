@@ -7,12 +7,13 @@ from __future__ import annotations
 
 import logging
 import re
-from datetime import datetime, timezone
+import shutil
+from collections.abc import Callable
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Callable, ClassVar
+from typing import ClassVar
 
 import httpx
-import shutil
 import yt_dlp
 
 from vidagent.config import settings
@@ -172,7 +173,7 @@ def normalize(item: dict) -> dict:
         # yt-dlp 格式: YYYYMMDD
         try:
             dt = datetime.strptime(published_at, "%Y%m%d")
-            publish_time = int(dt.replace(tzinfo=timezone.utc).timestamp())
+            publish_time = int(dt.replace(tzinfo=UTC).timestamp())
         except ValueError:
             publish_time = _parse_published_at(published_at)
     else:
@@ -244,7 +245,7 @@ async def _api_get(client: httpx.AsyncClient, path: str, params: dict | None = N
             raise RuntimeError(f"YouTube API 错误 ({code}): {msg}")
         return data
     except httpx.HTTPError as e:
-        raise RuntimeError(f"YouTube API 网络错误: {e}")
+        raise RuntimeError(f"YouTube API 网络错误: {e}") from e
 
 
 # ---------------------------------------------------------------------------

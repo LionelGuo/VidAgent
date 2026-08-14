@@ -11,12 +11,12 @@ import logging
 import os
 import random
 import re
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Callable, ClassVar
+from typing import Any, ClassVar
 from urllib.parse import quote
 
 import httpx
-from playwright.async_api import async_playwright, BrowserContext, Page
 
 from vidagent.config import settings
 from vidagent.tools.platforms import Platform, register
@@ -26,7 +26,10 @@ logger = logging.getLogger(__name__)
 _WORKSPACE = Path(settings.workspace_dir).resolve()
 
 DEFAULT_HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    ),
     "Referer": "https://www.xiaohongshu.com/",
 }
 
@@ -60,9 +63,9 @@ async def _ensure_client():
     # MediaCrawler 根目录已由 _cdp_browser 加入 sys.path，此处无需 chdir。
     # 顺序约束：_cdp_browser 的 import 必须先于 `import config`——前者负责把
     # MediaCrawler 根加入 sys.path（首次调用时无此顺序依赖会 ModuleNotFoundError）
-    from ._cdp_browser import get_page_for_platform, get_mc_utils  # noqa: F401
-
     import config as mc_config
+
+    from ._cdp_browser import get_mc_utils, get_page_for_platform  # noqa: F401
     mc_config.PLATFORM = "xhs"
     mc_config.ENABLE_GET_MEIDAS = False
     mc_config.ENABLE_GET_COMMENTS = False
@@ -247,8 +250,8 @@ async def _search_via_cdp(keyword: str, limit: int = 10) -> list[dict]:
         # 显式 search_id + 默认 page_size=20（不传小 page_size）
         # note_type=VIDEO：服务端只返回视频笔记（对齐网页端「视频」tab，
         # SearchNoteType.VIDEO=1，见 MediaCrawler field.py:65-72）
-        from media_platform.xhs.help import get_search_id
         from media_platform.xhs.field import SearchNoteType
+        from media_platform.xhs.help import get_search_id
         resp = await client.get_note_by_keyword(
             keyword=keyword,
             search_id=get_search_id(),
@@ -334,7 +337,7 @@ async def _search_via_cdp(keyword: str, limit: int = 10) -> list[dict]:
         detailed = await asyncio.wait_for(
             asyncio.gather(*[_limited(it) for it in items]), timeout=30,
         )
-    except asyncio.TimeoutError:
+    except TimeoutError:
         logger.warning("小红书详情批量查询超时（30s），使用搜索原始数据")
         detailed = items
 
@@ -505,7 +508,9 @@ async def _download_via_cdp(note_url: str, file_name: str,
         "  笔记来源: %s, type=%s, keys=%s, video_keys=%s",
         note_source, note_card.get("type"),
         sorted(k for k in note_card.keys())[:12],
-        sorted(k for k in (note_card.get("video") or {}).keys()) if isinstance(note_card.get("video"), dict) else type(note_card.get("video")).__name__,
+        sorted((note_card.get("video") or {}).keys())
+        if isinstance(note_card.get("video"), dict)
+        else type(note_card.get("video")).__name__,
     )
 
     if note_card.get("type") != "video":

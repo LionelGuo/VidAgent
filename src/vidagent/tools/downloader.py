@@ -6,7 +6,7 @@
 from __future__ import annotations
 
 import logging
-from typing import Callable
+from collections.abc import Callable
 
 from vidagent.tools.platforms import detect_platform
 from vidagent.utils import storage
@@ -21,11 +21,11 @@ def _ensure_platforms() -> None:
     global _platforms_loaded
     if _platforms_loaded:
         return
-    import vidagent.tools.platforms.bilibili     # noqa: F401
-    import vidagent.tools.platforms.youtube      # noqa: F401
-    import vidagent.tools.platforms.douyin       # noqa: F401
-    import vidagent.tools.platforms.kuaishou     # noqa: F401
+    import vidagent.tools.platforms.bilibili  # noqa: F401
+    import vidagent.tools.platforms.douyin  # noqa: F401
+    import vidagent.tools.platforms.kuaishou  # noqa: F401
     import vidagent.tools.platforms.xiaohongshu  # noqa: F401
+    import vidagent.tools.platforms.youtube  # noqa: F401
     _platforms_loaded = True
 
 

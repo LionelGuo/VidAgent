@@ -12,7 +12,8 @@ detect_platform() 从 URL 推断平台。
 from __future__ import annotations
 
 import logging
-from typing import Any, Callable, ClassVar
+from collections.abc import Callable
+from typing import Any, ClassVar
 
 logger = logging.getLogger(__name__)
 

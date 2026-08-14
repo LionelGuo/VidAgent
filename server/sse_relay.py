@@ -17,7 +17,7 @@ import json
 import logging
 import re
 import uuid
-from typing import AsyncIterator
+from collections.abc import AsyncIterator
 
 import httpx
 

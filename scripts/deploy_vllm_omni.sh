@@ -34,7 +34,7 @@ GPU_MEM_UTIL="${GPU_MEM_UTIL:-0.85}"
 LOG_FILE="${LOG_FILE:-./vllm-omni.log}"
 
 # AutoDL / 常见部署：6006 是自定义服务端口，对外映射到 8443
-# VidAgent 主逻辑把 OPENAI_BASE_URL 指向 http://<host>:${PORT}/v1
+# VidAgent 主逻辑把 LLM_BASE_URL 指向 http://<host>:${PORT}/v1
 
 log() { echo -e "\033[36m[deploy_vllm]\033[0m $*"; }
 err() { echo -e "\033[31m[deploy_vllm ERROR]\033[0m $*" >&2; }
@@ -122,7 +122,7 @@ do_start() {
         nohup "${cmd[@]}" > "${LOG_FILE}" 2>&1 &
         echo $! > vllm-omni.pid
         log "后台启动 PID=$(cat vllm-omni.pid)。日志：tail -f ${LOG_FILE}"
-        log "对外端点：http://<本机IP>:${PORT}/v1（VidAgent 的 OPENAI_BASE_URL 指向此处）"
+        log "对外端点：http://<本机IP>:${PORT}/v1（VidAgent 的 LLM_BASE_URL 指向此处）"
     else
         log "前台运行（Ctrl+C 停止）。日志同时写入 ${LOG_FILE}"
         exec "${cmd[@]}" 2>&1 | tee "${LOG_FILE}"

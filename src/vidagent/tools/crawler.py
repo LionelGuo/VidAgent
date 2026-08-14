@@ -31,11 +31,11 @@ def _ensure_platforms_imported() -> None:
     if _platforms_loaded:
         return
     # 导入平台模块触发 register() 调用
-    import vidagent.tools.platforms.bilibili     # noqa: F401
-    import vidagent.tools.platforms.youtube      # noqa: F401
-    import vidagent.tools.platforms.douyin       # noqa: F401
-    import vidagent.tools.platforms.kuaishou     # noqa: F401
+    import vidagent.tools.platforms.bilibili  # noqa: F401
+    import vidagent.tools.platforms.douyin  # noqa: F401
+    import vidagent.tools.platforms.kuaishou  # noqa: F401
     import vidagent.tools.platforms.xiaohongshu  # noqa: F401
+    import vidagent.tools.platforms.youtube  # noqa: F401
     _platforms_loaded = True
 
 

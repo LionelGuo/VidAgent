@@ -3,11 +3,11 @@
 #
 # 两种运行形态：
 #   场景一（本地有 GPU）：本镜像 + 宿主 vLLM-omni 服务（见 scripts/deploy_vllm_omni.sh）
-#   场景二（仅远程 API）：本镜像 + LLM_PROVIDER=siliconflow|generic + OPENAI_API_KEY
+#   场景二（仅远程 API）：本镜像 + LLM_PROVIDER=siliconflow|generic + LLM_API_KEY
 #
 # 推荐以 --network=host 运行（CDP 平台复用宿主 Chrome :9222；浏览器直达 localhost）：
 #   docker build -t vidagent .
-#   docker run --network=host -e LLM_PROVIDER=siliconflow -e OPENAI_API_KEY=sk-xxx vidagent
+#   docker run --network=host -e LLM_PROVIDER=siliconflow -e LLM_API_KEY=sk-xxx vidagent
 
 # ── Stage 1：前端构建（standalone）──────────────────────────────────────────
 FROM node:20-bookworm-slim AS frontend-build

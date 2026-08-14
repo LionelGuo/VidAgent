@@ -31,7 +31,8 @@ import json
 import logging
 import os
 import re
-from typing import Any, Callable, ClassVar
+from collections.abc import Callable
+from typing import Any, ClassVar
 from urllib.parse import quote
 
 import httpx
@@ -46,7 +47,10 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 DEFAULT_HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    ),
     "Referer": "https://www.kuaishou.com/",
 }
 
@@ -98,8 +102,8 @@ def _import_mediacrawler() -> None:
     os.chdir(mc_root)
     try:
         from media_platform.kuaishou.help import (
-            parse_video_info_from_url,
             parse_creator_info_from_url,
+            parse_video_info_from_url,
         )
         _ParseVideoInfo = parse_video_info_from_url
         _ParseCreatorInfo = parse_creator_info_from_url

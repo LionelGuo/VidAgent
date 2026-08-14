@@ -19,8 +19,8 @@ from pathlib import Path
 import httpx
 
 from vidagent import llm_provider
-from vidagent.utils.frames import extract_frames
 from vidagent.utils.audio import extract_audio
+from vidagent.utils.frames import extract_frames
 from vidagent.utils.timer import Timer
 
 logger = logging.getLogger(__name__)
@@ -38,7 +38,8 @@ class _LiveSummary:
     def __init__(self) -> None:
         self.active = False
         self.partial = ""
-        self.stage = ""         # 当前阶段: downloading | extracting | summarizing | chunking | merging | thinking | summary
+        # 当前阶段: downloading | extracting | summarizing | chunking | merging | thinking | summary
+        self.stage = ""
         self.download_pct = 0   # 下载进度 0-100
         # 分块进度（长视频分段总结）：每段一条 {index, total, time_start, time_end, status, text}
         self.chunks: list[dict] = []
@@ -327,7 +328,7 @@ def _chat_completion_stream(
             pg.append(text)
 
     # 推理内容解析模式：think_tag（vLLM，content 内联 <think> 标签）/ reasoning_content（标准 OpenAI 兼容，独立字段）
-    reasoning_mode = llm_provider.multimodal_endpoint().reasoning_mode
+    reasoning_mode = llm_provider.agent_endpoint().reasoning_mode
     stripper = _ThinkStripper(on_thinking=_on_thinking) if reasoning_mode == "think_tag" else None
 
     finish_reason = None
@@ -427,7 +428,8 @@ def _chat_completion_stream(
     raw_len = len(accumulated_raw)
     stripped_len = len(accumulated)
     logger.info(
-        "📡 vLLM 响应: %d tokens / %.1fs (%.0f tok/s), TTFT %.2fs, raw=%d stripped=%d (flush=%d) chars | finish_reason=%s",
+        "📡 vLLM 响应: %d tokens / %.1fs (%.0f tok/s), TTFT %.2fs, "
+        "raw=%d stripped=%d (flush=%d) chars | finish_reason=%s",
         token_count, elapsed, token_count / max(elapsed, 0.01),
         ttft or 0, raw_len, stripped_len, flushed_len, finish_reason or "?",
     )
@@ -488,7 +490,7 @@ def extract_and_summarize(
                 mp3_kb, len(frames_paths), frames_kb,
             )
 
-            _ep = llm_provider.multimodal_endpoint()
+            _ep = llm_provider.agent_endpoint()
             base_url, api_key, model = _ep.base_url, _ep.api_key, _ep.model
 
             with Timer("多模态总结(章节感知)"):
@@ -548,7 +550,7 @@ def _summarize(transcript: str, metadata: dict) -> str:
     base_url, api_key, model = _ep.base_url, _ep.api_key, _ep.model
     if not api_key:
         raise RuntimeError(
-            f"未配置 LLM API key：请在 .env 设置 OPENAI_API_KEY。"
+            f"未配置 LLM API key：请在 .env 设置 LLM_API_KEY。"
             f" 转写文本({len(transcript)} 字)已就绪，配好 key 后重试即可。"
         )
 
@@ -734,10 +736,10 @@ def _summarize_multimodal(
     超长音频（>_MAX_AUDIO_CHUNK_SECONDS）自动分块处理：
     切分为多个段落 → 逐段总结 → 合并为完整总结。
     """
-    _ep = llm_provider.multimodal_endpoint()
+    _ep = llm_provider.agent_endpoint()
     base_url, api_key, model = _ep.base_url, _ep.api_key, _ep.model
     if not api_key:
-        raise RuntimeError("未配置 OPENAI_API_KEY")
+        raise RuntimeError("未配置 LLM_API_KEY")
 
     # ── 关键帧（使用预提取的，或现场抽取）──
     all_frames: list[Path] = pre_extracted_frames or []

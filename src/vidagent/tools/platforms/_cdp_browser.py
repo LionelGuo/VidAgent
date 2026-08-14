@@ -26,25 +26,23 @@ logger = logging.getLogger(__name__)
 # MediaCrawler 源码已 vendored 入仓（vendor/MediaCrawler/，详见 ADR-0007）。
 # 其 Python 依赖收敛进 VidAgent 的 [douyin] extra，无需独立 .venv——
 # sys.path 只需指向 vendor root（MC 的 media_platform/ config/ tools/ 等顶层包在此）。
-# MEDIACRAWLER_ROOT 可覆盖：指向自定义/外部 MediaCrawler 副本（如已有 ~/Code/MediaCrawler）。
 _REPO_ROOT = Path(__file__).resolve().parents[4]   # platforms→tools→vidagent→src→repo
-_MEDIACRAWLER_ROOT = os.getenv("MEDIACRAWLER_ROOT") or str(_REPO_ROOT / "vendor" / "MediaCrawler")
-if _MEDIACRAWLER_ROOT not in sys.path:
-    sys.path.insert(0, _MEDIACRAWLER_ROOT)
+_MEDIACRAWLER_ROOT = _REPO_ROOT / "vendor" / "MediaCrawler"
+if str(_MEDIACRAWLER_ROOT) not in sys.path:
+    sys.path.insert(0, str(_MEDIACRAWLER_ROOT))
 
 _original_cwd = os.getcwd()
 
 def check_mediacrawler_available() -> str | None:
     """MediaCrawler 可用返回 None；否则返回可操作的中文提示（供 CDP 平台优雅降级）。
 
-    vendor 后依赖齐备时几乎不触发；但 MEDIACRAWLER_ROOT 指向空目录、或外部副本缺依赖时，
+    vendor 后依赖齐备时几乎不触发；但目录缺失、或依赖未装时，
     避免向上抛裸 ModuleNotFoundError/FileNotFoundError（调用方据此返回 [] 或 error）。
     """
     if not Path(_MEDIACRAWLER_ROOT).is_dir():
         return (
             "MediaCrawler 未就位（抖音/小红书/快手不可用）。"
-            "源码应 vendored 于 vendor/MediaCrawler/（见 README）；"
-            "或设置 MEDIACRAWLER_ROOT 指向已有 MediaCrawler 目录。"
+            "源码应 vendored 于 vendor/MediaCrawler/（见 README）。"
         )
     try:
         import execjs  # noqa: F401  # [douyin] extra 标志性依赖（douyin/help.py 顶层 import）
