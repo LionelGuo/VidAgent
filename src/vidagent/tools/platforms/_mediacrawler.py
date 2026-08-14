@@ -15,14 +15,24 @@
 
 from __future__ import annotations
 
+import asyncio
 import importlib
 import logging
 import os
 import threading
 from contextlib import contextmanager
-from typing import Any
+from typing import Any, ClassVar
 
-from ._cdp_browser import _MEDIACRAWLER_ROOT
+from vidagent.config import settings
+
+from . import Platform
+from ._cdp_browser import (
+    _MEDIACRAWLER_ROOT,
+    get_mc_utils,
+    get_page_for_platform,
+    run_on_cdp_loop,
+    run_on_cdp_loop_async,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -96,3 +106,150 @@ def inject_platform_config(platform: str) -> None:
 
     for key, value in PLATFORM_CONFIG[platform].items():
         setattr(mc_config, key, value)
+
+
+class MediaCrawlerPlatform(Platform):
+    """MediaCrawler CDP 平台基类（#3）：MC 管理与客户端生命周期的共享模板。
+
+    子类声明（ClassVar）：
+    - mc_submodules: 需要的 MC 子模块（如 ("client","field","help")）
+    - cdp_page_key: _cdp_browser 的 page 缓存键（douyin→"dy" 与平台名不同）
+    - mc_lock = asyncio.Lock()（每平台一把，统一原 _client_lock/_page_lock/_creator_lock）
+
+    客户端模板（douyin/xhs 使用；kuaishou 无 client 只走门户 + 锁 + page 设施）：
+    ensure_client = 取页面 → 前置 hook → cookies → headers → 构造 client →
+    登录检查 → 扫码引导 → 失败处置（子类 hook 决定 raise 或放行）。
+
+    未来 MC 平台形态容纳（#3 Q5 设计校验）：weibo 数据走 httpx client、
+    CDP 仅登录——其 client 构造仍需 page/cookie（update_cookies 同步登录态），
+    模板同样适用；纯 HTTP 数据路径留在子类（不在此模板范围内）。
+    """
+
+    # -- 门户与共享设施 --
+
+    mc_submodules: ClassVar[tuple[str, ...]] = ()
+    cdp_page_key: ClassVar[str] = ""
+    mc_lock: ClassVar[asyncio.Lock]
+
+    @classmethod
+    def import_mc(cls) -> dict[str, Any]:
+        """导入本平台声明的 MC 子模块（缓存），返回 {submodule: module}。"""
+        return import_mc_platform(cls.name, *cls.mc_submodules)
+
+    @classmethod
+    def inject_config(cls) -> None:
+        """注入本平台的平台键（在 client 构造前、锁内调用）。"""
+        inject_platform_config(cls.name)
+
+    @classmethod
+    def get_page(cls, url: str) -> Any:
+        """取本平台的 CDP 页面（_cdp_browser 缓存/失效重建）。"""
+        return get_page_for_platform(cls.cdp_page_key, url)
+
+    @classmethod
+    async def cdp_cookies(cls, page: Any) -> tuple[str, Any]:
+        """把浏览器 context cookies 转成 (cookie 串, cookie 字典)。"""
+        cookie_str, cookie_dict = await get_mc_utils().convert_browser_context_cookies(
+            page.context, urls=list(cls._cookie_urls),
+        )
+        return cookie_str, cookie_dict
+
+    @classmethod
+    def run_on_cdp(cls, coro: Any) -> Any:
+        """同步入口：提交协程到 CDP 专用常驻循环并阻塞等待（download() 用）。"""
+        return run_on_cdp_loop(coro)
+
+    @classmethod
+    async def run_on_cdp_async(cls, coro: Any) -> Any:
+        """异步入口：从 uvicorn 主循环提交协程到 CDP 循环（search 等用）。"""
+        return await run_on_cdp_loop_async(coro)
+
+    # -- 客户端生命周期（douyin/xhs 模板） --
+
+    _client: ClassVar[Any] = None
+    _client_page: ClassVar[Any] = None
+    _client_cls: ClassVar[Any] = None
+    _client_timeout: ClassVar[float] = 30
+    _home_url: ClassVar[str] = ""
+    _cookie_urls: ClassVar[tuple[str, ...]] = ()
+
+    @classmethod
+    async def ensure_client(cls) -> Any:
+        """MC client 懒构造模板：取页面 → 前置 hook → cookies → headers → 构造
+        → 登录检查 → 扫码引导 → 失败处置。
+
+        注意：模板内不加锁——调用方（如 douyin 的 _client_call）持 mc_lock
+        调用本方法，内部再加锁会死锁。锁纪律保持在各平台调用点。
+        """
+        if cls._client is not None and cls._client_page is not None:
+            try:
+                if not cls._client_page.is_closed():
+                    return cls._client
+            except Exception:
+                pass
+            # page 已关闭 → 重建
+            cls._client = None
+            cls._client_page = None
+
+        page = await cls._acquire_page()
+        await cls._pre_client_hook(page)
+        cookie_str, cookie_dict = await cls.cdp_cookies(page)
+        headers = await cls._build_headers(page, cookie_str)
+
+        cls._client = cls._client_cls(
+            timeout=cls._client_timeout,
+            proxy=cls._client_proxy(),
+            headers=headers,
+            playwright_page=page,
+            cookie_dict=cookie_dict,
+        )
+        cls._client_page = page
+
+        # 登录态检查：未登录 → 引导扫码；成功后刷新 cookie 到 client
+        if not await cls._is_logged_in(page, cookie_dict):
+            await cls._guide_login(page, cls._client)
+            if await cls._is_logged_in(page, cookie_dict):
+                await cls._client.update_cookies(
+                    page.context, urls=list(cls._cookie_urls),
+                )
+            else:
+                return await cls._handle_login_failure(cls._client, page)
+
+        logger.info("%s client 已就绪 (CDP)", cls.name)
+        return cls._client
+
+    # -- 模板 hooks（子类实现平台差异） --
+
+    @classmethod
+    async def _acquire_page(cls) -> Any:
+        """获取本平台 CDP 页面（含平台错误翻译）。"""
+        raise NotImplementedError
+
+    @classmethod
+    async def _pre_client_hook(cls, page: Any) -> None:
+        """构造 client 前的平台前置步骤（默认无）。"""
+
+    @classmethod
+    async def _build_headers(cls, page: Any, cookie_str: str) -> dict:
+        """构造 client 请求头（含 UA/Cookie，风控放行的关键）。"""
+        raise NotImplementedError
+
+    @classmethod
+    async def _is_logged_in(cls, page: Any, cookie_dict: dict) -> bool:
+        """登录态判定（平台各自实现：localStorage/cookie/pong）。"""
+        raise NotImplementedError
+
+    @classmethod
+    async def _guide_login(cls, page: Any, client: Any) -> None:
+        """引导扫码登录（打开登录弹窗 + 轮询登录态）。"""
+        raise NotImplementedError
+
+    @classmethod
+    async def _handle_login_failure(cls, client: Any, page: Any) -> Any:
+        """引导失败处置：douyin 抛错（清 client），xhs 放行（继续未登录尝试）。"""
+        raise NotImplementedError
+
+    @classmethod
+    def _client_proxy(cls) -> str | None:
+        """client 代理（默认读 youtube_proxy——douyin/xhs 现状）。"""
+        return settings.youtube_proxy or None
