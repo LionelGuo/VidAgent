@@ -14,20 +14,21 @@
 #   bash scripts/deploy_vllm_omni.sh stop       # 停止服务
 #
 # 可用环境变量覆盖（带默认值）：
-#   MODEL_ID        模型 ID（默认 Qwen/Qwen3-Omni-Thinking-AWQ-4bit，AWQ 4bit 约 18GB）
+#   MODEL_ID        模型 ID（默认 cpatonn/Qwen3-Omni-30B-A3B-Thinking-AWQ-4bit，
+#                   第三方上传的公开 AWQ 4bit，约 18GB——Qwen 官方 HF 仓库 gated 需授权）
 #   MODEL_DIR       模型本地目录（默认 ./models/Qwen3-Omni-Thinking）
-#   MODEL_SOURCE    下载源：modelscope（默认，国内可用）/ hf（HuggingFace）
-#                   ⚠️ hf 源的 Qwen 仓库是 gated：需 huggingface-cli login 授权，
-#                      且 hf 对应仓库名为 Qwen/Qwen3-Omni-30B-A3B-Thinking-AWQ（非同名）
+#   MODEL_SOURCE    下载源：hf-mirror（默认，国内可用，公开仓库免登录）
+#                   / hf（官方 HF，gated 仓库需 HF_TOKEN + 同意 license）
+#                   / modelscope（魔搭，需 MODEL_ID 指向存在的魔搭仓库）
 #   PORT            服务端口（默认 6006）
 #   GPU_MEM_UTIL    显存利用率（默认 0.85）
 # =============================================================================
 
 set -euo pipefail
 
-MODEL_ID="${MODEL_ID:-Qwen/Qwen3-Omni-Thinking-AWQ-4bit}"
+MODEL_ID="${MODEL_ID:-cpatonn/Qwen3-Omni-30B-A3B-Thinking-AWQ-4bit}"
 MODEL_DIR="${MODEL_DIR:-$(pwd)/models/Qwen3-Omni-Thinking}"
-MODEL_SOURCE="${MODEL_SOURCE:-modelscope}"
+MODEL_SOURCE="${MODEL_SOURCE:-hf-mirror}"
 PORT="${PORT:-6006}"
 GPU_MEM_UTIL="${GPU_MEM_UTIL:-0.85}"
 LOG_FILE="${LOG_FILE:-./vllm-omni.log}"
@@ -68,9 +69,14 @@ do_install() {
     if [ "${MODEL_SOURCE}" = "modelscope" ]; then
         pip install -U modelscope >/dev/null
         python -c "from modelscope import snapshot_download; snapshot_download('${MODEL_ID}', local_dir='${MODEL_DIR}')"
-    else
-        pip install -U huggingface_hub >/dev/null
+    elif [ "${MODEL_SOURCE}" = "hf" ]; then
+        # 官方 HF：Qwen gated 仓库需先 HF_TOKEN=... huggingface-cli login 并同意 license
+        pip install -U "huggingface_hub[cli]" >/dev/null
         huggingface-cli download "${MODEL_ID}" --local-dir "${MODEL_DIR}"
+    else
+        # hf-mirror（默认）：国内镜像，公开仓库免登录
+        pip install -U "huggingface_hub[cli]" >/dev/null
+        HF_ENDPOINT=https://hf-mirror.com huggingface-cli download "${MODEL_ID}" --local-dir "${MODEL_DIR}"
     fi
     log "✅ 安装完成。模型位于 ${MODEL_DIR}"
     log "下一步：bash scripts/deploy_vllm_omni.sh start"
