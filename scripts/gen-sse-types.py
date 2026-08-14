@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import ast
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -26,10 +27,12 @@ ENUM_SOURCES: list[tuple[Path, str]] = [
     (REPO_ROOT / "src" / "vidagent" / "tools" / "summarizer.py", "ProgressStage"),
 ]
 
+CHUNK_STATUS_SOURCE = REPO_ROOT / "src" / "vidagent" / "tools" / "summarizer.py"
+
 HEADER = """\
 // ⚠️ GENERATED FILE — 勿手改。
-// 来源：scripts/gen-sse-types.py（解析 server/models.py 的 TaskStatus 与
-// src/vidagent/tools/summarizer.py 的 ProgressStage 的字符串字面量）。
+// 来源：scripts/gen-sse-types.py（解析 server/models.py 的 TaskStatus、
+// src/vidagent/tools/summarizer.py 的 ProgressStage 与分段状态字面量）。
 // 重新生成：python scripts/gen-sse-types.py
 // 一致性检查：python scripts/gen-sse-types.py --check
 // 本文件是总结进度 SSE（Channel B）的前后端共享词汇表；wire 字节等价契约
@@ -57,10 +60,31 @@ def extract_str_enum_values(path: Path, class_name: str) -> list[str]:
     raise SystemExit(f"{path}: 未找到类 {class_name}")
 
 
-def render(stages: list[str], statuses: list[str]) -> str:
+def extract_chunk_status_values() -> list[str]:
+    """提取 summarizer.py 的分段状态字面量（两种写入形态，文件出现序）。
+
+    chunk["status"] = "…" 赋值与 "status": "…" 字典字面量。用正则而非 AST：
+    这是守卫而非解析器——宁多收（--check 提醒，假阳性安全方向），不漏收。
+    """
+    text = CHUNK_STATUS_SOURCE.read_text(encoding="utf-8")
+    pattern = r'\["status"\]\s*=\s*"([^"]*)"|"status":\s*"([^"]*)"'
+    values: list[str] = []
+    seen: set[str] = set()
+    for match in re.finditer(pattern, text):
+        value = match.group(1) or match.group(2)
+        if value not in seen:
+            seen.add(value)
+            values.append(value)
+    if not values:
+        raise SystemExit(f"{CHUNK_STATUS_SOURCE}: 未提取到分段状态字面量")
+    return values
+
+
+def render(stages: list[str], statuses: list[str], chunk_statuses: list[str]) -> str:
     """组装生成文件全文（枚举值来自 AST，shape 来自模板）。"""
     stage_lines = "\n".join(f"  {json.dumps(v)}," for v in stages)
     status_lines = "\n".join(f"  {json.dumps(v)}," for v in statuses)
+    chunk_status_union = " | ".join(json.dumps(v) for v in chunk_statuses)
     return f"""{HEADER}
 /** 总结任务阶段（ProgressStage）。"" 为空闲哨兵：未开始/已复位，可出现在事件流中。 */
 export const SUMMARY_STAGES = [
@@ -84,13 +108,13 @@ export interface SummaryChapter {{
 }}
 
 /** 长视频分段进度条目（progress 事件 chunks 数组元素）。
- *  status 四种字面量来自 summarizer.py 的 chunk["status"] 赋值点，后端加新值时此处同步。 */
+ *  status 字面量自动提取自 summarizer.py 的 chunk["status"] 赋值点。 */
 export interface SummaryChunk {{
   index: number;
   total: number;
   time_start: number;
   time_end: number;
-  status: "waiting" | "thinking" | "summarizing" | "done";
+  status: {chunk_status_union};
   text: string;
 }}
 
@@ -127,7 +151,7 @@ export type SummarySSEEvent = SummarySSEProgress | SummarySSEDone | SummarySSEEr
 def generate() -> str:
     """按类名取词（与 ENUM_SOURCES 顺序无关），防止两枚举值互换。"""
     values = {name: extract_str_enum_values(path, name) for path, name in ENUM_SOURCES}
-    return render(values["ProgressStage"], values["TaskStatus"])
+    return render(values["ProgressStage"], values["TaskStatus"], extract_chunk_status_values())
 
 
 def check() -> int:

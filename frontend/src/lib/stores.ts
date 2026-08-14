@@ -1,6 +1,6 @@
 import { create } from "zustand";
 
-import type { SummaryStage } from "./sse-events";
+import { SUMMARY_STAGES, type SummaryStage, type TaskStatus } from "./sse-events";
 
 // ---------------------------------------------------------------------------
 // Layout Store — 驱动 chat / detail panel 混合布局
@@ -39,12 +39,23 @@ export interface VideoChunk {
 }
 
 /** 落库的任务状态（task_status）：wire 阶段去掉空闲哨兵 ""（被 if(data.stage)
- *  拦截）与瞬态 downloaded（ChatView 拦截改写为 extracting），再加 SSE 终态。
- *  由后端枚举生成的 SummaryStage 派生——后端加新阶段时此处自动收编。 */
+ *  拦截）与瞬态 downloaded（ChatView 拦截改写为 extracting），再加 SSE 终态
+ *  （TaskStatus 去掉 processing——processing 从不落库，任务由阶段事件驱动）。
+ *  由后端枚举生成的 SummaryStage/TaskStatus 派生——后端加新值时此处自动收编。 */
 export type StoredTaskStatus =
   | Exclude<SummaryStage, "" | "downloaded">
-  | "done"
-  | "error";
+  | Exclude<TaskStatus, "processing">;
+
+/** 落库状态中「总结进行中」的集合（ChatView 状态指示器）：排除下载相关阶段。
+ *  由生成的 SUMMARY_STAGES 派生——后端新增阶段自动落入「进行中」分支。 */
+export const SUMMARIZING_STAGES = SUMMARY_STAGES.filter(
+  (s) => s !== "downloaded" && s !== "downloading",
+) as StoredTaskStatus[];
+
+/** 落库状态中「工作中」的集合（DetailPanel 胶囊）：同上再排除 summary（最终总结态不算工作中）。 */
+export const WORKING_STAGES = SUMMARY_STAGES.filter(
+  (s) => s !== "downloaded" && s !== "downloading" && s !== "summary",
+) as StoredTaskStatus[];
 
 export interface VideoInfo {
   video_id: string;

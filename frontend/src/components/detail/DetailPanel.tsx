@@ -3,16 +3,9 @@
 import { X, Maximize2, Minimize2, Play, Clock, Eye, User, Loader2 } from "lucide-react";
 import { useRef } from "react";
 import { cn } from "@/lib/utils";
-import { useVideoStore, type StoredTaskStatus } from "@/lib/stores";
+import { useVideoStore, WORKING_STAGES } from "@/lib/stores";
 import { apiBaseUrl } from "@/lib/api";
-import { SUMMARY_STAGES } from "@/lib/sse-events";
 import { MarkdownRenderer } from "@/components/ui/MarkdownRenderer";
-
-// 面板「正在总结」胶囊的阶段集合：同 ChatView 派生，但排除 summary（最终总结态不算工作中）。
-// 后端新增阶段自动落入「进行中」分支，无需手工同步。
-const WORKING_STAGES = SUMMARY_STAGES.filter(
-  (s) => s !== "downloaded" && s !== "downloading" && s !== "summary",
-) as StoredTaskStatus[];
 
 // ---------------------------------------------------------------------------
 // DetailPanel — 视频详情卡片（内容层）

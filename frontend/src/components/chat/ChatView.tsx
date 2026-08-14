@@ -25,10 +25,9 @@ function extractVideoId(videoUrl: string): string | null {
 }
 import { type Message } from "@ai-sdk/react";
 import { cn } from "@/lib/utils";
-import { useLayoutStore, useVideoStore, type StoredTaskStatus, type VideoInfo } from "@/lib/stores";
+import { SUMMARIZING_STAGES, useLayoutStore, useVideoStore, type VideoInfo } from "@/lib/stores";
 import { MarkdownRenderer } from "@/components/ui/MarkdownRenderer";
 import { apiBaseUrl, streamSummaryByVideo, type SSEController } from "@/lib/api";
-import { SUMMARY_STAGES } from "@/lib/sse-events";
 import {
   CheckCircle,
   ChevronRight,
@@ -39,12 +38,6 @@ import {
   Download,
   FileText,
 } from "lucide-react";
-
-// 总结进行中的阶段集合：由后端枚举生成的 SUMMARY_STAGES 派生（去掉下载相关值）。
-// 后端新增阶段自动落入「进行中」分支，无需手工同步。
-const SUMMARIZING_STAGES = SUMMARY_STAGES.filter(
-  (s) => s !== "downloaded" && s !== "downloading",
-) as StoredTaskStatus[];
 
 // ---------------------------------------------------------------------------
 // 工具名称 → 图标 + 中文标签映射
