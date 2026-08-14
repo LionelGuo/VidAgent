@@ -33,7 +33,7 @@ class Timer:
 
     def __exit__(self, *exc_info) -> None:
         self.elapsed = time.perf_counter() - self._t0
-        logger.info("⏱ %s 耗时 %.2fs", self.name, self.elapsed)
+        logger.info("%s 耗时 %.2fs", self.name, self.elapsed)
 
 
 def timed(name: str):

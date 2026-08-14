@@ -443,7 +443,7 @@ async def tool_batch_summarize(req: BatchSummarizeRequest):
             _summarize_tasks[task_id].result = summary
             task_entry["status"] = "done"
             logger.info(
-                "✅ 批量总结完成: %s (%s)",
+                "批量总结完成: %s (%s)",
                 video_id, video.get("title", ""),
             )
 
@@ -475,7 +475,7 @@ async def tool_batch_summarize(req: BatchSummarizeRequest):
     for i, video in enumerate(video_list):
         futures.append(_executor.submit(_run_one, video, tasks[i]))
 
-    logger.info("批量总结启动: batch=%s, %d 个视频，等待完成…", batch_id, len(req.videos))
+    logger.info("批量总结启动: batch=%s, %d 个视频,等待完成...", batch_id, len(req.videos))
     logger.info("批量总结注册键: %s", [v["_video_id"] for v in video_list])
 
     # ★ 关键：等待移到线程池，释放 asyncio 事件循环给 SSE 请求

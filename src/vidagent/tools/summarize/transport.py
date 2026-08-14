@@ -46,7 +46,7 @@ def _chat_completion(
     elapsed = time.perf_counter() - t0
     think_len = len(raw) - len(stripped)
     logger.info(
-        "📡 非流式响应: %.1fs, raw=%d stripped=%d (think=%d, %d%%) | completion_tokens=%s",
+        "非流式响应: %.1fs, raw=%d stripped=%d (think=%d, %d%%) | completion_tokens=%s",
         elapsed, len(raw), len(stripped), think_len,
         int(think_len / max(len(raw), 1) * 100),
         usage.get("completion_tokens", "?"),
@@ -142,7 +142,7 @@ class _ThinkStripper:
             reasoning = self._buffer[self._think_tag_end:] if self._think_tag_end else self._buffer
             if reasoning and self._on_thinking:
                 self._on_thinking(reasoning)
-            logger.debug("_ThinkStripper: 未闭合 <think>，已推送 %d chars", len(reasoning))
+            logger.debug("_ThinkStripper: 未闭合 <think>,已推送 %d chars", len(reasoning))
             self._buffer = ""
             self._in_think = False
             self._think_tag_end = 0
@@ -274,7 +274,7 @@ def _chat_completion_stream(
         if not accumulated:
             raise
         logger.warning(
-            "⚠️ 流式中断（finish_reason=%s，已收到 %d 字）: %s —— 保留已生成内容降级返回",  # noqa: E501
+            "流式中断(finish_reason=%s,已收到 %d 字): %s -- 保留已生成内容降级返回",  # noqa: E501
             finish_reason or "?", len(accumulated), e,
         )
 
@@ -301,16 +301,16 @@ def _chat_completion_stream(
     raw_len = len(accumulated_raw)
     stripped_len = len(accumulated)
     logger.info(
-        "📡 vLLM 响应: %d tokens / %.1fs (%.0f tok/s), TTFT %.2fs, "
+        "vLLM 响应: %d tokens / %.1fs (%.0f tok/s), TTFT %.2fs, "
         "raw=%d stripped=%d (flush=%d) chars | finish_reason=%s",
         token_count, elapsed, token_count / max(elapsed, 0.01),
         ttft or 0, raw_len, stripped_len, flushed_len, finish_reason or "?",
     )
     if finish_reason == "length":
-        logger.warning("⚠️ vLLM 返回 finish_reason=length，输出被截断！可能需要增大 --max-num-batched-tokens")
+        logger.warning("vLLM 返回 finish_reason=length,输出被截断!可能需要增大 --max-num-batched-tokens")
     think_pct = int((1 - stripped_len / max(raw_len, 1)) * 100)
     logger.info(
-        "  思考占 %d%%（%d chars）| 实际总结 %d chars",
+        "思考占 %d%%(%d chars)| 实际总结 %d chars",
         think_pct, raw_len - stripped_len, stripped_len,
     )
     return accumulated

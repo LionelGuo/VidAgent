@@ -71,7 +71,7 @@ def _split_audio(mp3_path: Path, chunk_s: int, work_dir: Path) -> list[Path]:
         )
         if out_path.exists() and out_path.stat().st_size > 0:
             chunks.append(out_path)
-            logger.debug("音频分块 [%d]: %.0fs–%.0fs → %s", i, start, end, out_path.name)
+            logger.debug("音频分块 [%d]: %.0fs-%.0fs -> %s", i, start, end, out_path.name)
         start = end
 
     return chunks if chunks else [mp3_path]
@@ -192,9 +192,9 @@ def _summarize_multimodal(
     if not all_frames and video_path and video_path.exists():
         try:
             all_frames = extract_frames(video_path)
-            logger.info("多模态总结：%d 帧画面已抽取", len(all_frames))
+            logger.info("多模态总结:%d 帧画面已抽取", len(all_frames))
         except Exception as e:
-            logger.warning("关键帧抽取失败，降级为纯音频: %s", e)
+            logger.warning("关键帧抽取失败,降级为纯音频: %s", e)
 
     # ── 时长 + 分块决策：基于 base64 大小而非时长 ──
     duration = _get_audio_duration(mp3_path)
@@ -203,7 +203,7 @@ def _summarize_multimodal(
 
     if b64_estimate > _MAX_AUDIO_B64_KB:
         logger.info(
-            "长音频检测：%.0fs / %d KB mp3 → ~%d KB base64 → 分块处理",
+            "长音频检测:%.0fs / %d KB mp3 -> ~%d KB base64 -> 分块处理",
             duration, mp3_size // 1024, b64_estimate,
         )
         return _summarize_multimodal_chunked(
@@ -252,8 +252,8 @@ def _summarize_multimodal(
     payload_kb = len(json.dumps(payload, ensure_ascii=False)) // 1024
 
     logger.info(
-        "📦 发送多模态请求: 音频 %d KB (base64) + %d 帧 / %d KB | "
-        "编码 %.2fs (音频) + %.2fs (帧) | 总 payload %d KB → %s",
+        "发送多模态请求: 音频 %d KB (base64) + %d 帧 / %d KB | "
+        "编码 %.2fs (音频) + %.2fs (帧) | 总 payload %d KB -> %s",
         audio_b64_kb, len(all_frames), frames_b64_kb,
         encode_elapsed, frames_encode_elapsed, payload_kb, base_url,
     )
@@ -279,7 +279,7 @@ def _summarize_multimodal_chunked(
         chunk_s = max(300, int(duration * target_per_chunk / max(mp3_size, 1)))
         audio_chunks = _split_audio(mp3_path, int(chunk_s), work_dir)
         total = len(audio_chunks)
-        logger.info("长音频分块完成：%d 段（每段 ~%ds）", total, chunk_s)
+        logger.info("长音频分块完成:%d 段(每段 ~%ds)", total, chunk_s)
 
         # 初始化分块进度（前端渲染分段圆角框）
         pg.chunks = []
@@ -294,7 +294,7 @@ def _summarize_multimodal_chunked(
             t_end = min(i * chunk_s, duration)
             chunk_kb = chunk_path.stat().st_size // 1024
             logger.info(
-                "📦 分块 %d/%d: %.0fs–%.0fs (%d KB mp3) → vLLM …",
+                "分块 %d/%d: %.0fs-%.0fs (%d KB mp3) -> vLLM ...",
                 i, total, t_start, t_end, chunk_kb,
             )
 
@@ -323,7 +323,7 @@ def _summarize_multimodal_chunked(
             pg.chunks[-1]["status"] = "done"
             pg.chunks[-1]["text"] = summary
             logger.info(
-                "✅ 分块 %d/%d 完成: %.1fs (%d 字)",
+                "分块 %d/%d 完成: %.1fs (%d 字)",
                 i, total, chunk_elapsed, len(summary),
             )
 
@@ -331,7 +331,7 @@ def _summarize_multimodal_chunked(
         pg.current_chunk = -1
         pg.stage = ProgressStage.MERGING
         chunks_total = time.perf_counter() - t0_chunks
-        logger.info("分块总结全部完成: %d 段 / %.1fs，开始合并…", total, chunks_total)
+        logger.info("分块总结全部完成: %d 段 / %.1fs,开始合并...", total, chunks_total)
         return _merge_summaries(
             chunk_summaries, metadata,
             base_url=base_url, api_key=api_key, model=model,

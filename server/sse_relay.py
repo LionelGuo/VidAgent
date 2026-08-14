@@ -215,7 +215,7 @@ async def relay_stream(
     sent_tool_calls = False
     last_finish_reason = "stop"
 
-    logger.info("SSE Relay 开始 → vLLM: %s", vllm_url)
+    logger.info("SSE Relay 开始 -> vLLM: %s", vllm_url)
 
     max_retries = 3
 
@@ -246,9 +246,7 @@ async def relay_stream(
                             continue
                         if line == "data: [DONE]":
                             if buffer and state == "BUFFERING":
-                                logger.warning(
-                                    "流结束时 buffer 残留（tool_call 可能不完整），回退为文本"
-                                )
+                                logger.warning("流结束时 tool_call buffer 不完整,回退为文本")
                                 yield _format_sse_content(buffer)
                             yield _yield_finish_reason_chunk(sent_tool_calls, last_finish_reason)
                             yield "data: [DONE]\n\n"
@@ -285,7 +283,7 @@ async def relay_stream(
                                 buffer = buffer[tc_pos:]
                                 state = "BUFFERING"
                                 logger.debug(
-                                    "检测到 <tool_call，切换 BUFFERING | buffer=%d chars",
+                                    "检测到 <tool_call,切换 BUFFERING | buffer=%d chars",
                                     len(buffer),
                                 )
                             else:
@@ -333,7 +331,7 @@ async def relay_stream(
                                         sent_tool_calls = True
                                     else:
                                         logger.warning(
-                                            "tool_call 提取失败，回退为纯文本 | len=%d head=%r tail=%r",
+                                            "tool_call 提取失败,回退为纯文本 | len=%d head=%r tail=%r",
                                             len(block), block[:100], block[-100:],
                                         )
                                         yield _format_sse_content(block)
@@ -356,7 +354,7 @@ async def relay_stream(
             # 正常结束（没有 data: [DONE] 行）
             if buffer:
                 if state == "BUFFERING":
-                    logger.warning("流结束时有未完成的 tool_call buffer，回退为文本")
+                    logger.warning("流结束时 tool_call buffer 不完整,回退为文本")
                 yield _format_sse_content(buffer)
             yield _yield_finish_reason_chunk(sent_tool_calls, last_finish_reason)
             yield "data: [DONE]\n\n"
@@ -366,12 +364,12 @@ async def relay_stream(
             if attempt < max_retries:
                 wait = 2 ** attempt
                 logger.warning(
-                    "vLLM 连接超时 (attempt %d/%d)，%ds 后重试…",
+                    "vLLM 连接超时 (attempt %d/%d),%ds 后重试...",
                     attempt, max_retries, wait,
                 )
                 await _asyncio.sleep(wait)
             else:
-                logger.error("vLLM 连接失败，已达最大重试次数: %s", e)
+                logger.error("vLLM 连接失败,已达最大重试次数: %s", e)
                 yield _format_sse_content(
                     "⚠️ vLLM 服务连接超时，请稍后重试。如持续出现请联系管理员检查服务器状态。"
                 )
@@ -410,7 +408,7 @@ async def relay_stream_transparent(
         "Content-Type": "application/json",
     }
 
-    logger.info("SSE Relay(transparent) → %s | model=%s", upstream_url, model)
+    logger.info("SSE Relay(transparent) -> %s | model=%s", upstream_url, model)
 
     in_reasoning = False
 

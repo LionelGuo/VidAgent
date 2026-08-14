@@ -308,7 +308,7 @@ def _apply_ytdlp_opts(opts: dict) -> None:
             if _os.path.getsize(cookiefile) > 100:
                 opts["cookiefile"] = cookiefile
             else:
-                logger.info("Cookie 文件过小，跳过: %s", cookiefile)
+                logger.info("Cookie 文件过小,跳过: %s", cookiefile)
         except OSError:
             pass
 
@@ -382,7 +382,7 @@ def _download_yt(url: str, file_name: str,
             break
         except yt_dlp.utils.DownloadError as e:
             last_error = str(e)
-            logger.warning("YouTube 下载失败（将尝试下一级降级）: %s", str(e)[:200])
+            logger.warning("YouTube 下载失败(将尝试下一级降级): %s", str(e)[:200])
 
     if last_error:
         return {"status": "error", "error": f"yt-dlp 下载失败: {last_error}", "video_url": url}
@@ -492,7 +492,7 @@ class YoutubePlatform(Platform):
                 raise ValueError(f"找不到 YouTube 频道: {creator}")
             channel_id = items[0]["snippet"]["channelId"]
             channel_title = items[0]["snippet"]["channelTitle"]
-            logger.info("YouTube 频道「%s」解析为 %s (%s)", creator, channel_id, channel_title)
+            logger.info("YouTube 频道'%s'解析为 %s (%s)", creator, channel_id, channel_title)
 
         # 按频道 ID 搜索视频
         data = await _api_get(client, "/search", {

@@ -45,7 +45,7 @@ def extract_audio(video_path: str | Path, mp3_name: str | None = None) -> Path:
     if out.exists() and out.stat().st_mtime >= video_path.stat().st_mtime:
         out_size_kb = out.stat().st_size // 1024
         logger.info(
-            "🎵 音频缓存命中: %s (%d KB, 视频 %.1f MB) — 跳过提取",
+            "音频缓存命中: %s (%d KB, 视频 %.1f MB) - 跳过提取",
             out.name, out_size_kb, video_size_mb,
         )
         return out
@@ -74,7 +74,7 @@ def extract_audio(video_path: str | Path, mp3_name: str | None = None) -> Path:
 
     out_size_kb = out.stat().st_size // 1024
     logger.info(
-        "🎵 音频提取完成: %s (%d KB / %.1fs, 视频 %.1f MB)",
+        "音频提取完成: %s (%d KB / %.1fs, 视频 %.1f MB)",
         out.name, out_size_kb, elapsed, video_size_mb,
     )
     return out

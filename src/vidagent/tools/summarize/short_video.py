@@ -61,7 +61,7 @@ def _prepare_short_video(video_path: Path) -> tuple[Path, Path]:
         raise RuntimeError(f"短视频音频提取失败: {video_path}")
 
     logger.info(
-        "🎬 短视频预处理: 视频 %d KB + 音频 %d KB → %s",
+        "短视频预处理: 视频 %d KB + 音频 %d KB -> %s",
         processed.stat().st_size // 1024,
         Path(audio_result).stat().st_size // 1024,
         work,
@@ -118,8 +118,8 @@ def _summarize_short_video(
     payload_kb = len(json.dumps(payload, ensure_ascii=False)) // 1024
     duration = metadata.get("duration", "?")
     logger.info(
-        "📦 短视频总结请求: %.0fs | 视频 %d KB + 音频 %d KB (base64) | "
-        "编码 %.1fs | payload %d KB → %s",
+        "短视频总结请求: %.0fs | 视频 %d KB + 音频 %d KB (base64) | "
+        "编码 %.1fs | payload %d KB -> %s",
         duration, video_kb, audio_kb, encode_elapsed, payload_kb, base_url,
     )
 
@@ -127,5 +127,5 @@ def _summarize_short_video(
     summary = _chat_completion_stream(base_url, api_key, payload, timeout=300, progress=progress)
 
     elapsed = time.perf_counter() - t0
-    logger.info("✅ 短视频总结完成: %.0fs | %.1fs 总耗时", duration, elapsed)
+    logger.info("短视频总结完成: %.0fs | %.1fs 总耗时", duration, elapsed)
     return summary

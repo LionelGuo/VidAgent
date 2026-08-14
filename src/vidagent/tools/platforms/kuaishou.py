@@ -223,7 +223,7 @@ async def _collect_feed_responses(
     except PWTimeoutError:
         login_cookies = await _login_cookie_names(page)
         logger.warning(
-            "快手页面数据响应未捕获（%ds 超时）: %s | 登录cookie=%s（可能未登录或风控）",
+            "快手页面数据响应未捕获(%ds 超时): %s | 登录cookie=%s(可能未登录或风控)",
             _PAGE_TIMEOUT_MS // 1000, url_substr, login_cookies,
         )
         return []
@@ -277,7 +277,7 @@ async def _collect_user_responses(page: Any, goto_coro: Any) -> list[dict]:
         body = await (await ri.value).text()
         data = json.loads(body)
     except PWTimeoutError:
-        logger.warning("快手用户搜索响应未捕获（超时）")
+        logger.warning("快手用户搜索响应未捕获(超时)")
         return []
     except Exception as e:
         logger.warning("快手用户搜索响应异常: %s", e)
@@ -314,7 +314,7 @@ async def _search_via_cdp(keyword: str, limit: int = 10) -> list[dict]:
             feeds = []
 
         results = [normalize(f) for f in feeds]
-        logger.info("🔍 快手搜索 '%s': %d 条", keyword, len(results))
+        logger.info("快手搜索 '%s': %d 条", keyword, len(results))
         await asyncio.sleep(_SLEEP_SEC)  # 节流（官方 CRAWLER_MAX_SLEEP_SEC）
         return results
 
@@ -354,7 +354,7 @@ async def _resolve_creator_user_id(creator: str) -> str | None:
     best = users[0]
     user_id = best.get("user_id") if isinstance(best, dict) else None
     if user_id:
-        logger.info("快手昵称 '%s' → 用户 '%s' (%s)", creator, best.get("user_name"), user_id)
+        logger.info("快手昵称 '%s' -> 用户 '%s' (%s)", creator, best.get("user_name"), user_id)
     else:
         logger.warning(
             "快手用户搜索条目无 user_id: keys=%s",
@@ -391,7 +391,7 @@ async def _get_creator_via_cdp(creator: str, limit: int = 10) -> list[dict]:
             feeds = []
 
         results = [normalize(f) for f in feeds]
-        logger.info("👤 快手创作者 %s: %d 个视频", user_id, len(results))
+        logger.info("快手创作者 %s: %d 个视频", user_id, len(results))
         await asyncio.sleep(_SLEEP_SEC)  # 节流（官方 CRAWLER_MAX_SLEEP_SEC）
         return results
 
@@ -437,7 +437,7 @@ async def _download_via_cdp(video_url: str, file_name: str,
             progress_callback(100)
         return {"status": "success", "local_path": str(target), "platform": "kuaishou", "cached": True}
 
-    logger.info("📥 快手下载开始: url=%s", video_url)
+    logger.info("快手下载开始: url=%s", video_url)
 
     # 1. 解析 photo_id（官方 help.py parse_video_info_from_url → 内置正则兜底）
     _import_mediacrawler()
@@ -452,19 +452,19 @@ async def _download_via_cdp(video_url: str, file_name: str,
 
     # 2. 详情页：SSR 数据在 window.__APOLLO_STATE__（页面无数据 XHR）
     detail_url = f"https://www.kuaishou.com/short-video/{photo_id}"
-    logger.info("  获取详情页数据: photo_id=%s", photo_id)
+    logger.info("获取详情页数据: photo_id=%s", photo_id)
     async with KuaishouPlatform.mc_lock:
         page = await _get_page(detail_url)
         try:
             await page.goto(detail_url, wait_until="domcontentloaded", timeout=15000)
         except Exception as e:
-            logger.warning("详情页导航异常（继续等数据）: %s", e)
+            logger.warning("详情页导航异常(继续等数据): %s", e)
         photo = await _wait_detail_photo(page, photo_id)
 
     if not photo:
         login_cookies = await _login_cookie_names(page)
         logger.error(
-            "详情页数据未就绪: photo_id=%s 登录cookie=%s（可能未登录/被删/风控）",
+            "详情页数据未就绪: photo_id=%s 登录cookie=%s(可能未登录/被删/风控)",
             photo_id, login_cookies,
         )
         return {"status": "error", "error": "快手详情页数据未就绪（可能未登录或视频不可访问）", "video_url": video_url}
@@ -472,7 +472,7 @@ async def _download_via_cdp(video_url: str, file_name: str,
     play_url = photo.get("photoUrl", "")
     if not play_url:
         return {"status": "error", "error": "未找到可下载的视频链接", "video_url": video_url}
-    logger.info("  下载链接: %s...", play_url[:80])
+    logger.info("下载链接: %s...", play_url[:80])
 
     # 3. 下载视频文件（UA + Referer 模拟正常请求，直连，流式写入 + 进度回调）
     try:
@@ -497,14 +497,14 @@ async def _download_via_cdp(video_url: str, file_name: str,
                         if total > 0 and progress_callback:
                             progress_callback(int(downloaded / total * 100))
                 os.replace(part, target)
-        logger.info("  ✅ 下载完成: %d KB → %s", downloaded // 1024, target)
+        logger.info("下载完成: %d KB -> %s", downloaded // 1024, target)
     except Exception as e:
         if part is not None:
             try:
                 part.unlink(missing_ok=True)
             except Exception:
                 pass
-        logger.error("  视频文件下载失败: %s", e)
+        logger.error("视频文件下载失败: %s", e)
         return {"status": "error", "error": f"视频文件下载失败: {e}", "video_url": video_url}
 
     if progress_callback:

@@ -120,7 +120,7 @@ def register(platform: Platform) -> Platform:
     for n in names:
         n_lower = n.lower()
         if n_lower in _registry:
-            logger.warning("平台 %r 重复注册（%s），覆盖旧条目", n, platform.name)
+            logger.warning("平台 %r 重复注册(%s),覆盖旧条目", n, platform.name)
         _registry[n_lower] = platform
     logger.info("已注册平台: %s (别名: %s)", platform.name, ", ".join(platform.aliases))
     return platform

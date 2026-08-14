@@ -116,7 +116,7 @@ def extract_frames(
     """
     video_path = Path(video_path)
     if not video_path.exists():
-        logger.warning("视频不存在，跳过帧抽取: %s", video_path)
+        logger.warning("视频不存在,跳过帧抽取: %s", video_path)
         return []
 
     # ── 帧缓存：目录已存在且帧数足够 → 直接复用 ──
@@ -129,12 +129,12 @@ def extract_frames(
         if len(existing) >= need:
             total_kb = sum(f.stat().st_size for f in existing) // 1024
             logger.info(
-                "🖼️ 帧缓存命中: %d 帧 / %d KB → %s",
+                "帧缓存命中: %d 帧 / %d KB -> %s",
                 len(existing), total_kb, output_dir.name,
             )
             return existing
         else:
-            logger.info("🖼️ 帧缓存过期: 需要 %d 帧, 已有 %d → 重新抽取", need, len(existing))
+            logger.info("帧缓存过期: 需要 %d 帧, 已有 %d -> 重新抽取", need, len(existing))
 
     # ── 时长 ──
     if duration is None:
@@ -142,7 +142,7 @@ def extract_frames(
         duration = get_duration(video_path)
         logger.debug("ffprobe 时长: %.1fs (%.2fs)", duration, time.perf_counter() - t0_dur)
     if duration <= 0:
-        logger.warning("视频时长为 0，跳过帧抽取")
+        logger.warning("视频时长为 0,跳过帧抽取")
         return []
 
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -179,7 +179,7 @@ def extract_frames(
     frames.sort()
     total_kb = sum(f.stat().st_size for f in frames) // 1024
     logger.info(
-        "🖼️ 帧抽取完成: %d/%d 帧 / %d KB / %.1fs (视频 %s, %.0fs, %d workers)",
+        "帧抽取完成: %d/%d 帧 / %d KB / %.1fs (视频 %s, %.0fs, %d workers)",
         len(frames), num_to_extract, total_kb, elapsed,
         video_path.name, duration, min(num_to_extract, 6),
     )

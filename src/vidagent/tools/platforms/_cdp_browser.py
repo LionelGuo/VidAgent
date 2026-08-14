@@ -41,15 +41,15 @@ def check_mediacrawler_available() -> str | None:
     """
     if not Path(_MEDIACRAWLER_ROOT).is_dir():
         return (
-            "MediaCrawler 未就位（抖音/小红书/快手不可用）。"
-            "源码应 vendored 于 vendor/MediaCrawler/（见 README）。"
+            "MediaCrawler 未就位(抖音/小红书/快手不可用)."
+            "源码应 vendored 于 vendor/MediaCrawler/ (见 README)."
         )
     try:
         import execjs  # noqa: F401  # [douyin] extra 标志性依赖（douyin/help.py 顶层 import）
     except Exception:
         return (
-            "MediaCrawler 已就位但 [douyin] 依赖未安装（缺 execjs/xhshow/tenacity 等）。"
-            "请执行 `uv sync --extra douyin` 安装（见 README）。"
+            "MediaCrawler 已就位但 [douyin] 依赖未安装(缺 execjs/xhshow/tenacity 等)."
+            "请执行 `uv sync --extra douyin` 安装(见 README)."
         )
     return None
 

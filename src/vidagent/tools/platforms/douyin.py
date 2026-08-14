@@ -105,7 +105,7 @@ def _import_mediacrawler() -> None:
     _ParseVideoInfo = mods["help"].parse_video_info_from_url
     _ParseCreatorInfo = mods["help"].parse_creator_info_from_url
 
-    logger.info("MediaCrawler 抖音模块已导入（签名 JS 已编译）")
+    logger.info("MediaCrawler 抖音模块已导入(签名 JS 已编译)")
 
 
 def _get_proxy() -> str | None:
@@ -131,7 +131,7 @@ async def _wait_xmst(page: Any) -> None:
         except Exception:
             pass
         await asyncio.sleep(0.5)
-    logger.warning("xmst 未在 %ds 内就绪，继续尝试（可能被风控）", _XMST_POLL_SECONDS)
+    logger.warning("xmst 未在 %ds 内就绪,继续尝试(可能被风控)", _XMST_POLL_SECONDS)
 
 
 async def _is_logged_in(page: Any, cookie_dict: dict) -> bool:
@@ -152,7 +152,7 @@ async def _is_logged_in(page: Any, cookie_dict: dict) -> bool:
 
 async def _guide_qr_login(page: Any) -> None:
     """在 CDP 页面上打开登录弹窗，等待用户扫码（最多 120s）。"""
-    logger.info("抖音未登录 — 在浏览器页面引导扫码登录（最多 %ds）…", _LOGIN_POLL_SECONDS)
+    logger.info("抖音未登录 - 在浏览器页面引导扫码登录(最多 %ds)...", _LOGIN_POLL_SECONDS)
     try:
         try:
             await page.goto(
@@ -167,7 +167,7 @@ async def _guide_qr_login(page: Any) -> None:
         except Exception:
             pass  # 登录弹窗可能已自动出现
     except Exception as e:
-        logger.warning("登录弹窗触发失败（不影响轮询）: %s", e)
+        logger.warning("登录弹窗触发失败(不影响轮询): %s", e)
 
     for _ in range(_LOGIN_POLL_SECONDS):
         await asyncio.sleep(1)
@@ -192,7 +192,7 @@ async def _client_call(coro_factory: Callable[[Any], Any]) -> Any:
             )
         except TimeoutError:
             logger.warning(
-                "抖音 client 调用超时（%ds），判定 page 挂起，重建", _CALL_TIMEOUT,
+                "抖音 client 调用超时(%ds),判定 page 挂起,重建", _CALL_TIMEOUT,
             )
             await DouyinPlatform.reset_client()
             raise DouyinClientError(
@@ -327,7 +327,7 @@ async def fetch_hot_search(client: httpx.AsyncClient, limit: int = 20) -> list[d
         logger.warning("抖音热搜词 API 失败: %s", e)
         return []
     trending = data.get("data", {}).get("trending_list", [])
-    logger.info("🔥 抖音热搜词: %d 条 (更新时间: %s)", len(trending),
+    logger.info("抖音热搜词: %d 条 (更新时间: %s)", len(trending),
                 data.get("data", {}).get("active_time", ""))
     return [normalize(it) for it in trending[:limit]]
 
@@ -431,7 +431,7 @@ async def _fetch_hot_list_via_page(limit: int = 10) -> list[dict]:
             results.append(_normalize_trending(w))  # 搜索失败降级为纯词条
         await asyncio.sleep(2)  # 逐词条搜索节流（对齐官方 CRAWLER_MAX_SLEEP_SEC）
 
-    logger.info("🔥 抖音热搜榜: %d 条", len(results))
+    logger.info("抖音热搜榜: %d 条", len(results))
     return results
 
 
@@ -455,7 +455,7 @@ async def _search_first_video_for_word(word: str) -> dict | None:
             )
         except DouyinClientError as e:
             if attempt == 0:
-                logger.warning("热榜词条搜索失败 '%s'（页面已重建，重试）: %s", word, e)
+                logger.warning("热榜词条搜索失败 '%s'(页面已重建,重试): %s", word, e)
                 continue
             logger.warning("热榜词条搜索失败 '%s': %s", word, e)
             return None
@@ -474,7 +474,7 @@ async def _search_first_video_for_word(word: str) -> dict | None:
         if fallback is not None:
             return fallback
         if attempt == 0:
-            logger.warning("热榜词条搜索无结果 '%s'（重试）", word)
+            logger.warning("热榜词条搜索无结果 '%s'(重试)", word)
             continue
     logger.warning("热榜词条搜索无结果: '%s'", word)
     return None
@@ -511,7 +511,7 @@ async def _search_via_cdp(keyword: str, limit: int = 10) -> list[dict]:
         aweme_info = item.get("aweme_info") or item.get("aweme_detail") or item
         if aweme_info:
             results.append(normalize(aweme_info))
-    logger.info("🔍 抖音搜索 '%s': %d 条", keyword, len(results))
+    logger.info("抖音搜索 '%s': %d 条", keyword, len(results))
     return results[:limit]
 
 
@@ -605,7 +605,7 @@ async def _resolve_creator_sec_uid(creator_id: str) -> str | None:
     ui = best.get("user_info") or {}
     sec_uid = ui.get("sec_uid")
     if sec_uid:
-        logger.info("抖音昵称 '%s' → 用户 '%s' (sec_uid=%s)",
+        logger.info("抖音昵称 '%s' -> 用户 '%s' (sec_uid=%s)",
                     creator_id, ui.get("nickname"), sec_uid)
     else:
         logger.warning("抖音用户搜索结果无 sec_uid: item_keys=%s",
@@ -637,12 +637,12 @@ async def _get_creator_via_cdp(creator_id: str, limit: int = 10) -> list[dict]:
         logger.warning("抖音创作者查询失败: %s", e)
         return []
     except Exception as e:
-        logger.warning("抖音创作者查询失败（MediaCrawler 异常）: %r", e)
+        logger.warning("抖音创作者查询失败(MediaCrawler 异常): %r", e)
         return []
 
     aweme_list = resp.get("aweme_list") or [] if isinstance(resp, dict) else []
     results = [normalize(item) for item in aweme_list[:limit]]
-    logger.info("👤 抖音创作者 %s: %d 个视频（第一页）", sec_user_id, len(results))
+    logger.info("抖音创作者 %s: %d 个视频(第一页)", sec_user_id, len(results))
     return results
 
 
@@ -662,7 +662,7 @@ async def _download_via_cdp(video_url: str, file_name: str,
             progress_callback(100)
         return {"status": "success", "local_path": str(target), "platform": "douyin", "cached": True}
 
-    logger.info("📥 抖音下载开始: url=%s", video_url)
+    logger.info("抖音下载开始: url=%s", video_url)
     _import_mediacrawler()
 
     # 0. 搜索页 URL → 解析为真实视频
@@ -670,7 +670,7 @@ async def _download_via_cdp(video_url: str, file_name: str,
     if search_match:
         from urllib.parse import unquote
         keyword = unquote(search_match.group(1))
-        logger.info("  🔍 搜索页 URL，解析关键词: '%s' → 搜索真实视频…", keyword)
+        logger.info("搜索页 URL,解析关键词: '%s' -> 搜索真实视频...", keyword)
         try:
             resp = await _client_call(
                 lambda c: c.search_info_by_keyword(
@@ -684,17 +684,17 @@ async def _download_via_cdp(video_url: str, file_name: str,
                     aweme = item.get("aweme_info") or item.get("aweme_detail") or item
                     if aweme and aweme.get("aweme_id"):
                         video_url = f"https://www.douyin.com/video/{aweme['aweme_id']}"
-                        logger.info("  ✅ 解析为: %s", video_url)
+                        logger.info("解析为: %s", video_url)
                         break
                 else:
-                    logger.error("  ❌ 搜索结果中无有效视频")
+                    logger.error("搜索结果中无有效视频")
                     return {
                         "status": "error",
                         "error": f"关键词 '{keyword}' 搜索结果无有效视频",
                         "video_url": video_url,
                     }
             else:
-                logger.error("  ❌ 搜索 '%s' 无结果", keyword)
+                logger.error("搜索 '%s' 无结果", keyword)
                 return {"status": "error", "error": f"关键词 '{keyword}' 搜索失败：无结果", "video_url": video_url}
         except DouyinClientError as e:
             return {"status": "error", "error": str(e), "video_url": video_url}
@@ -703,38 +703,38 @@ async def _download_via_cdp(video_url: str, file_name: str,
     try:
         video_info = _ParseVideoInfo(video_url)
         aweme_id = video_info.aweme_id
-        logger.info("  MediaCrawler 解析 → aweme_id=%s", aweme_id)
+        logger.info("MediaCrawler 解析 -> aweme_id=%s", aweme_id)
     except Exception:
-        logger.warning("MediaCrawler 解析 URL 失败，回退内置正则")
+        logger.warning("MediaCrawler 解析 URL 失败,回退内置正则")
         aweme_id = extract_video_id(video_url)
 
     # 短链 → 解析真实 URL（MediaCrawler resolve_short_url）
     if aweme_id and str(aweme_id).startswith("dy_short_"):
-        logger.info("  检测到短链，解析真实地址…")
+        logger.info("检测到短链,解析真实地址...")
         try:
             resolved = await _client_call(lambda c: c.resolve_short_url(video_url))
             if resolved:
                 video_url = resolved
                 aweme_id = extract_video_id(video_url)
-                logger.info("  ✅ 短链解析为: %s", video_url)
+                logger.info("短链解析为: %s", video_url)
         except DouyinClientError as e:
             return {"status": "error", "error": str(e), "video_url": video_url}
 
     # 统一校验
     if not aweme_id or (isinstance(aweme_id, str) and aweme_id.startswith("dy_short_")):
-        logger.error("  无法解析视频 ID: url=%s", video_url)
+        logger.error("无法解析视频 ID: url=%s", video_url)
         return {"status": "error", "error": f"无法解析视频 ID: {video_url}", "video_url": video_url}
     aweme_id = str(aweme_id)
 
     # 2. 获取视频详情（含下载链接）
-    logger.info("  获取视频详情: aweme_id=%s", aweme_id)
+    logger.info("获取视频详情: aweme_id=%s", aweme_id)
     try:
         detail = await _client_call(lambda c: c.get_video_by_id(aweme_id))
     except DouyinClientError as e:
         return {"status": "error", "error": str(e), "video_url": video_url}
 
     if not detail:
-        logger.error("  视频不存在或已被删除: aweme_id=%s", aweme_id)
+        logger.error("视频不存在或已被删除: aweme_id=%s", aweme_id)
         return {"status": "error", "error": "视频不存在或已被删除", "video_url": video_url}
 
     # 3. 提取无水印下载链接（优先级对齐 MediaCrawler:
@@ -750,17 +750,17 @@ async def _download_via_cdp(video_url: str, file_name: str,
     if not media_url:
         dl_list = (video_data.get("download_addr", {}) or {}).get("url_list", []) or []
         media_url = dl_list[0] if dl_list else ""
-    logger.info("  下载链接: %s...", media_url[:80] if media_url else "EMPTY")
+    logger.info("下载链接: %s...", media_url[:80] if media_url else "EMPTY")
 
     if not media_url:
         if isinstance(detail, dict):
-            logger.error("  detail keys: %s", list(detail.keys())[:10])
+            logger.error("detail keys: %s", list(detail.keys())[:10])
             if video_data:
-                logger.error("  video keys: %s", list(video_data.keys())[:10])
+                logger.error("video keys: %s", list(video_data.keys())[:10])
         return {"status": "error", "error": "未找到可下载的视频链接", "video_url": video_url}
 
     # 4. 下载视频文件（需要 Referer + UA 模拟正常请求，流式写入 + 进度回调）
-    logger.info("  httpx 下载中…")
+    logger.info("httpx 下载中...")
     part: Path | None = None  # 先写 .part 再原子替换：流中断的残片不得命中缓存
     try:
         dl_headers = {
@@ -785,14 +785,14 @@ async def _download_via_cdp(video_url: str, file_name: str,
                             pct = int(downloaded / total * 100)
                             progress_callback(pct)
                 os.replace(part, target)
-                logger.info("  ✅ 下载完成: %d KB → %s", downloaded // 1024, target)
+                logger.info("下载完成: %d KB -> %s", downloaded // 1024, target)
     except Exception as e:
         if part is not None:
             try:
                 part.unlink(missing_ok=True)
             except Exception:
                 pass
-        logger.error("  视频文件下载失败: %s", e)
+        logger.error("视频文件下载失败: %s", e)
         return {"status": "error", "error": f"视频文件下载失败: {e}", "video_url": video_url}
 
     if progress_callback:

@@ -86,7 +86,7 @@ async def client_pong_safe(client) -> bool:
 
 async def _guide_login(page, client) -> None:
     """在 CDP 页面上引导用户扫码登录（最多 120s）。"""
-    logger.info("小红书未登录 — 在浏览器页面引导扫码登录（最多 %ds）…", _LOGIN_POLL_SECONDS)
+    logger.info("小红书未登录 - 在浏览器页面引导扫码登录(最多 %ds)...", _LOGIN_POLL_SECONDS)
     try:
         try:
             await page.goto(
@@ -103,7 +103,7 @@ async def _guide_login(page, client) -> None:
         except Exception:
             pass  # 登录弹窗可能已自动出现
     except Exception as e:
-        logger.warning("登录弹窗触发失败（不影响轮询）: %s", e)
+        logger.warning("登录弹窗触发失败(不影响轮询): %s", e)
 
     for _ in range(_LOGIN_POLL_SECONDS):
         await asyncio.sleep(1)
@@ -200,7 +200,7 @@ async def _search_via_cdp(keyword: str, limit: int = 10) -> list[dict]:
             client = await XiaohongshuPlatform.ensure_client()
     except Exception as e:
         # CDP 连不上 Windows Chrome（对齐抖音搜索的优雅降级：不 500）
-        logger.warning("小红书搜索失败（无法连接 Windows Chrome 调试端口 9222）: %s", e)
+        logger.warning("小红书搜索失败(无法连接 Windows Chrome 调试端口 9222): %s", e)
         return []
     try:
         # 参数对齐 MediaCrawler 官方 search()（core.py:286-297）：
@@ -217,7 +217,7 @@ async def _search_via_cdp(keyword: str, limit: int = 10) -> list[dict]:
     except Exception as e:
         err_msg = str(e)
         if "DataFetchError" in err_msg:
-            logger.warning("小红书搜索失败（API 拒接，可能未登录或风控）: %s", err_msg[:120])
+            logger.warning("小红书搜索失败(API 拒接,可能未登录或风控): %s", err_msg[:120])
         else:
             # tenacity RetryError 的 str 不含底层原因，展开 last_attempt
             cause = getattr(e, "last_attempt", None)
@@ -294,11 +294,11 @@ async def _search_via_cdp(keyword: str, limit: int = 10) -> list[dict]:
             asyncio.gather(*[_limited(it) for it in items]), timeout=30,
         )
     except TimeoutError:
-        logger.warning("小红书详情批量查询超时（30s），使用搜索原始数据")
+        logger.warning("小红书详情批量查询超时(30s),使用搜索原始数据")
         detailed = items
 
     results = [normalize(it) for it in detailed]
-    logger.info("🔍 小红书搜索 '%s': %d 条", keyword, len(results))
+    logger.info("小红书搜索 '%s': %d 条", keyword, len(results))
     # 对齐官方搜索后节流（base_config.py: CRAWLER_MAX_SLEEP_SEC=2），
     # 连续密集请求是触发风控的主因之一
     await asyncio.sleep(random.uniform(2, 4))
@@ -357,7 +357,7 @@ async def _resolve_creator_user_id(nickname: str) -> tuple[str, str] | None:
             sorted(best.keys())[:10] if isinstance(best, dict) else type(best).__name__,
         )
         return None
-    logger.info("小红书昵称 '%s' → 用户 '%s' (%s)", nickname, best.get("name"), user_id)
+    logger.info("小红书昵称 '%s' -> 用户 '%s' (%s)", nickname, best.get("name"), user_id)
     return user_id, best.get("xsec_token", "")
 
 
@@ -376,7 +376,7 @@ async def _get_creator_via_cdp(creator_id: str, limit: int = 10) -> list[dict]:
         async with XiaohongshuPlatform.mc_lock:
             client = await XiaohongshuPlatform.ensure_client()
     except Exception as e:
-        logger.warning("小红书创作者查询失败（CDP）: %s", e)
+        logger.warning("小红书创作者查询失败(CDP): %s", e)
         return []
     try:
         info = _ParseCreatorInfo(creator_id)
@@ -399,7 +399,7 @@ async def _get_creator_via_cdp(creator_id: str, limit: int = 10) -> list[dict]:
         return []
     items = resp.get("notes", []) if isinstance(resp, dict) else []
     results = [normalize(it) for it in items[:limit]]
-    logger.info("👤 小红书创作者 %s: %d 篇笔记", user_id, len(results))
+    logger.info("小红书创作者 %s: %d 篇笔记", user_id, len(results))
     return results
 
 
@@ -460,7 +460,7 @@ async def _download_via_cdp(note_url: str, file_name: str,
         return {"status": "error", "error": "小红书笔记获取失败（可能需登录或笔记不可访问）", "video_url": note_url}
 
     logger.info(
-        "  笔记来源: %s, type=%s, keys=%s, video_keys=%s",
+        "笔记来源: %s, type=%s, keys=%s, video_keys=%s",
         note_source, note_card.get("type"),
         sorted(k for k in note_card.keys())[:12],
         sorted((note_card.get("video") or {}).keys())
@@ -524,7 +524,7 @@ async def _download_note_media(note: dict, target: Path,
         for field in ("media_v2", "media"):
             v = video_info.get(field)
             logger.warning(
-                "  视频 URL 结构诊断[%s]: type=%s value=%s",
+                "视频 URL 结构诊断[%s]: type=%s value=%s",
                 field, type(v).__name__,
                 (json.dumps(v, ensure_ascii=False)[:400]
                  if isinstance(v, (dict, list)) else str(v)[:200]),
@@ -627,7 +627,7 @@ class XiaohongshuPlatform(MediaCrawlerPlatform):
     @classmethod
     async def _handle_login_failure(cls, page: Any, client: Any) -> Any:
         """xhs 登录非硬门槛：超时放行，继续尝试（可能仅部分接口受限）。"""
-        logger.warning("小红书登录等待超时（%ds），继续尝试", _LOGIN_POLL_SECONDS)
+        logger.warning("小红书登录等待超时(%ds),继续尝试", _LOGIN_POLL_SECONDS)
         return client
 
     # -- 检索 / 下载 --

@@ -319,7 +319,7 @@ def _download_bili(url: str, file_name: str,
     if cookie:
         cookiefile = _write_bili_cookiefile(cookie)
         opts["cookiefile"] = str(cookiefile)
-        logger.info("B站下载使用 BILI_COOKIE（%d 字符）", len(cookie))
+        logger.info("B站下载使用 BILI_COOKIE(%d 字符)", len(cookie))
     try:
         with Timer("视频下载(yt-dlp)"):
             with yt_dlp.YoutubeDL(opts) as ydl:
@@ -404,7 +404,7 @@ class BilibiliPlatform(Platform):
         mid = str(creator)
         if not mid.isdigit():
             mid, uname, fans = await resolve_creator_mid(client, mid)
-            logger.info("创作者「%s」解析为 mid=%s（%s，粉丝 %s）", creator, mid, uname, fans)
+            logger.info("创作者'%s'解析为 mid=%s(%s,粉丝 %s)", creator, mid, uname, fans)
         items = await fetch_user_videos(client, mid, ps=max(limit, 30))
         return items[:limit]
 

@@ -65,11 +65,11 @@ def extract_and_summarize(
             duration = get_duration(local_path)
             metadata["duration"] = duration
             metadata["duration_text"] = f"{int(duration // 60):02d}:{int(duration % 60):02d}"
-            logger.info("📐 补充 duration: %.0fs", duration)
+            logger.info("补充 duration: %.0fs", duration)
 
         # ── 分流：短视频（<90s）vs 长视频 ──
         if isinstance(duration, (int, float)) and 0 < duration < 90:
-            logger.info("🎬 短视频管线: %.0fs", duration)
+            logger.info("短视频管线: %.0fs", duration)
             _ep = llm_provider.agent_endpoint()
             with Timer("多模态总结(短视频)"):
                 return _summarize_short_video(
@@ -98,7 +98,7 @@ def extract_and_summarize(
         mp3_kb = Path(mp3).stat().st_size // 1024
         frames_kb = sum(f.stat().st_size for f in all_frames) // 1024
         logger.info(
-            "⚙️ 预处理完成: 音频 %d KB + %d 帧 / %d KB | %.1fs (并行)",
+            "预处理完成: 音频 %d KB + %d 帧 / %d KB | %.1fs (并行)",
             mp3_kb, len(all_frames), frames_kb, pre_elapsed,
         )
 
@@ -110,7 +110,7 @@ def extract_and_summarize(
                 progress=progress,
             )
     except Exception as e:
-        logger.warning("多模态总结失败，走降级总结（仅元数据）: %s", e)
+        logger.warning("多模态总结失败,走降级总结(仅元数据): %s", e)
         with Timer("LLM 总结(降级)"):
             return _summarize("", metadata)
     finally:
