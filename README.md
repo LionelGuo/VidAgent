@@ -113,7 +113,7 @@ docker run --network=host -e LLM_PROVIDER=vllm -e LLM_BASE_URL=http://127.0.0.1:
 
 ```bash
 bash scripts/deploy_vllm_omni.sh    # 装 vllm-omni + 下载模型（≥24GB VRAM，默认到项目根目录 models/）
-bash scripts/start_vllm_bare.sh     # 后台启动（端口 6006；默认 models/，可传参数指定模型路径）
+bash scripts/start_vllm_bare.sh     # 前台启动（端口 6006；默认 models/，可传参数指定模型路径）
 ```
 
 ### 裸机开发

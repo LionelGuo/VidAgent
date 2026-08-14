@@ -14,7 +14,7 @@
 #   GPU_MEM_UTIL 默认 0.85
 #   LOG_FILE     默认 ./vllm-omni.log
 #
-# 停止服务：pkill -f "vllm-omni serve"
+# 前台运行（Ctrl+C 停止），日志同时写入 LOG_FILE
 #
 # VLLM_MAX_AUDIO_DECODE_DURATION_S=3600：允许最长 60 分钟音频输入（默认仅 600s）
 
@@ -48,7 +48,10 @@ DATA_PATH="${DATA_PATH:-$(dirname "$(dirname "${MODEL_PATH}")")}"
 
 export VLLM_MAX_AUDIO_DECODE_DURATION_S=3600
 
-nohup "$VLLM_BIN" serve \
+echo "对外端点：http://<本机IP>:${PORT}/v1（VidAgent 的 LLM_BASE_URL 指向此处）"
+echo "前台运行中（Ctrl+C 停止），日志同时写入 ${LOG_FILE}"
+
+"$VLLM_BIN" serve \
   "$MODEL_PATH" \
   --port "$PORT" \
   --gpu-memory-utilization "$GPU_MEM_UTIL" \
@@ -57,8 +60,4 @@ nohup "$VLLM_BIN" serve \
   --enable-prefix-caching \
   --allowed-local-media-path "$DATA_PATH" \
   --limit-mm-per-prompt '{"video": {"count": 1, "num_frames": 10}}' \
-  > "$LOG_FILE" 2>&1 &
-
-echo "vLLM starting... PID=$!"
-echo "对外端点：http://<本机IP>:${PORT}/v1（VidAgent 的 LLM_BASE_URL 指向此处）"
-echo "Monitor: tail -f $LOG_FILE"
+  2>&1 | tee "$LOG_FILE"
