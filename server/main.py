@@ -263,10 +263,7 @@ async def tool_summarize_start(req: SummarizeRequest):
     from vidagent.tools.summarizer import cleanup_progress, extract_and_summarize
 
     task_id = uuid.uuid4().hex[:12]
-    _summarize_tasks[task_id] = TaskRecord(
-        status=TaskStatus.PROCESSING,
-        partial="⏳ 总结任务已创建…",
-    )
+    _summarize_tasks[task_id] = TaskRecord(status=TaskStatus.PROCESSING)
 
     # 建立 video_id → task_id 映射
     video_id = (req.metadata or {}).get("video_id")
@@ -309,6 +306,10 @@ async def tool_summarize_stream(task_id: str):
         last_chunks_snapshot = ""
         last_local_path_sent = False
         last_summary_active_flag = False
+        # 预初始化：任务已注册但 Progress 尚未创建（SSE 抢跑 create_progress 的窗口）
+        # 时 get_progress 返回 None，这两个局部变量必须在循环外定义（NameError 回归）
+        summary_active = False
+        summary_text = ""
 
         while True:
             task = _summarize_tasks.get(task_id)
@@ -602,10 +603,7 @@ async def tool_batch_summarize(req: BatchSummarizeRequest):
         video["_task_id"] = task_id
         video["_video_id"] = video_id
         _video_task_map[video_id] = task_id
-        _summarize_tasks[task_id] = TaskRecord(
-            status=TaskStatus.PROCESSING,
-            partial=f"⏳ {video.get('title', video_id)} 排队中…",
-        )
+        _summarize_tasks[task_id] = TaskRecord(status=TaskStatus.PROCESSING)
         tasks.append({"task_id": task_id, "video_id": video_id, "status": "processing"})
 
     # 所有视频并行提交到线程池（task_entry 按序对应：多线程各自写自己的状态，
