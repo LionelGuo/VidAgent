@@ -33,7 +33,7 @@ from ._cdp_browser import (
     get_page_for_platform,
     invalidate_page,
 )
-from ._mediacrawler import MediaCrawlerPlatform, import_mc_platform
+from ._mediacrawler import MediaCrawlerPlatform
 
 logger = logging.getLogger(__name__)
 
@@ -100,7 +100,7 @@ def _import_mediacrawler() -> None:
     if _SearchChannelType is not None:
         return
 
-    mods = import_mc_platform("douyin", "client", "field", "help")
+    mods = DouyinPlatform.import_mc()
     _SearchChannelType = mods["field"].SearchChannelType
     _ParseVideoInfo = mods["help"].parse_video_info_from_url
     _ParseCreatorInfo = mods["help"].parse_creator_info_from_url
@@ -194,9 +194,7 @@ async def _client_call(coro_factory: Callable[[Any], Any]) -> Any:
             logger.warning(
                 "抖音 client 调用超时（%ds），判定 page 挂起，重建", _CALL_TIMEOUT,
             )
-            await invalidate_page(DouyinPlatform.cdp_page_key)
-            DouyinPlatform._client = None
-            DouyinPlatform._client_page = None
+            await DouyinPlatform.reset_client()
             raise DouyinClientError(
                 "抖音请求超时（浏览器页面异常），请重试"
             ) from None
@@ -815,6 +813,7 @@ class DouyinPlatform(MediaCrawlerPlatform):
     cdp_page_key: ClassVar[str] = "dy"
     mc_lock: ClassVar[asyncio.Lock] = asyncio.Lock()
     mc_submodules: ClassVar[tuple[str, ...]] = ("client", "field", "help")
+    mc_package: ClassVar[str] = "douyin"
     _client_cls_name: ClassVar[str] = "DouYinClient"
     _client_timeout: ClassVar[float] = _CLIENT_TIMEOUT
     _home_url: ClassVar[str] = "https://www.douyin.com"
@@ -855,7 +854,7 @@ class DouyinPlatform(MediaCrawlerPlatform):
         await _guide_qr_login(page)
 
     @classmethod
-    async def _handle_login_failure(cls, client: Any, page: Any) -> Any:
+    async def _handle_login_failure(cls, page: Any, client: Any) -> Any:
         """抖音登录是硬门槛：未登录 → 清 client 并抛错。"""
         cls._client = None
         cls._client_page = None

@@ -30,6 +30,7 @@ from ._cdp_browser import (
     _MEDIACRAWLER_ROOT,
     get_mc_utils,
     get_page_for_platform,
+    invalidate_page,
     run_on_cdp_loop,
     run_on_cdp_loop_async,
 )
@@ -63,6 +64,8 @@ _cache: dict[str, dict[str, Any]] = {}
 
 # 导入期 chdir 是进程全局副作用：跨平台首次导入串行化（一次性成本）
 _import_lock = threading.Lock()
+# 配置注入原子性：MC config 是模块级全局变量，键集写入不可被并发拆散
+_inject_lock = threading.Lock()
 
 
 @contextmanager
@@ -101,11 +104,16 @@ def inject_platform_config(platform: str) -> None:
     """把 <platform> 的平台键写入 MC 全局 config（本层是平台键唯一写入者）。
 
     在 client 构造前、平台锁内调用。未知平台抛 KeyError（接入错误应尽早暴露）。
+
+    写入在进程级锁内完成：MC config 是模块级全局变量，锁保证一次注入的
+    键集原子落盘（不出现 PLATFORM/LOGIN_TYPE 拆散的中间态）；平台锁
+    串行化同一平台的构造，两把锁共同消除注入竞态。
     """
     import config as mc_config
 
-    for key, value in PLATFORM_CONFIG[platform].items():
-        setattr(mc_config, key, value)
+    with _inject_lock:
+        for key, value in PLATFORM_CONFIG[platform].items():
+            setattr(mc_config, key, value)
 
 
 class MediaCrawlerPlatform(Platform):
@@ -128,13 +136,15 @@ class MediaCrawlerPlatform(Platform):
     # -- 门户与共享设施 --
 
     mc_submodules: ClassVar[tuple[str, ...]] = ()
+    # vendor media_platform 下的包名：与平台名可不一致（xiaohongshu→"xhs"）
+    mc_package: ClassVar[str] = ""
     cdp_page_key: ClassVar[str] = ""
     mc_lock: ClassVar[asyncio.Lock]
 
     @classmethod
     def import_mc(cls) -> dict[str, Any]:
         """导入本平台声明的 MC 子模块（缓存），返回 {submodule: module}。"""
-        return import_mc_platform(cls.name, *cls.mc_submodules)
+        return import_mc_platform(cls.mc_package, *cls.mc_submodules)
 
     @classmethod
     def inject_config(cls) -> None:
@@ -153,6 +163,13 @@ class MediaCrawlerPlatform(Platform):
             page.context, urls=list(cls._cookie_urls),
         )
         return cookie_str, cookie_dict
+
+    @classmethod
+    async def reset_client(cls) -> None:
+        """重置客户端引用与页面缓存（不关闭 CDP 浏览器——那是用户的真实浏览器）。"""
+        await invalidate_page(cls.cdp_page_key)
+        cls._client = None
+        cls._client_page = None
 
     @classmethod
     def run_on_cdp(cls, coro: Any) -> Any:
@@ -218,7 +235,7 @@ class MediaCrawlerPlatform(Platform):
                     page.context, urls=list(cls._cookie_urls),
                 )
             else:
-                return await cls._handle_login_failure(cls._client, page)
+                return await cls._handle_login_failure(page, cls._client)
 
         logger.info("%s client 已就绪 (CDP)", cls.name)
         return cls._client
@@ -250,7 +267,7 @@ class MediaCrawlerPlatform(Platform):
         raise NotImplementedError
 
     @classmethod
-    async def _handle_login_failure(cls, client: Any, page: Any) -> Any:
+    async def _handle_login_failure(cls, page: Any, client: Any) -> Any:
         """引导失败处置：douyin 抛错（清 client），xhs 放行（继续未登录尝试）。"""
         raise NotImplementedError
 

@@ -209,8 +209,3 @@ def get_mc_utils():
         return mc_utils
     finally:
         os.chdir(_original_cwd)
-
-
-def chdir_mc():
-    """临时切换 cwd 到 MediaCrawler 根（用于 execjs 等相对路径依赖）。"""
-    return _MEDIACRAWLER_ROOT

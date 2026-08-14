@@ -21,7 +21,7 @@ import httpx
 from vidagent.config import settings
 from vidagent.tools.platforms import register
 
-from ._mediacrawler import MediaCrawlerPlatform, import_mc_platform
+from ._mediacrawler import MediaCrawlerPlatform
 
 logger = logging.getLogger(__name__)
 
@@ -66,7 +66,7 @@ def _import_mediacrawler() -> None:
     if _GetSearchId is not None:
         return
 
-    mods = import_mc_platform("xiaohongshu", "client", "field", "help")
+    mods = XiaohongshuPlatform.import_mc()
     _SearchNoteType = mods["field"].SearchNoteType
     _GetSearchId = mods["help"].get_search_id
     _ParseCreatorInfo = mods["help"].parse_creator_info_from_url
@@ -195,7 +195,9 @@ def _fmt_duration(sec: int) -> str:
 
 async def _search_via_cdp(keyword: str, limit: int = 10) -> list[dict]:
     try:
-        client = await XiaohongshuPlatform.ensure_client()
+        # 平台锁内构造（配置注入+client 构造串行化；后续数据请求在锁外并行）
+        async with XiaohongshuPlatform.mc_lock:
+            client = await XiaohongshuPlatform.ensure_client()
     except Exception as e:
         # CDP 连不上 Windows Chrome（对齐抖音搜索的优雅降级：不 500）
         logger.warning("小红书搜索失败（无法连接 Windows Chrome 调试端口 9222）: %s", e)
@@ -371,7 +373,8 @@ async def _get_creator_via_cdp(creator_id: str, limit: int = 10) -> list[dict]:
     _import_mediacrawler()
 
     try:
-        client = await XiaohongshuPlatform.ensure_client()
+        async with XiaohongshuPlatform.mc_lock:
+            client = await XiaohongshuPlatform.ensure_client()
     except Exception as e:
         logger.warning("小红书创作者查询失败（CDP）: %s", e)
         return []
@@ -426,7 +429,8 @@ async def _download_via_cdp(note_url: str, file_name: str,
     if not note_id:
         return {"status": "error", "error": f"无法解析小红书笔记 ID: {note_url}", "video_url": note_url}
 
-    client = await XiaohongshuPlatform.ensure_client()
+    async with XiaohongshuPlatform.mc_lock:
+        client = await XiaohongshuPlatform.ensure_client()
 
     # 2. 笔记详情：API（带 token）→ 短链接口 → HTML 兜底
     note_card = None
@@ -571,6 +575,8 @@ class XiaohongshuPlatform(MediaCrawlerPlatform):
     cdp_page_key: ClassVar[str] = "xhs"
     mc_lock: ClassVar[asyncio.Lock] = asyncio.Lock()
     mc_submodules: ClassVar[tuple[str, ...]] = ("client", "field", "help")
+    # vendor 包名与平台名不一致：media_platform/xhs
+    mc_package: ClassVar[str] = "xhs"
     _client_cls_name: ClassVar[str] = "XiaoHongShuClient"
     _client_timeout: ClassVar[float] = 30
     _home_url: ClassVar[str] = "https://www.xiaohongshu.com"
@@ -619,7 +625,7 @@ class XiaohongshuPlatform(MediaCrawlerPlatform):
         await _guide_login(page, client)
 
     @classmethod
-    async def _handle_login_failure(cls, client: Any, page: Any) -> Any:
+    async def _handle_login_failure(cls, page: Any, client: Any) -> Any:
         """xhs 登录非硬门槛：超时放行，继续尝试（可能仅部分接口受限）。"""
         logger.warning("小红书登录等待超时（%ds），继续尝试", _LOGIN_POLL_SECONDS)
         return client

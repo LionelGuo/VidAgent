@@ -41,7 +41,7 @@ from playwright.async_api import TimeoutError as PWTimeoutError
 from vidagent.tools.platforms import register
 
 from ._cdp_browser import invalidate_page
-from ._mediacrawler import MediaCrawlerPlatform, import_mc_platform
+from ._mediacrawler import MediaCrawlerPlatform
 
 logger = logging.getLogger(__name__)
 
@@ -103,7 +103,7 @@ def _import_mediacrawler() -> None:
     if _ParseVideoInfo is not None:
         return
 
-    mods = import_mc_platform("kuaishou", "help")
+    mods = KuaishouPlatform.import_mc()
     _ParseVideoInfo = mods["help"].parse_video_info_from_url
     _ParseCreatorInfo = mods["help"].parse_creator_info_from_url
 
@@ -116,7 +116,11 @@ def _import_mediacrawler() -> None:
 
 
 async def _get_page(url: str) -> Any:
-    """获取快手 CDP 页面（失效自动重建，绝不关闭用户浏览器）。"""
+    """获取快手 CDP 页面（失效自动重建，绝不关闭用户浏览器）。
+
+    调用点均持 mc_lock（平台锁内注入，见 _mediacrawler 契约）。
+    """
+    KuaishouPlatform.inject_config()
     try:
         return await KuaishouPlatform.get_page(url)
     except RuntimeError:
@@ -522,6 +526,7 @@ class KuaishouPlatform(MediaCrawlerPlatform):
     cdp_page_key: ClassVar[str] = "ks"
     mc_lock: ClassVar[asyncio.Lock] = asyncio.Lock()
     mc_submodules: ClassVar[tuple[str, ...]] = ("help",)
+    mc_package: ClassVar[str] = "kuaishou"
 
     # -- 检索 / 下载 --
 
