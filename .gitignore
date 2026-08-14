@@ -51,6 +51,7 @@ vendor/*
 .vscode/
 .idea/
 .DS_Store
+*:Zone.Identifier
 
 # 测试/缓存（本地测试不入公开仓库）
 tests/

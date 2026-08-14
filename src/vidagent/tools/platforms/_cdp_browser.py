@@ -124,7 +124,8 @@ async def get_cdp_context():
         mc_config.CDP_DEBUG_PORT = 9222
         # CDP 主机（vendor 补丁）：裸机/WSL2 用默认 localhost；
         # Windows Docker（桥接网络）需 CDP_HOST=host.docker.internal（容器内 localhost ≠ 宿主）
-        mc_config.CDP_DEBUG_HOST = os.getenv("CDP_HOST", "localhost")
+        # 注意用 `or`：CDP_HOST= 空值也按未配置处理（避免空串被当主机名触发 IDNA 报错）
+        mc_config.CDP_DEBUG_HOST = os.getenv("CDP_HOST") or "localhost"
         mc_config.CDP_HEADLESS = False
         mc_config.AUTO_CLOSE_BROWSER = False
         mc_config.SAVE_LOGIN_STATE = True
