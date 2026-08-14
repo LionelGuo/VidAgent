@@ -155,7 +155,7 @@ src/vidagent/
 └── config.py     配置读取（.env → Pydantic Settings）
 frontend/         Next.js 前端（chat 路由 + 组件 + stores）
 vendor/MediaCrawler/   抖音/小红书/快手 CDP 平台依赖（vendored 源码，非商用许可，见 NOTICE）
-scripts/          bench*.py · debug_tools.py · serve_omni.py · deploy_vllm_omni.sh
+scripts/          deploy_vllm_omni.sh（vLLM-omni 部署）· start_vllm_bare.sh（bare mode 启动）
 tests/            pytest（33 passed + 3 xfailed）
 ```
 
