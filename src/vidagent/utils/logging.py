@@ -33,7 +33,6 @@ LOG_TAGS: dict[str, str] = {
     "vidagent.tools.summarize.transport": "summarize.transport",
     "vidagent.tools.summarize.multimodal": "summarize.multimodal",
     "vidagent.tools.summarize.short_video": "summarize.short_video",
-    "vidagent.tools.summarize.progress": "summarize.progress",
     "vidagent.tools.downloader": "download",
     "vidagent.tools.crawler": "crawler",
     "vidagent.utils.audio": "audio",
