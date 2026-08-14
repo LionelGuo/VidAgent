@@ -12,6 +12,7 @@ import logging
 import subprocess
 import tempfile
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from vidagent import llm_provider
@@ -25,27 +26,37 @@ logger = logging.getLogger(__name__)
 def _prepare_short_video(video_path: Path) -> tuple[Path, Path]:
     """预处理短视频：转码 H.264、缩分辨率、降帧率、剥离音频。
 
+    转码与音频提取并行执行（两者输出独立、互不依赖，各省一次 ffmpeg 等待）。
+
     Returns:
         (processed_video_path, audio_path) — 小体积无音轨视频 + 独立音频
     """
+    from vidagent.utils.audio import extract_audio as _extract_audio
+
     work = Path(tempfile.mkdtemp(prefix="vidagent_short_"))
     processed = work / "video.mp4"
 
-    # 1. 剥离音频并转码视频：384px 宽, 4fps, H.264, 无音轨
-    r = subprocess.run(
-        ["ffmpeg", "-y", "-i", str(video_path),
-         "-an",
-         "-vf", "scale=384:-2,fps=4",
-         "-c:v", "libx264", "-preset", "ultrafast", "-crf", "28",
-         str(processed)],
-        capture_output=True, timeout=60,
-    )
-    if r.returncode != 0 or not processed.exists():
-        raise RuntimeError(f"短视频转码失败: {r.stderr.decode()[-300:]}")
+    def _transcode() -> Path:
+        # 384px 宽, 4fps, H.264, 无音轨
+        r = subprocess.run(
+            ["ffmpeg", "-y", "-i", str(video_path),
+             "-an",
+             "-vf", "scale=384:-2,fps=4",
+             "-c:v", "libx264", "-preset", "ultrafast", "-crf", "28",
+             str(processed)],
+            capture_output=True, timeout=60,
+        )
+        if r.returncode != 0 or not processed.exists():
+            raise RuntimeError(f"短视频转码失败: {r.stderr.decode()[-300:]}")
+        return processed
 
-    # 2. 提取音频（输出到 workspace，复用缓存）
-    from vidagent.utils.audio import extract_audio as _extract_audio
-    audio_result = _extract_audio(str(video_path))
+    # 并行：转码 ∥ 音频提取（音频输出到 workspace，复用缓存）
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        transcode_future = pool.submit(_transcode)
+        audio_future = pool.submit(_extract_audio, str(video_path))
+        transcode_future.result()
+        audio_result = audio_future.result()
+
     if not Path(audio_result).exists():
         raise RuntimeError(f"短视频音频提取失败: {video_path}")
 

@@ -2,7 +2,7 @@
 
 from pathlib import Path
 
-from pydantic import field_validator
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # 项目根目录：config.py 位于 src/vidagent/，上溯三级。
@@ -32,6 +32,8 @@ class Settings(BaseSettings):
 
     # ----- 运行期 -----
     workspace_dir: Path = _PROJECT_ROOT / "workspace"
+    # 任务线程池大小（并行下载/预处理上限；LLM 推理并发另有全局闸 ≤2，见 transport.py）
+    task_pool_size: int = Field(default=8, ge=1)
 
     @field_validator("workspace_dir", mode="after")
     @classmethod

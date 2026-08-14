@@ -67,6 +67,7 @@ app.mount("/workspace", StaticFiles(directory=str(_workspace_dir)), name="worksp
 # ---------------------------------------------------------------------------
 
 from vidagent import llm_provider
+from vidagent.config import settings
 
 # 启动校验：缺必填配置（vllm 缺 base_url/model、其余缺 key）时快速失败并给中文提示
 llm_provider.validate_required()
@@ -75,8 +76,9 @@ llm_provider.validate_required()
 VLLM_URL = llm_provider.agent_endpoint().base_url
 
 # Thread pool for sync tools (downloader, summarizer)
-# 5 workers 支持并行下载 + 总结
-_executor = ThreadPoolExecutor(max_workers=5)
+# TASK_POOL_SIZE env-tunable（默认 8）：并行下载 + 预处理的工人数；
+# LLM 推理并发不在此层，另有全局闸 ≤2（summarize/transport.py）
+_executor = ThreadPoolExecutor(max_workers=settings.task_pool_size)
 
 # 总结任务追踪（TaskRecord 类型化记录，字段见 server/models.py）
 _summarize_tasks: dict[str, TaskRecord] = {}
