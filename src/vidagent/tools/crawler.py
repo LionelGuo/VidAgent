@@ -20,6 +20,8 @@ from vidagent.config import settings
 # 别名保留原私有名，避免改动 3 处调用点
 from vidagent.tools.platforms import (
     ensure_platforms_imported as _ensure_platforms_imported,
+)
+from vidagent.tools.platforms import (
     get_platform,
 )
 from vidagent.utils.dates import filter_today
