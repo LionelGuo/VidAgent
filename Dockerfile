@@ -2,7 +2,7 @@
 # VidAgent 主逻辑镜像（FastAPI :8000 + Next.js 生产构建 :3000）
 #
 # 两种运行形态：
-#   场景一（本地有 GPU）：本镜像 + 宿主 vLLM-omni 服务（见 scripts/deploy_vllm_omni.sh）
+#   场景一（本地有 GPU）：本镜像 + 宿主 vLLM-omni 服务（scripts/deploy_vllm_omni.sh 安装 + start_vllm_bare.sh 启动）
 #   场景二（仅远程 API）：本镜像 + LLM_PROVIDER=siliconflow|generic + LLM_API_KEY
 #
 # 推荐以 --network=host 运行（CDP 平台复用宿主 Chrome :9222；浏览器直达 localhost）：

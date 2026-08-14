@@ -64,7 +64,8 @@ docker run --network=host --env-file .env vidagent
 ### ③ 本地模型（可选）
 
 默认用 SiliconFlow 等远程 OpenAI 兼容 API（填 `LLM_API_KEY` 即用，无需本地 GPU）。有
-≥24GB GPU 可自托管 Qwen3-Omni：`bash scripts/deploy_vllm_omni.sh install`（傻瓜脚本）。
+≥24GB GPU 可自托管 Qwen3-Omni：`bash scripts/deploy_vllm_omni.sh` 安装（vllm-omni + 模型下载，
+默认到项目根目录 `models/`），`bash scripts/start_vllm_bare.sh` 启动服务（傻瓜脚本）。
 
 ## 配置
 
@@ -111,8 +112,8 @@ docker run --network=host -e LLM_PROVIDER=vllm -e LLM_BASE_URL=http://127.0.0.1:
 ### 本地 vLLM-omni 模型服务（场景一，独立部署）
 
 ```bash
-bash scripts/deploy_vllm_omni.sh install   # 装 vllm-omni + 下载模型（≥24GB VRAM）
-bash scripts/deploy_vllm_omni.sh start --bg # 后台启动（端口 6006）
+bash scripts/deploy_vllm_omni.sh    # 装 vllm-omni + 下载模型（≥24GB VRAM，默认到项目根目录 models/）
+bash scripts/start_vllm_bare.sh     # 后台启动（端口 6006；默认 models/，可传参数指定模型路径）
 ```
 
 ### 裸机开发
@@ -153,7 +154,7 @@ src/vidagent/
 └── config.py     配置读取（.env → Pydantic Settings）
 frontend/         Next.js 前端（chat 路由 + 组件 + stores）
 vendor/MediaCrawler/   抖音/小红书/快手 CDP 平台依赖（vendored 源码，非商用许可，见 NOTICE）
-scripts/          deploy_vllm_omni.sh（vLLM-omni 部署）· start_vllm_bare.sh（bare mode 启动）
+scripts/          deploy_vllm_omni.sh（安装 vllm-omni + 模型）· start_vllm_bare.sh（启动服务）
 ```
 
 ## 常见问题

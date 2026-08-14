@@ -27,6 +27,9 @@ workspace/
 *.flv
 *.webm
 
+# 本地模型权重（deploy_vllm_omni.sh 默认安装到项目根目录 models/）
+models/
+
 # 临时下载（构建产物/模型 wheel 等，曾误入 5.4GB 见 ADR-0008）
 tmp/
 

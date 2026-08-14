@@ -1,40 +1,31 @@
 #!/usr/bin/env bash
 # =============================================================================
-# VidAgent 本地模型部署脚本 —— 自托管 vLLM-omni（Qwen3-Omni-Thinking）
+# VidAgent 本地模型安装脚本 —— 安装 vllm-omni + 下载 Qwen3-Omni AWQ 模型
 # =============================================================================
-# 在有足够显存的机器（≥24GB VRAM，如 RTX 3090/4090/A100）上本地运行模型，
-# 配合 VidAgent 主逻辑（Docker 镜像或裸机）作为「场景一」部署。
-#
-# 硬件基线：≥24GB VRAM（AWQ 4bit 权重约 18GB + 推理开销）
-# 软件：NVIDIA 驱动 + CUDA 12.x、Python 3.11、PyTorch（CUDA 构建）
+# 有 ≥24GB 显存（RTX 3090/4090/A100 等）可自托管模型，配合 VidAgent 主逻辑
+# （Docker 镜像或裸机）作为「场景一」部署。安装完成后用 start_vllm_bare.sh 启动。
 #
 # 用法：
-#   bash scripts/deploy_vllm_omni.sh install   # 装 vllm-omni + 下载模型
-#   bash scripts/deploy_vllm_omni.sh start      # 启动服务（前台日志，或加 --bg 后台）
-#   bash scripts/deploy_vllm_omni.sh stop       # 停止服务
+#   bash scripts/deploy_vllm_omni.sh [MODEL_DIR]
+#   MODEL_DIR  模型本地目录（默认项目根目录 models/，与 start_vllm_bare.sh 一致）
 #
 # 可用环境变量覆盖（带默认值）：
 #   MODEL_ID        模型 ID（默认 cpatonn/Qwen3-Omni-30B-A3B-Thinking-AWQ-4bit，
 #                   第三方上传的公开 AWQ 4bit，约 18GB——Qwen 官方 HF 仓库 gated 需授权）
-#   MODEL_DIR       模型本地目录（默认 ./models/Qwen3-Omni-Thinking）
 #   MODEL_SOURCE    下载源：hf-mirror（默认，国内可用，公开仓库免登录）
 #                   / hf（官方 HF，gated 仓库需 HF_TOKEN + 同意 license）
 #                   / modelscope（魔搭，需 MODEL_ID 指向存在的魔搭仓库）
-#   PORT            服务端口（默认 6006）
-#   GPU_MEM_UTIL    显存利用率（默认 0.85）
 # =============================================================================
 
 set -euo pipefail
 
-MODEL_ID="${MODEL_ID:-cpatonn/Qwen3-Omni-30B-A3B-Thinking-AWQ-4bit}"
-MODEL_DIR="${MODEL_DIR:-$(pwd)/models/Qwen3-Omni-Thinking}"
-MODEL_SOURCE="${MODEL_SOURCE:-hf-mirror}"
-PORT="${PORT:-6006}"
-GPU_MEM_UTIL="${GPU_MEM_UTIL:-0.85}"
-LOG_FILE="${LOG_FILE:-./vllm-omni.log}"
+# 项目根目录：脚本位于 <repo>/scripts/，锚定脚本位置而非启动 CWD
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(dirname "${SCRIPT_DIR}")"
 
-# AutoDL / 常见部署：6006 是自定义服务端口，对外映射到 8443
-# VidAgent 主逻辑把 LLM_BASE_URL 指向 http://<host>:${PORT}/v1
+MODEL_ID="${MODEL_ID:-cpatonn/Qwen3-Omni-30B-A3B-Thinking-AWQ-4bit}"
+MODEL_DIR="${1:-${REPO_ROOT}/models}"
+MODEL_SOURCE="${MODEL_SOURCE:-hf-mirror}"
 
 log() { echo -e "\033[36m[deploy_vllm]\033[0m $*"; }
 err() { echo -e "\033[31m[deploy_vllm ERROR]\033[0m $*" >&2; }
@@ -55,94 +46,30 @@ check_gpu() {
     fi
 }
 
-do_install() {
-    check_gpu
-    log "安装 vllm-omni（需 Python 3.11 + PyTorch CUDA 构建）…"
-    # vllm-omni 是 vLLM 的 Qwen3-Omni 专用扩展（需 vLLM/VLLM-Omni ≥ 0.18.0，启动需 --omni 标志）
-    pip install -U "vllm-omni>=0.18.0" || {
-        err "vllm-omni 安装失败。请确认 Python 3.11 + CUDA 可用。"
-        exit 1
-    }
-
-    if [ -f "${MODEL_DIR}/config.json" ]; then
-        log "模型已存在（${MODEL_DIR}），跳过下载"
-    else
-        log "下载模型（源=${MODEL_SOURCE}）→ ${MODEL_DIR} …"
-        mkdir -p "$(dirname "${MODEL_DIR}")"
-        if [ "${MODEL_SOURCE}" = "modelscope" ]; then
-            pip install -U modelscope >/dev/null
-            python -c "from modelscope import snapshot_download; snapshot_download('${MODEL_ID}', local_dir='${MODEL_DIR}')"
-        elif [ "${MODEL_SOURCE}" = "hf" ]; then
-            # 官方 HF：Qwen gated 仓库需先 HF_TOKEN=... huggingface-cli login 并同意 license
-            pip install -U "huggingface_hub[cli]" >/dev/null
-            huggingface-cli download "${MODEL_ID}" --local-dir "${MODEL_DIR}"
-        else
-            # hf-mirror（默认）：国内镜像，公开仓库免登录
-            pip install -U "huggingface_hub[cli]" >/dev/null
-            HF_ENDPOINT=https://hf-mirror.com huggingface-cli download "${MODEL_ID}" --local-dir "${MODEL_DIR}"
-        fi
-    fi
-    log "✅ 安装完成。模型位于 ${MODEL_DIR}"
-    log "下一步：bash scripts/deploy_vllm_omni.sh start"
+check_gpu
+log "安装 vllm-omni（需 Python 3.11 + PyTorch CUDA 构建）…"
+pip install -U "vllm-omni>=0.18.0" || {
+    err "vllm-omni 安装失败。请确认 Python 3.11 + CUDA 可用。"
+    exit 1
 }
 
-do_start() {
-    check_gpu
-    if [ ! -d "${MODEL_DIR}" ]; then
-        err "模型目录不存在：${MODEL_DIR}。请先运行 'install'。"
-        exit 1
-    fi
-
-    # 允许最长 60 分钟音频输入（默认仅 600s）
-    export VLLM_MAX_AUDIO_DECODE_DURATION_S=3600
-
-    local BG=""; [[ "${1:-}" == "--bg" ]] && BG=1
-
-    # 注意：**不加 --omni**（与生产实例一致）。
-    # --omni 启用多阶段 omni 流水线（thinker+talker+code2wav），其 stage-0 加载路径
-    # 对 AWQ compressed-tensors 量化有 bug（vllm-omni issue #5573，MoE 路由加载错误）。
-    # 本项目只需音频/帧入、文本出（thinker 路径），普通 serve 模式即可，且可正常加载量化模型。
-    # --allowed-local-media-path 默认取模型目录的上级（AutoDL 习惯：模型在 <data>/models/ 下，
-    # 允许访问 <data>/ 整体；可用 DATA_PATH 环境变量覆盖）。
-    local data_path="${DATA_PATH:-$(dirname "$(dirname "${MODEL_DIR}")")}"
-    local cmd=(
-        vllm-omni serve "${MODEL_DIR}"
-        --port "${PORT}"
-        --gpu-memory-utilization "${GPU_MEM_UTIL}"
-        --max-num-batched-tokens 49152
-        --max-num-seqs 2
-        --enable-prefix-caching
-        --allowed-local-media-path "${data_path}"
-        --limit-mm-per-prompt '{"video": {"count": 1, "num_frames": 10}}'
-    )
-
-    log "启动 vLLM-omni（端口 ${PORT}）…"
-    log "模型：${MODEL_DIR}"
-    if [ -n "${BG}" ]; then
-        nohup "${cmd[@]}" > "${LOG_FILE}" 2>&1 &
-        echo $! > vllm-omni.pid
-        log "后台启动 PID=$(cat vllm-omni.pid)。日志：tail -f ${LOG_FILE}"
-        log "对外端点：http://<本机IP>:${PORT}/v1（VidAgent 的 LLM_BASE_URL 指向此处）"
+if [ -f "${MODEL_DIR}/config.json" ]; then
+    log "模型已存在（${MODEL_DIR}），跳过下载"
+else
+    log "下载模型（源=${MODEL_SOURCE}）→ ${MODEL_DIR} …"
+    mkdir -p "$(dirname "${MODEL_DIR}")"
+    if [ "${MODEL_SOURCE}" = "modelscope" ]; then
+        pip install -U modelscope >/dev/null
+        python -c "from modelscope import snapshot_download; snapshot_download('${MODEL_ID}', local_dir='${MODEL_DIR}')"
+    elif [ "${MODEL_SOURCE}" = "hf" ]; then
+        # 官方 HF：Qwen gated 仓库需先 HF_TOKEN=... huggingface-cli login 并同意 license
+        pip install -U "huggingface_hub[cli]" >/dev/null
+        huggingface-cli download "${MODEL_ID}" --local-dir "${MODEL_DIR}"
     else
-        log "前台运行（Ctrl+C 停止）。日志同时写入 ${LOG_FILE}"
-        exec "${cmd[@]}" 2>&1 | tee "${LOG_FILE}"
+        # hf-mirror（默认）：国内镜像，公开仓库免登录
+        pip install -U "huggingface_hub[cli]" >/dev/null
+        HF_ENDPOINT=https://hf-mirror.com huggingface-cli download "${MODEL_ID}" --local-dir "${MODEL_DIR}"
     fi
-}
-
-do_stop() {
-    if [ -f vllm-omni.pid ]; then
-        local pid; pid=$(cat vllm-omni.pid)
-        kill "${pid}" 2>/dev/null && log "已停止 PID=${pid}" || log "PID=${pid} 未运行"
-        rm -f vllm-omni.pid
-    else
-        err "未找到 vllm-omni.pid。可手动：pkill -f 'vllm-omni serve'"
-        exit 1
-    fi
-}
-
-case "${1:-}" in
-    install) do_install ;;
-    start)   shift; do_start "$@" ;;
-    stop)    do_stop ;;
-    *) echo "用法：bash scripts/deploy_vllm_omni.sh {install|start [--bg]|stop}"; exit 1 ;;
-esac
+fi
+log "✅ 安装完成。模型位于 ${MODEL_DIR}"
+log "下一步：bash scripts/start_vllm_bare.sh 启动服务"

@@ -1,32 +1,57 @@
 #!/bin/bash
-# VidAgent vLLM bare mode 启动脚本（自托管场景，≥24GB VRAM）
-# 关键：不传 --enable-auto-tool-choice 和 --tool-call-parser
-# 让 Qwen3-Omni 自由输出文本（含 <tool_call> XML），由 SSE Relay 流式转换
+# VidAgent vLLM-omni 启动脚本（自托管场景，≥24GB VRAM）
+# 与生产实例同款命令：不加 --omni（AWQ compressed-tensors 在 --omni 多阶段流水线下
+# 加载失败，vllm-omni issue #5573；普通 serve 模式可加载量化模型且音频/帧多模态可用）。
 #
 # 用法：
-#   MODEL_PATH=/path/to/Qwen3-Omni-Thinking-AWQ-4bit bash scripts/start_vllm_bare.sh
+#   bash scripts/start_vllm_bare.sh [MODEL_PATH]
+#   MODEL_PATH  模型目录（默认项目根目录 models/，与 deploy_vllm_omni.sh 的安装位置一致）
 # 可选环境变量：
-#   VLLM_BIN   默认 vllm-omni（PATH 上）
-#   DATA_PATH  默认当前目录（--allowed-local-media-path，视频帧本地路径白名单）
-#   PORT       默认 6006
-#   LOG_FILE   默认 ./vllm-server.log
+#   VLLM_BIN     默认 vllm-omni（PATH 上）
+#   DATA_PATH    默认模型目录的上级（--allowed-local-media-path，视频帧本地路径白名单；
+#                AutoDL 习惯：模型在 <data>/models/ 下，允许访问 <data>/ 整体）
+#   PORT         默认 6006
+#   GPU_MEM_UTIL 默认 0.85
+#   LOG_FILE     默认 ./vllm-omni.log
+#
+# 停止服务：pkill -f "vllm-omni serve"
 #
 # VLLM_MAX_AUDIO_DECODE_DURATION_S=3600：允许最长 60 分钟音频输入（默认仅 600s）
 
 set -euo pipefail
 
-MODEL_PATH="${MODEL_PATH:?请设置 MODEL_PATH 指向模型目录（如 Qwen3-Omni-Thinking-AWQ-4bit）}"
+# 项目根目录：脚本位于 <repo>/scripts/，锚定脚本位置而非启动 CWD
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(dirname "${SCRIPT_DIR}")"
+
+MODEL_PATH="${1:-${REPO_ROOT}/models}"
 VLLM_BIN="${VLLM_BIN:-vllm-omni}"
-DATA_PATH="${DATA_PATH:-$(pwd)}"
 PORT="${PORT:-6006}"
-LOG_FILE="${LOG_FILE:-./vllm-server.log}"
+GPU_MEM_UTIL="${GPU_MEM_UTIL:-0.85}"
+LOG_FILE="${LOG_FILE:-./vllm-omni.log}"
+
+if [ ! -f "${MODEL_PATH}/config.json" ]; then
+    echo "错误：模型未就位：${MODEL_PATH}" >&2
+    echo "请先运行 bash scripts/deploy_vllm_omni.sh 安装，或通过参数指定已装模型目录。" >&2
+    exit 1
+fi
+
+if ! command -v "$VLLM_BIN" >/dev/null 2>&1; then
+    echo "错误：未找到 ${VLLM_BIN}。请先运行 bash scripts/deploy_vllm_omni.sh 安装。" >&2
+    exit 1
+fi
+
+# 模型目录归一化为绝对路径（相对路径锚定到启动 CWD）
+MODEL_PATH="$(cd "$(dirname "${MODEL_PATH}")" && pwd)/$(basename "${MODEL_PATH}")"
+# --allowed-local-media-path 默认取模型目录的上级
+DATA_PATH="${DATA_PATH:-$(dirname "$(dirname "${MODEL_PATH}")")}"
 
 export VLLM_MAX_AUDIO_DECODE_DURATION_S=3600
 
 nohup "$VLLM_BIN" serve \
   "$MODEL_PATH" \
   --port "$PORT" \
-  --gpu-memory-utilization 0.85 \
+  --gpu-memory-utilization "$GPU_MEM_UTIL" \
   --max-num-batched-tokens 49152 \
   --max-num-seqs 2 \
   --enable-prefix-caching \
@@ -35,5 +60,5 @@ nohup "$VLLM_BIN" serve \
   > "$LOG_FILE" 2>&1 &
 
 echo "vLLM starting... PID=$!"
-echo "VLLM_MAX_AUDIO_DECODE_DURATION_S=$VLLM_MAX_AUDIO_DECODE_DURATION_S"
+echo "对外端点：http://<本机IP>:${PORT}/v1（VidAgent 的 LLM_BASE_URL 指向此处）"
 echo "Monitor: tail -f $LOG_FILE"
