@@ -36,13 +36,14 @@ export interface SummaryChapter {
   title: string;
 }
 
-/** 长视频分段进度条目（progress 事件 chunks 数组元素）。 */
+/** 长视频分段进度条目（progress 事件 chunks 数组元素）。
+ *  status 四种字面量来自 summarizer.py 的 chunk["status"] 赋值点，后端加新值时此处同步。 */
 export interface SummaryChunk {
   index: number;
   total: number;
   time_start: number;
   time_end: number;
-  status: string;
+  status: "waiting" | "thinking" | "summarizing" | "done";
   text: string;
 }
 

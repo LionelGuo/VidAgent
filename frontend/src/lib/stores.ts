@@ -1,5 +1,7 @@
 import { create } from "zustand";
 
+import type { SummaryStage } from "./sse-events";
+
 // ---------------------------------------------------------------------------
 // Layout Store — 驱动 chat / detail panel 混合布局
 // ---------------------------------------------------------------------------
@@ -36,6 +38,14 @@ export interface VideoChunk {
   text: string;
 }
 
+/** 落库的任务状态（task_status）：wire 阶段去掉空闲哨兵 ""（被 if(data.stage)
+ *  拦截）与瞬态 downloaded（ChatView 拦截改写为 extracting），再加 SSE 终态。
+ *  由后端枚举生成的 SummaryStage 派生——后端加新阶段时此处自动收编。 */
+export type StoredTaskStatus =
+  | Exclude<SummaryStage, "" | "downloaded">
+  | "done"
+  | "error";
+
 export interface VideoInfo {
   video_id: string;
   title: string;
@@ -53,7 +63,7 @@ export interface VideoInfo {
   /** 总结后填充 */
   summary?: string;
   /** 任务状态 */
-  task_status?: "downloading" | "analyzing" | "extracting" | "summarizing" | "summary" | "asr" | "thinking" | "chunking" | "merging" | "done" | "error";
+  task_status?: StoredTaskStatus;
   /** 下载进度 0-100 */
   download_progress?: number;
   /** 失败原因（task_status=error 时显示） */

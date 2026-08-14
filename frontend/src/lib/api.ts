@@ -1,5 +1,11 @@
 /** API 客户端 */
 
+import type {
+  SummarySSEDone,
+  SummarySSEEvent,
+  SummarySSEProgress,
+} from "./sse-events";
+
 export const apiBaseUrl =
   process.env.NEXT_PUBLIC_API_URL || "http://127.0.0.1:8000";
 
@@ -122,13 +128,16 @@ export function fetchSSE(
  */
 export function streamSummaryByVideo(
   videoId: string,
-  onProgress: (data: any) => void,
-  onDone: (result: string, extra?: any) => void,
+  onProgress: (data: SummarySSEProgress) => void,
+  onDone: (
+    result: string,
+    extra: Pick<SummarySSEDone, "local_path" | "chapters">,
+  ) => void,
   onError?: (err: Error) => void,
 ): SSEController {
   return fetchSSE(
     `${apiBaseUrl}/api/tools/summarize/by-video/${videoId}/stream`,
-    (data) => {
+    (data: SummarySSEEvent) => {
       if (data.type === "progress") {
         // 传递完整 data 对象（含 stage / download_pct / message）
         onProgress(data);

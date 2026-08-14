@@ -3,9 +3,16 @@
 import { X, Maximize2, Minimize2, Play, Clock, Eye, User, Loader2 } from "lucide-react";
 import { useRef } from "react";
 import { cn } from "@/lib/utils";
-import { useVideoStore } from "@/lib/stores";
+import { useVideoStore, type StoredTaskStatus } from "@/lib/stores";
 import { apiBaseUrl } from "@/lib/api";
+import { SUMMARY_STAGES } from "@/lib/sse-events";
 import { MarkdownRenderer } from "@/components/ui/MarkdownRenderer";
+
+// 面板「正在总结」胶囊的阶段集合：同 ChatView 派生，但排除 summary（最终总结态不算工作中）。
+// 后端新增阶段自动落入「进行中」分支，无需手工同步。
+const WORKING_STAGES = SUMMARY_STAGES.filter(
+  (s) => s !== "downloaded" && s !== "downloading" && s !== "summary",
+) as StoredTaskStatus[];
 
 // ---------------------------------------------------------------------------
 // DetailPanel — 视频详情卡片（内容层）
@@ -32,14 +39,7 @@ export function DetailPanel({ videoId, expanded, onToggleFullscreen, onClose }: 
 
   // 总结状态胶囊指示器：由 task_status 阶段事件驱动（后端显式推送）
   const taskStatus = video?.task_status;
-  const isWorking =
-    taskStatus === "extracting" ||
-    taskStatus === "summarizing" ||
-    taskStatus === "analyzing" ||
-    taskStatus === "asr" ||
-    taskStatus === "thinking" ||
-    taskStatus === "chunking" ||
-    taskStatus === "merging";
+  const isWorking = taskStatus != null && WORKING_STAGES.includes(taskStatus);
   const pillLabels: Record<string, string> = {
     thinking: "思考中",
     chunking: "分段总结中",

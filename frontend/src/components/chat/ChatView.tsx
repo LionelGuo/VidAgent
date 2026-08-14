@@ -25,9 +25,10 @@ function extractVideoId(videoUrl: string): string | null {
 }
 import { type Message } from "@ai-sdk/react";
 import { cn } from "@/lib/utils";
-import { useLayoutStore, useVideoStore, type VideoInfo } from "@/lib/stores";
+import { useLayoutStore, useVideoStore, type StoredTaskStatus, type VideoInfo } from "@/lib/stores";
 import { MarkdownRenderer } from "@/components/ui/MarkdownRenderer";
 import { apiBaseUrl, streamSummaryByVideo, type SSEController } from "@/lib/api";
+import { SUMMARY_STAGES } from "@/lib/sse-events";
 import {
   CheckCircle,
   ChevronRight,
@@ -38,6 +39,12 @@ import {
   Download,
   FileText,
 } from "lucide-react";
+
+// 总结进行中的阶段集合：由后端枚举生成的 SUMMARY_STAGES 派生（去掉下载相关值）。
+// 后端新增阶段自动落入「进行中」分支，无需手工同步。
+const SUMMARIZING_STAGES = SUMMARY_STAGES.filter(
+  (s) => s !== "downloaded" && s !== "downloading",
+) as StoredTaskStatus[];
 
 // ---------------------------------------------------------------------------
 // 工具名称 → 图标 + 中文标签映射
@@ -128,7 +135,7 @@ export const VideoCard = memo(function VideoCard({
   const downloadProgress = stored?.download_progress ?? 0;
   const isDone = taskStatus === "done";
   const isError = taskStatus === "error";
-  const isSummarizing = taskStatus === "extracting" || taskStatus === "summarizing" || taskStatus === "analyzing" || taskStatus === "summary" || taskStatus === "asr" || taskStatus === "thinking" || taskStatus === "chunking" || taskStatus === "merging";
+  const isSummarizing = taskStatus != null && SUMMARIZING_STAGES.includes(taskStatus);
   const isDownloading = taskStatus === "downloading";
 
   // 构建背景样式
@@ -569,8 +576,8 @@ function _connectSSE(
         store.updateProgress(videoId, { task_status: "extracting" });
         return;
       }
-      // stage 事件
-      if (data.stage) {
+      // stage 事件（downloaded 已在上方分支 return 处理——后端 downloaded 事件恒带 local_path）
+      if (data.stage && data.stage !== "downloaded") {
         store.updateProgress(videoId, { task_status: data.stage, download_progress: data.download_pct });
       }
       // 分块进度（长视频分段总结）
