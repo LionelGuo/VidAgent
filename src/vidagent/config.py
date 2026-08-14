@@ -19,7 +19,7 @@ class Settings(BaseSettings):
 
     # ----- 模型服务（LLM_PROVIDER 决定其余三项的含义，见 llm_provider.py）-----
     llm_provider: str = "siliconflow"
-    # 留空时由 provider 预设补默认值（如 siliconflow 的官方端点与模型名）
+    # 三项全部必填：端点/密钥/模型名显式配置，切换 provider 时同步修改
     llm_base_url: str = ""
     llm_api_key: str = ""
     llm_model: str = ""

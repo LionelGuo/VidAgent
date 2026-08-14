@@ -1,11 +1,11 @@
 """LLM 提供方预设与端点解析（单一真实来源）。
 
-LLM_PROVIDER 单点切换，统一的 LLM_BASE_URL / LLM_API_KEY / LLM_MODEL 按 provider 取义：
+LLM_PROVIDER 单点切换；LLM_BASE_URL / LLM_API_KEY / LLM_MODEL 全部由 .env 显式配置：
 - vllm        自托管 vLLM-omni（bare mode，<tool_call> XML 协议，input_audio，<think> 标签推理）
 - siliconflow SiliconFlow 平台（原生 function calling，audio_url，reasoning_content 流）
 - generic     任意 OpenAI 兼容端点（原生透传，保守按 vllm-omni 类格式）
 
-三维行为差异：
+三维行为差异（预设仅承载行为映射，端点/密钥/模型名无默认值、无硬编码）：
   relay_mode      — agent 工具调用：xml 手写协议转换 vs 原生透传
   media_format    — 多模态 part：input_audio vs audio_url
   reasoning_mode  — 推理内容解析：<think> 标签内联 vs delta.reasoning_content 独立字段
@@ -25,11 +25,9 @@ ReasoningMode = Literal["think_tag", "reasoning_content"]
 
 @dataclass(frozen=True)
 class ProviderPreset:
-    """provider 预设：默认端点 + 三维行为映射。显式环境变量可覆盖 base_url/model。"""
+    """provider 预设：三维行为映射。端点/密钥/模型名一律由 .env 显式提供。"""
 
     name: str
-    default_base_url: str
-    default_model: str
     relay_mode: RelayMode
     media_format: MediaFormat
     reasoning_mode: ReasoningMode
@@ -37,18 +35,11 @@ class ProviderPreset:
 
 _PRESETS: dict[str, ProviderPreset] = {
     # 自托管 vLLM-omni：bare mode 无原生 function calling → XML 协议转换；input_audio wire format
-    "vllm": ProviderPreset("vllm", "", "", "xml", "vllm", "think_tag"),
+    "vllm": ProviderPreset("vllm", "xml", "vllm", "think_tag"),
     # SiliconFlow：标准 OpenAI 兼容 + 原生 function calling；audio_url；reasoning_content 流
-    "siliconflow": ProviderPreset(
-        "siliconflow",
-        "https://api.siliconflow.cn/v1",
-        "Qwen/Qwen3-Omni-30B-A3B-Thinking",
-        "transparent",
-        "siliconflow",
-        "reasoning_content",
-    ),
+    "siliconflow": ProviderPreset("siliconflow", "transparent", "siliconflow", "reasoning_content"),
     # 通用 OpenAI 兼容端点：原生透传；保守假设 vllm-omni 类格式（input_audio / <think>）
-    "generic": ProviderPreset("generic", "", "", "transparent", "vllm", "think_tag"),
+    "generic": ProviderPreset("generic", "transparent", "vllm", "think_tag"),
 }
 
 
@@ -64,25 +55,23 @@ class Endpoint:
 
 
 def validate_required() -> None:
-    """启动校验：缺必填配置时快速失败并给出中文提示。
-
-    vllm 需显式 LLM_BASE_URL + LLM_MODEL（key 可选）；
-    siliconflow / generic 需 LLM_API_KEY（base_url/model 可留空走预设）。
-    """
-    if settings.llm_provider == "vllm":
-        if not settings.llm_base_url:
-            raise RuntimeError(
-                "LLM_PROVIDER=vllm 需设置 LLM_BASE_URL（如 http://127.0.0.1:6006/v1）"
-            )
-        if not settings.llm_model:
-            raise RuntimeError("LLM_PROVIDER=vllm 需设置 LLM_MODEL（本地模型目录路径）")
-        return
+    """启动校验：端点/密钥/模型名三项全部必填，缺任一项快速失败并给出中文提示。"""
     if settings.llm_provider not in _PRESETS:
         raise RuntimeError(
             f"未知 LLM_PROVIDER={settings.llm_provider!r}，可选值：" + " / ".join(_PRESETS)
         )
+    if not settings.llm_base_url:
+        raise RuntimeError(
+            "未配置 LLM_BASE_URL：模型服务端点（vllm 如 http://127.0.0.1:6006/v1，"
+            "siliconflow 如 https://api.siliconflow.cn/v1）"
+        )
+    if not settings.llm_model:
+        raise RuntimeError(
+            "未配置 LLM_MODEL：模型名（vllm 填本地模型目录路径，siliconflow 如 "
+            "Qwen/Qwen3-Omni-30B-A3B-Thinking）"
+        )
     if not settings.llm_api_key:
-        raise RuntimeError("未配置 LLM_API_KEY：请在 .env 中填写模型服务密钥")
+        raise RuntimeError("未配置 LLM_API_KEY：模型服务密钥（vllm 自托管可填任意值）")
 
 
 def _preset() -> ProviderPreset:
@@ -93,10 +82,12 @@ def _preset() -> ProviderPreset:
 def agent_endpoint() -> Endpoint:
     """agent（对话 + 工具调用 + 多模态总结）端点。relay 按 relay_mode() 分流。"""
     preset = _preset()
-    base_url = settings.llm_base_url or preset.default_base_url
-    model = settings.llm_model or preset.default_model
     return Endpoint(
-        base_url, settings.llm_api_key, model, preset.media_format, preset.reasoning_mode
+        settings.llm_base_url,
+        settings.llm_api_key,
+        settings.llm_model,
+        preset.media_format,
+        preset.reasoning_mode,
     )
 
 

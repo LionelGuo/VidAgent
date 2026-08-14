@@ -177,7 +177,7 @@ export async function POST(req: Request) {
 
   const result = streamText({
     model: wrapLanguageModel({
-      // 模型名由后端 relay 按 provider 预设注入（LLM_MODEL），前端发占位符即可
+      // 模型名由后端 relay 从 LLM_MODEL 注入，前端发占位符即可
       model: vidagent("vidagent-agent"),
       middleware: extractReasoningMiddleware({ tagName: "think" }),
     }),

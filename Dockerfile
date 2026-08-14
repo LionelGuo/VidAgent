@@ -7,7 +7,7 @@
 #
 # 推荐以 --network=host 运行（CDP 平台复用宿主 Chrome :9222；浏览器直达 localhost）：
 #   docker build -t vidagent .
-#   docker run --network=host -e LLM_PROVIDER=siliconflow -e LLM_API_KEY=sk-xxx vidagent
+#   docker run --network=host --env-file .env vidagent
 
 # ── Stage 1：前端构建（standalone）──────────────────────────────────────────
 FROM node:20-bookworm-slim AS frontend-build

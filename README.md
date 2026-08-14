@@ -74,9 +74,9 @@ docker run --network=host --env-file .env vidagent
 | 变量 | 说明 | 默认 |
 |---|---|---|
 | `LLM_PROVIDER` | 模型服务切换开关：`vllm`（自托管）/ `siliconflow` / `generic`（任意 OpenAI 兼容端点） | `siliconflow` |
-| `LLM_API_KEY` | 模型服务密钥（`vllm` 自托管可随意填） | — |
-| `LLM_BASE_URL` | 模型服务端点（留空用 provider 预设端点；`vllm` 必填） | preset |
-| `LLM_MODEL` | 模型名（留空用 provider 预设模型；`vllm` 填本地模型目录路径） | preset |
+| `LLM_API_KEY` | 模型服务密钥（**必填**；`vllm` 自托管可随意填） | — |
+| `LLM_BASE_URL` | 模型服务端点（**必填**：`vllm` 填自托管端点，`siliconflow` 填 `https://api.siliconflow.cn/v1`） | — |
+| `LLM_MODEL` | 模型名（**必填**：`vllm` 填本地模型目录路径，`siliconflow` 填 `Qwen/Qwen3-Omni-30B-A3B-Thinking`） | — |
 | `BILI_COOKIE` | B站 Cookie（含 `SESSDATA`；下载高清流与创作者主页接口均需，避免 CDN 412） | 空 |
 | `YOUTUBE_API_KEY` / `YOUTUBE_COOKIE` / `YOUTUBE_PROXY` | YouTube 采集（可选）。`YOUTUBE_PROXY` 同时供抖音等 CDP 平台的部分请求复用 | 空 |
 | `WORKSPACE_DIR` | 媒体缓存目录（>7 天自动清理） | `workspace/` |
@@ -98,15 +98,15 @@ docker run --network=host --env-file .env vidagent
 
 ```bash
 docker build -t vidagent .
-# 场景二：远程 API（最简）
-docker run --network=host -e LLM_PROVIDER=siliconflow -e LLM_API_KEY=sk-xxx vidagent
-# 场景一：配合本地 vLLM（LLM_BASE_URL 指向宿主模型服务）
-docker run --network=host -e LLM_PROVIDER=vllm -e LLM_BASE_URL=http://127.0.0.1:6006/v1 vidagent
+# 场景二：远程 API（.env 填 LLM_PROVIDER/LLM_API_KEY/LLM_BASE_URL/LLM_MODEL 四项）
+docker run --network=host --env-file .env vidagent
+# 场景一：配合本地 vLLM（.env 改 LLM_PROVIDER=vllm，LLM_BASE_URL 指向宿主模型服务，LLM_MODEL 为本地模型目录）
+docker run --network=host --env-file .env vidagent
 ```
 
 `--network=host` 推荐：CDP 平台复用宿主 Chrome `:9222`，浏览器直达 localhost。
 若宿主 3000/8000 端口被占用（如同时跑开发服务器），可改桥接 + 端口映射：
-`docker run -p 18000:8000 -p 13000:3000 -e LLM_PROVIDER=siliconflow -e LLM_API_KEY=sk-xxx vidagent`（容器内访问第三方 API 走 NAT 直连）。
+`docker run -p 18000:8000 -p 13000:3000 --env-file .env vidagent`（容器内访问第三方 API 走 NAT 直连）。
 抖音/小红书/快手需宿主 Chrome 开调试端口（见②）。
 
 ### 本地 vLLM-omni 模型服务（场景一，独立部署）
