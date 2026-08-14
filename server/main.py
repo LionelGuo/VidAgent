@@ -36,10 +36,10 @@ from pydantic import BaseModel
 
 from server.models import TaskRecord, TaskStatus
 from server.sse_relay import relay_stream, relay_stream_transparent
+from vidagent.utils.logging import setup_logging
 
-# 确保 vidagent 模块的 INFO 日志能输出到 uvicorn 控制台
-logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s", force=True)
-logging.getLogger("vidagent").setLevel(logging.INFO)
+# 统一日志格式（模板 + 短标识符），须在其它模块输出日志前配置
+setup_logging()
 
 logger = logging.getLogger(__name__)
 
@@ -565,5 +565,4 @@ async def health():
 if __name__ == "__main__":
     import uvicorn
 
-    logging.basicConfig(level=logging.INFO)
     uvicorn.run(app, host="0.0.0.0", port=8000)
