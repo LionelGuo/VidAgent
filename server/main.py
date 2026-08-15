@@ -561,6 +561,17 @@ async def health():
     return {"status": "ok", "vllm_url": VLLM_URL}
 
 
+@app.get("/api/meta")
+async def api_meta():
+    """Provider 元数据（最小形状，调优专项批次⑤）。
+
+    前端 route.ts 据 relay_mode 条件化 SYSTEM_PROMPT：XML 工具调用协议段
+    仅 xml 模式拼入（transparent 模式原生 function calling，该段是噪声且
+    有诱导模型把 XML 写进 content 的风险）。加字段属非破坏性演进。
+    """
+    return {"provider": settings.llm_provider, "relay_mode": llm_provider.relay_mode()}
+
+
 # ---------------------------------------------------------------------------
 # 启动入口
 # ---------------------------------------------------------------------------

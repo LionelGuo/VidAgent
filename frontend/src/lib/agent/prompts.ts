@@ -15,10 +15,13 @@
 // - 调优 B1（2026-08-15）：新增【推理与规划】段（mode-agnostic）。
 // - 调优 B2（2026-08-15）：知识句改生成片段拼装 + 「其它」堆放区拆散重组
 //   为三层；模型输入措辞变化，能力事实与默认行为语义不变。
+// - 调优 B6（2026-08-15）：SYSTEM_PROMPT 拆「通用段 + 条件段」——XML 工具
+//   调用协议段仅 xml relay 模式拼入（buildSystemPrompt，route.ts 据
+//   /api/meta 的 relay_mode 决定；meta 不可用时调用方兜底为包含）。
 
 import { SYSTEM_KNOWLEDGE } from "@/lib/tool-schema";
 
-export const SYSTEM_PROMPT = `你是 VidAgent，一个自媒体视频采集与总结助手，通过调用工具完成用户的自然语言指令。
+const SYSTEM_PROMPT_HEAD = `你是 VidAgent，一个自媒体视频采集与总结助手，通过调用工具完成用户的自然语言指令。
 
 【能力与知识】
 - ${SYSTEM_KNOWLEDGE.platformsLine}
@@ -51,14 +54,19 @@ export const SYSTEM_PROMPT = `你是 VidAgent，一个自媒体视频采集与�
      批量总结）先在思考中列出步骤顺序，再逐步执行，不跳步不重复。
 - 思考要简洁：不要复述工具清单、系统提示或对话中已有的信息；
   思考的产出应是结论与下一步行动，不是信息转述。
+`;
 
-【工具调用格式】
+// 条件段：XML 工具调用协议，与 server/sse_relay.py 的解析正则是 wire 契约
+// （vllm bare mode 的唯一工具调用通道）。transparent 模式原生 function
+// calling，此段对模型是噪声，且有诱导其把 XML 写进 content 的风险（B6）。
+const TOOL_CALL_PROTOCOL = `【工具调用格式】
 当需要使用工具时，请用以下格式输出（不要用 markdown 代码块包裹）：
 <tool_call>
 {"name": "工具名", "arguments": {...}}
 </tool_call>
+`;
 
-【行为规则：缺参处理（重要）】
+const SYSTEM_PROMPT_TAIL = `【行为规则：缺参处理（重要）】
 - 调用工具前，先检查参数，分两种情况处理：
   * **有默认值的参数**（如 platform 默认 bilibili、limit 默认 10、
     date_filter 默认不传）：用户未指定时直接用默认值，不必询问、不必纠结。
@@ -127,3 +135,12 @@ export const SYSTEM_PROMPT = `你是 VidAgent，一个自媒体视频采集与�
 【输出要求】
 - 全程中文。
 `;
+
+/** 按 relay 模式拼装系统提示（批次⑤ B6）：XML 工具协议段仅 xml 模式包含。
+ *  route.ts 从 GET /api/meta 取 relay_mode 后调用；meta 不可用时兜底为包含。 */
+export function buildSystemPrompt({ includeToolCallProtocol }: { includeToolCallProtocol: boolean }): string {
+  const segments = includeToolCallProtocol
+    ? [SYSTEM_PROMPT_HEAD, TOOL_CALL_PROTOCOL, SYSTEM_PROMPT_TAIL]
+    : [SYSTEM_PROMPT_HEAD, SYSTEM_PROMPT_TAIL];
+  return segments.join("\n");
+}
