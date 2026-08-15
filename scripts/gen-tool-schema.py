@@ -199,7 +199,7 @@ def _knowledge_lines(
         f"三个检索工具返回的每个视频都含 {'/'.join(video_fields)}"
         "（duration 为秒数，duration_text 如 \"12:34\"，publish_time 为 unix 时间戳（秒）；"
         "publish_date 为可直接展示的发布日期（YYYY-MM-DD）；"
-        "view_count 依平台含义不同：bilibili/youtube 为播放量、xiaohongshu 为点赞数、"
+        "view_count 依平台含义不同：bilibili/youtube 为播放量、xiaohongshu/weibo 为点赞数、"
         "douyin 热榜为热度值）。"
     )
     return {

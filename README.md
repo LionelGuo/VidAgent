@@ -59,7 +59,7 @@ VidAgent 支持多平台的数据采集与分析，你可以根据实际需求�
 
 * **B站 (Bilibili)**：需在 `.env` 中填入账号 Cookie，详见下方 [B站 Cookie 获取方法](#b站-cookie-获取方法)。
 * **YouTube**：需在 `.env` 中配置对应的 API Key、Cookie 文件路径以及网络代理，详见下方 [YouTube 配置指引](#youtube-配置指引)。
-* **抖音 / 小红书 / 快手**：依赖本地浏览器环境。需先 [打开 Chrome 的 Remote Debugging 模式](#chrome-打开-remote-debugging-的方法)，在弹出的安全提示中点击“允许”，并在新打开的浏览器界面中手动登录你自己的平台账号即可。
+* **抖音 / 小红书 / 快手 / 微博**：依赖本地浏览器环境。需先 [打开 Chrome 的 Remote Debugging 模式](#chrome-打开-remote-debugging-的方法)，在弹出的安全提示中点击“允许”，并在新打开的浏览器界面中手动登录你自己的平台账号即可。
 
 ### 3. 本地部署模型（可选）
 
@@ -141,7 +141,7 @@ LLM_MODEL=Qwen/Qwen3-Omni-30B-A3B-Thinking
 1. **准备浏览器**：请确保已安装最新版 Chrome 浏览器（**版本需 ≥ 144**，[官方下载地址](https://www.google.com/chrome/)）。
 2. **开启调试功能**：在 Chrome 的地址栏中输入 `chrome://inspect/#remote-debugging` 并回车。
 3. **授权调试**：在页面中找到并勾选 `Allow remote debugging for this browser instance`（允许调试当前浏览器实例）选项。
-4. **验证就绪**：当页面上显示 `Server running at: 127.0.0.1:9222` 时，说明远程调试端口已成功开启。此时在弹出的系统安全提示中点击“允许”，并在当前浏览器界面中直接打开抖音/小红书/快手网页手动登录账号即可。
+4. **验证就绪**：当页面上显示 `Server running at: 127.0.0.1:9222` 时，说明远程调试端口已成功开启。此时在弹出的系统安全提示中点击“允许”，并在当前浏览器界面中直接打开抖音/小红书/快手/微博网页手动登录账号即可。
 
 ---
 
@@ -152,11 +152,11 @@ server/           FastAPI 后端（main.py 编排 + sse_relay.py 协议转换）
 src/vidagent/
 ├── tools/
 │   ├── crawler.py · downloader.py · summarize/   检索/下载/总结工具（summarize 为 #4 拆分的深模块包）
-│   └── platforms/   五平台适配（bilibili/youtube/douyin/xiaohongshu/kuaishou + CDP 共享层 + MediaCrawler 封装层）
+│   └── platforms/   六平台适配（bilibili/youtube/douyin/xiaohongshu/kuaishou/weibo + CDP 共享层 + MediaCrawler 封装层）
 ├── utils/        wbi.py · dates.py · storage.py · audio.py · frames.py · timer.py
 ├── llm_provider.py   provider 预设系统（relay/媒体格式/推理模式；端点/密钥/模型名由 .env 显式配置）
 └── config.py     配置读取（.env → Pydantic Settings）
 frontend/         Next.js 前端（chat 路由 + 组件 + stores）
-vendor/MediaCrawler/   抖音/小红书/快手 CDP 平台依赖（vendored 源码，非商用许可，见 NOTICE）
+vendor/MediaCrawler/   抖音/小红书/快手/微博 CDP 平台依赖（vendored 源码，非商用许可，见 NOTICE）
 scripts/          deploy_vllm_omni.sh（安装 vllm-omni + 模型）· start_vllm_bare.sh（启动服务）
 ```

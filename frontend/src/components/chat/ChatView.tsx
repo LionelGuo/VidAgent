@@ -21,6 +21,9 @@ function extractVideoId(videoUrl: string): string | null {
   // 快手: /short-video/xxx
   const ks = videoUrl.match(/kuaishou\.com\/short-video\/(\w+)/);
   if (ks) return ks[1];
+  // 微博: /detail/xxx（后端 normalize 生成的规范形态）
+  const wb = videoUrl.match(/weibo\.(?:cn|com)\/detail\/([\w-]+)/);
+  if (wb) return wb[1];
   return null;
 }
 import { type Message } from "@ai-sdk/react";
