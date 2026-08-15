@@ -59,6 +59,10 @@ _cdp_manager = None
 _browser_context = None
 _page_cache: dict[str, Any] = {}  # platform → page
 _initialized = False
+# 初始化防重（B19 评审修复）：启动预热与首次真实调用可能并发初始化
+# （预热等 Chrome 确认框最长 ~30s，正是调用高发窗口）——双检锁保证
+# 只连一次。get_cdp_context 只在 CDP 循环上运行，锁绑定该循环。
+_cdp_init_lock = asyncio.Lock()
 
 # ── CDP 专用常驻事件循环（所有 Playwright 对象归属此循环）──
 _cdp_loop: asyncio.AbstractEventLoop | None = None
@@ -116,40 +120,46 @@ async def get_cdp_context():
     if _initialized and _browser_context is not None:
         return _browser_context
 
-    os.chdir(_MEDIACRAWLER_ROOT)
-    try:
-        import config as mc_config
-        mc_config.ENABLE_CDP_MODE = True
-        mc_config.CDP_CONNECT_EXISTING = True
-        mc_config.CDP_DEBUG_PORT = 9222
-        # CDP 主机（vendor 补丁）：裸机/WSL2 用默认 localhost；
-        # Windows Docker（桥接网络）需 CDP_HOST=host.docker.internal（容器内 localhost ≠ 宿主）
-        # 注意用 `or`：CDP_HOST= 空值也按未配置处理（避免空串被当主机名触发 IDNA 报错）
-        mc_config.CDP_DEBUG_HOST = os.getenv("CDP_HOST") or "localhost"
-        mc_config.CDP_HEADLESS = False
-        mc_config.AUTO_CLOSE_BROWSER = False
-        mc_config.SAVE_LOGIN_STATE = True
-        mc_config.HEADLESS = False
-        # VidAgent 缩短连接等待：Chrome 要么在要么不在，15s 足够
-        mc_config.BROWSER_LAUNCH_TIMEOUT = 15
+    # 双检锁（B19 评审修复）：整个 init 主体在锁内——只包双检不包主体
+    # 的话，两个协程可先后持锁各自 init（曾犯）
+    async with _cdp_init_lock:
+        if _initialized and _browser_context is not None:
+            return _browser_context
 
-        from playwright.async_api import async_playwright
-        from tools.cdp_browser import CDPBrowserManager
-    finally:
-        os.chdir(_original_cwd)
+        os.chdir(_MEDIACRAWLER_ROOT)
+        try:
+            import config as mc_config
+            mc_config.ENABLE_CDP_MODE = True
+            mc_config.CDP_CONNECT_EXISTING = True
+            mc_config.CDP_DEBUG_PORT = 9222
+            # CDP 主机（vendor 补丁）：裸机/WSL2 用默认 localhost；
+            # Windows Docker（桥接网络）需 CDP_HOST=host.docker.internal（容器内 localhost ≠ 宿主）
+            # 注意用 `or`：CDP_HOST= 空值也按未配置处理（避免空串被当主机名触发 IDNA 报错）
+            mc_config.CDP_DEBUG_HOST = os.getenv("CDP_HOST") or "localhost"
+            mc_config.CDP_HEADLESS = False
+            mc_config.AUTO_CLOSE_BROWSER = False
+            mc_config.SAVE_LOGIN_STATE = True
+            mc_config.HEADLESS = False
+            # VidAgent 缩短连接等待：Chrome 要么在要么不在，15s 足够
+            mc_config.BROWSER_LAUNCH_TIMEOUT = 15
 
-    _playwright = await async_playwright().start()
-    _cdp_manager = CDPBrowserManager()
-    _browser_context = await _cdp_manager.launch_and_connect(
-        playwright=_playwright,
-        playwright_proxy=None,
-        user_agent=None,
-        headless=False,
-    )
-    await _cdp_manager.add_stealth_script()
-    _initialized = True
-    logger.info("CDP 浏览器已连接 (Windows Chrome :9222)")
-    return _browser_context
+            from playwright.async_api import async_playwright
+            from tools.cdp_browser import CDPBrowserManager
+        finally:
+            os.chdir(_original_cwd)
+
+        _playwright = await async_playwright().start()
+        _cdp_manager = CDPBrowserManager()
+        _browser_context = await _cdp_manager.launch_and_connect(
+            playwright=_playwright,
+            playwright_proxy=None,
+            user_agent=None,
+            headless=False,
+        )
+        await _cdp_manager.add_stealth_script()
+        _initialized = True
+        logger.info("CDP 浏览器已连接 (Windows Chrome :9222)")
+        return _browser_context
 
 
 async def get_page_for_platform(platform: str, url: str, wait_until: str = "domcontentloaded") -> Any:

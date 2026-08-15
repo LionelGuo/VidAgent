@@ -22,7 +22,7 @@ import sys
 import uuid
 from collections.abc import AsyncIterator
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 
 # 确保项目根在 sys.path（server/ 从项目根启动）
@@ -67,6 +67,8 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
         yield
     finally:
         warm_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await warm_task
 
 
 # ---------------------------------------------------------------------------
