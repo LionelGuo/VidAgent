@@ -139,6 +139,8 @@ class MediaCrawlerPlatform(Platform):
     # vendor media_platform 下的包名：与平台名可不一致（xiaohongshu→"xhs"）
     mc_package: ClassVar[str] = ""
     cdp_page_key: ClassVar[str] = ""
+    # 页面 goto 就绪策略：douyin="commit"（B19 冷路径减负，就绪由轮询兜底），其余平台默认
+    _page_wait_until: ClassVar[str] = "domcontentloaded"
     mc_lock: ClassVar[asyncio.Lock]
 
     @classmethod
@@ -154,7 +156,7 @@ class MediaCrawlerPlatform(Platform):
     @classmethod
     def get_page(cls, url: str) -> Any:
         """取本平台的 CDP 页面（_cdp_browser 缓存/失效重建）。"""
-        return get_page_for_platform(cls.cdp_page_key, url)
+        return get_page_for_platform(cls.cdp_page_key, url, wait_until=cls._page_wait_until)
 
     @classmethod
     async def cdp_cookies(cls, page: Any) -> tuple[str, Any]:

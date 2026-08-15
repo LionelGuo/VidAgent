@@ -152,10 +152,12 @@ async def get_cdp_context():
     return _browser_context
 
 
-async def get_page_for_platform(platform: str, url: str) -> Any:
+async def get_page_for_platform(platform: str, url: str, wait_until: str = "domcontentloaded") -> Any:
     """获取指定平台的 Playwright Page（已导航到目标 URL）。
 
     page 失效（被关闭）时自动重建；浏览器连接断开时重置 CDP 状态重连。
+    wait_until 默认 domcontentloaded；douyin 传 "commit"（B19 冷路径减负：
+    页面就绪由 webmssdk/xmst 轮询兜底，提前 1-3s 放行）。
     """
     global _page_cache
 
@@ -175,7 +177,7 @@ async def get_page_for_platform(platform: str, url: str) -> Any:
         _reset_cdp_state()
         ctx = await get_cdp_context()
         page = await ctx.new_page()
-    await page.goto(url, wait_until="domcontentloaded", timeout=15000)
+    await page.goto(url, wait_until=wait_until, timeout=15000)
     _page_cache[platform] = page
     return page
 

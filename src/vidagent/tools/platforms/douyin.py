@@ -144,19 +144,42 @@ def _get_proxy() -> str | None:
 
 
 async def _wait_xmst(page: Any) -> None:
-    """等页面 localStorage 种出 xmst（msToken，API 请求必需）。"""
-    for _ in range(_XMST_POLL_SECONDS * 2):
+    """等页面 localStorage 种出 xmst（msToken，API 请求必需）。
+
+    B19：轮询间隔 0.5s→0.2s（迭代数同比增，保持 ~10s 上限）；evaluate
+    的 wait_for 3s→1s——页面忙时单次超时由下一轮立即补上，不放大最坏等待。
+    """
+    for _ in range(_XMST_POLL_SECONDS * 5):
         try:
             xmst = await asyncio.wait_for(
                 page.evaluate("() => window.localStorage.getItem('xmst')"),
-                timeout=3,
+                timeout=1,
             )
             if xmst:
                 return
         except Exception:
             pass
-        await asyncio.sleep(0.5)
+        await asyncio.sleep(0.2)
     logger.warning("xmst 未在 %ds 内就绪,继续尝试(可能被风控)", _XMST_POLL_SECONDS)
+
+
+async def _wait_webmssdk(page: Any) -> None:
+    """等 webmssdk（byted_acrawler）就绪——XHR hook 生效前发出的请求无签名会被拒。
+
+    B19：轮询间隔 0.5s→0.2s（迭代数同比增，保持 ~12s 上限）；evaluate 加
+    wait_for 2s（曾无保护，Playwright 默认 30s 兜底会放大最坏等待）。
+    """
+    for _ in range(60):
+        try:
+            ready = await asyncio.wait_for(
+                page.evaluate("() => !!window.byted_acrawler"), timeout=2,
+            )
+        except Exception:
+            ready = False
+        if ready:
+            return
+        await asyncio.sleep(0.2)
+    logger.warning("webmssdk 未在 ~12s 内就绪,继续尝试(可能被风控)")
 
 
 async def _is_logged_in(page: Any, cookie_dict: dict) -> bool:
@@ -394,7 +417,9 @@ async def _fetch_hot_list_via_page(limit: int = 10) -> list[dict]:
         return []
 
     try:
-        page = await get_page_for_platform("dy", "https://www.douyin.com/hot")
+        page = await get_page_for_platform(
+            "dy", "https://www.douyin.com/hot", wait_until="commit",
+        )
     except RuntimeError:
         # CDP 连不上 Windows Chrome（与 _search_via_cdp 同款优雅降级：不 500）
         logger.warning("抖音热搜榜失败: %s", CDP_GUIDE_MSG)
@@ -403,12 +428,7 @@ async def _fetch_hot_list_via_page(limit: int = 10) -> list[dict]:
         logger.warning("抖音热搜榜失败: %s", e)
         return []
 
-    # 等 webmssdk 就绪（XHR hook 生效前发出的请求无签名会被拒）
-    for _ in range(24):
-        ready = await page.evaluate("() => !!window.byted_acrawler")
-        if ready:
-            break
-        await asyncio.sleep(0.5)
+    await _wait_webmssdk(page)
 
     for attempt in range(3):
         try:
@@ -418,7 +438,7 @@ async def _fetch_hot_list_via_page(limit: int = 10) -> list[dict]:
             raw = {"status": 0, "body": ""}
         if raw.get("status") == 200 and raw.get("body"):
             break
-        await asyncio.sleep(1)
+        await asyncio.sleep(0.5)
 
     if raw.get("status") != 200 or not raw.get("body"):
         logger.warning("抖音热搜榜 XHR 失败: status=%s", raw.get("status"))
@@ -618,7 +638,9 @@ async def _resolve_creator_sec_uid(creator_id: str) -> str | None:
     # 昵称 → 「用户」tab 页面内 XHR
 
     try:
-        page = await get_page_for_platform("dy", "https://www.douyin.com")
+        page = await get_page_for_platform(
+            "dy", "https://www.douyin.com", wait_until="commit",
+        )
     except RuntimeError:
         # CDP 连不上（与热榜/搜索同款优雅降级）
         logger.warning("抖音用户搜索失败: %s", CDP_GUIDE_MSG)
@@ -626,12 +648,7 @@ async def _resolve_creator_sec_uid(creator_id: str) -> str | None:
     except Exception as e:
         logger.warning("抖音用户搜索失败: %s", e)
         return None
-    # 等 webmssdk 就绪（XHR hook 生效前发出的请求无签名会被拒）
-    for _ in range(24):
-        ready = await page.evaluate("() => !!window.byted_acrawler")
-        if ready:
-            break
-        await asyncio.sleep(0.5)
+    await _wait_webmssdk(page)
 
     for attempt in range(3):
         try:
@@ -641,7 +658,7 @@ async def _resolve_creator_sec_uid(creator_id: str) -> str | None:
             raw = {"status": 0, "body": ""}
         if raw.get("status") == 200 and raw.get("body"):
             break
-        await asyncio.sleep(1)
+        await asyncio.sleep(0.5)
 
     if raw.get("status") != 200 or not raw.get("body"):
         logger.warning("抖音用户搜索 XHR 失败: status=%s", raw.get("status"))
@@ -872,6 +889,8 @@ class DouyinPlatform(MediaCrawlerPlatform):
 
     # -- MediaCrawlerPlatform 声明（#3） --
     cdp_page_key: ClassVar[str] = "dy"
+    # B19 冷路径减负：页面就绪由 webmssdk/xmst 轮询兜底，goto 用 commit 提前放行
+    _page_wait_until: ClassVar[str] = "commit"
     mc_lock: ClassVar[asyncio.Lock] = asyncio.Lock()
     mc_submodules: ClassVar[tuple[str, ...]] = ("client", "field", "help")
     mc_package: ClassVar[str] = "douyin"
