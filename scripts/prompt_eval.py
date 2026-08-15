@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
@@ -33,6 +34,12 @@ DEFAULT_OUT = REPO_ROOT / "workspace" / "prompt-eval"
 
 # 检索类用例不应触碰的执行类工具（筛选/列表类请求不得下载或总结）
 _EXECUTE_TOOLS = ("download_video", "batch_summarize_videos", "extract_and_summarize")
+
+# 无热榜说明句形态：「(无/没有/非…)热榜/榜单」或「热榜/榜单…搜索」。
+# 不能用裸「热榜」子串判定——搜索结果的视频标题可能含「上热榜」类字样（假阳性实例见 20260815-105920 run1）。
+_DISCLOSURE_RE = re.compile(
+    r"(无|没有|暂无|非|不支持)[^\n。]{0,12}(热榜|榜单)|(热榜|榜单)[^\n。]{0,15}搜索"
+)
 
 
 def parse_data_stream(raw: str) -> dict:
@@ -178,9 +185,9 @@ def _check_ks_hot_redirect(p: dict) -> list[str]:
     args = _first_args(p, "search_videos")
     if args.get("platform") != "kuaishou":
         fails.append(f"platform 应为 kuaishou，实际 {args.get('platform')!r}")
-    # 用户措辞是「热门」，回复含「热榜」即视为做了无热榜说明（防纯回声误判）
-    if "热榜" not in p["text"]:
-        fails.append("最终回复应说明该平台无热榜并已改用搜索（含「热榜」）")
+    # 说明句形态匹配（非裸子串）：见 _DISCLOSURE_RE 注释
+    if not _DISCLOSURE_RE.search(p["text"]):
+        fails.append("最终回复应说明该平台无热榜并已改用搜索")
     return fails
 
 

@@ -180,8 +180,10 @@ def _knowledge_lines(
     unsupported = [n for n in platform_names if not caps[n]["hot"]]
     if unsupported:
         hot_line += (
-            f"；{'、'.join(unsupported)} 没有热榜——不要对它们调用 get_hot_videos，"
-            "用户想看这些平台的热门内容时改用 search_videos 并向用户说明"
+            f"；{'、'.join(unsupported)} 没有热榜——不要对它们调用 get_hot_videos。"
+            "用户想看这些平台的热门内容时：改用 search_videos（关键词贴近用户意图，"
+            "不要照搬「热门」二字），并在回复开头说明该平台无热榜、"
+            "以下为关键词搜索的结果（非官方榜单）"
         )
     hot_line += "。"
 
