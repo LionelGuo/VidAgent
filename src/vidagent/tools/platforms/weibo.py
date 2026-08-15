@@ -45,11 +45,13 @@ logger = logging.getLogger(__name__)
 _WB_DETAIL_RE = re.compile(r"m\.weibo\.cn/detail/(\w+)")
 _WB_STATUS_ONLY_RE = re.compile(r"weibo\.com/status/(\w+)")
 _WB_STATUS_RE = re.compile(r"weibo\.com/\d+/(\w+)")
-_WB_CN_RE = re.compile(r"weibo\.cn/(\w+)")
+# (?<!m\.)：排除 "m.weibo.cn" 子串——m.weibo.cn 非 detail 路径（如 /profile/）
+# 不是视频 URL，误抽会拿到 "profile" 这类假 ID（评审修复）
+_WB_CN_RE = re.compile(r"(?<!m\.)weibo\.cn/(\w+)")
 _WB_PROFILE_RE = re.compile(r"m\.weibo\.cn/profile/(\d+)")
 _WB_U_RE = re.compile(r"weibo\.com/u/(\d+)")
 _WB_UID_PATH_RE = re.compile(r"weibo\.com/(\d+)(?:/|\?|$)")
-_WB_CN_UID_RE = re.compile(r"weibo\.cn/(\d+)")
+_WB_CN_UID_RE = re.compile(r"(?<!m\.)weibo\.cn/(\d+)")
 
 _CLIENT_TIMEOUT = 60        # WeiboClient 单请求 HTTP 超时（上游默认，图片长超时）
 _CALL_TIMEOUT = 60          # 单次 client 调用上限（request 内建重试 5×3s，需留余量）
@@ -335,6 +337,11 @@ async def _search_via_cdp(keyword: str, limit: int = 10) -> list[dict]:
     except WeiboClientError as e:
         logger.warning("微博搜索失败: %s", e)
         return []
+    except Exception as e:
+        # MediaCrawler 异常（如 DataFetchError 风控拒接）统一宽泛降级
+        #（douyin _get_creator_via_cdp 同款纪律，不 500）
+        logger.warning("微博搜索失败(MediaCrawler 异常): %r", e)
+        return []
 
     cards = resp.get("cards", []) if isinstance(resp, dict) else []
     notes = _FilterSearchCard(cards)
@@ -393,6 +400,11 @@ async def _resolve_creator_uid_by_name(name: str) -> str | None:
     """
     try:
         page = await WeiboPlatform.get_page(WeiboPlatform._home_url)
+        # 页面可能在扫码引导后停在 passport.weibo.com（与 m.weibo.cn 跨域，
+        # XHR 会被 CORS 拦截）——回到 m.weibo.cn 保证同源（评审修复）
+        await page.goto(
+            WeiboPlatform._home_url, wait_until="domcontentloaded", timeout=15000,
+        )
     except Exception as e:
         logger.warning("微博用户搜索失败: %s", e)
         return None
@@ -475,6 +487,9 @@ async def _get_creator_via_cdp(creator_id: str, limit: int = 10) -> list[dict]:
     except WeiboClientError as e:
         logger.warning("微博创作者查询失败: %s", e)
         return []
+    except Exception as e:
+        logger.warning("微博创作者查询失败(MediaCrawler 异常): %r", e)
+        return []
 
     cards = resp.get("cards", []) if isinstance(resp, dict) else []
     notes = [
@@ -524,6 +539,11 @@ async def _download_via_cdp(video_url: str, file_name: str,
         detail = await _client_call(lambda c: c.get_note_info_by_id(note_id))
     except WeiboClientError as e:
         return {"status": "error", "error": str(e), "video_url": video_url}
+    except Exception as e:
+        # 详情页走独立 httpx 请求（非 client.request 重试链），DataFetchError
+        # 等 MC 异常直接抛出——宽泛降级为错误字典（下载路径不得向上抛）
+        logger.warning("微博详情获取失败(MediaCrawler 异常): %r", e)
+        return {"status": "error", "error": f"微博详情获取失败: {e}", "video_url": video_url}
 
     if not isinstance(detail, dict):
         mblog = {}
