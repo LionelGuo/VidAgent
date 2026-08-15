@@ -41,6 +41,11 @@ _DISCLOSURE_RE = re.compile(
     r"(无|没有|暂无|非|不支持)[^\n。]{0,12}(热榜|榜单)|(热榜|榜单)[^\n。]{0,15}搜索"
 )
 
+# 缺参追问形态：疑问式（？/?/哪）或请求式澄清（「请提供/请告诉/请指定/请给出」）。
+# 不能只认问号——A6 变体跑出陈述式澄清（「请提供需要总结的具体视频信息…」，
+# 功能等价且零工具调用，20260815-114630）。
+_ASK_RE = re.compile(r"[？?哪]|请[^\n。]{0,10}(提供|告诉|指定|给出)")
+
 
 def parse_data_stream(raw: str) -> dict:
     """解析 AI SDK data stream（行协议 `CODE:JSON`）为结构化事件。
@@ -165,8 +170,8 @@ def _check_ask_missing_param(p: dict) -> list[str]:
     fails = []
     if p["tool_calls"]:
         fails.append(f"缺参时应追问而非调用工具，实际调用了 {_tool_names(p)}")
-    if not any(ch in p["text"] for ch in ("？", "?", "哪")):
-        fails.append("最终回复应包含追问（含问号或「哪」）")
+    if not _ASK_RE.search(p["text"]):
+        fails.append("最终回复应包含追问（问号/「哪」/「请提供」类请求式）")
     return fails
 
 
