@@ -144,7 +144,7 @@ export const TOOLS = {
         .nullable()
         .default(DEFAULT_PLATFORM)
         .describe("平台：" + describePlatformsFor("hot")),
-      limit: z.number().nullable().default(DEFAULT_LIMIT).describe("返回条数上限"),
+      limit: z.number().int().min(1).max(50).nullable().default(DEFAULT_LIMIT).describe("返回条数上限（1-50）"),
       date_filter: z
         .string()
         .nullable()
@@ -170,7 +170,7 @@ export const TOOLS = {
         .default(DEFAULT_PLATFORM)
         .describe("平台：" + describePlatformsFor("search")),
       keyword: z.string().describe("搜索关键词（必填）"),
-      limit: z.number().nullable().default(DEFAULT_LIMIT).describe("返回条数上限"),
+      limit: z.number().int().min(1).max(50).nullable().default(DEFAULT_LIMIT).describe("返回条数上限（1-50）"),
       date_filter: z.string().nullable().optional().describe("时间过滤：today 表示仅当日"),
     }),
     execute: async (args: PlatformLimitArgs & { keyword: string }) => {
@@ -192,7 +192,7 @@ export const TOOLS = {
         .default(DEFAULT_PLATFORM)
         .describe("平台：" + describePlatformsFor("creator")),
       creator: z.string().describe("创作者昵称或数字 UID（必填）"),
-      limit: z.number().nullable().default(DEFAULT_LIMIT).describe("返回条数上限"),
+      limit: z.number().int().min(1).max(50).nullable().default(DEFAULT_LIMIT).describe("返回条数上限（1-50）"),
       date_filter: z.string().nullable().optional().describe("时间过滤：today 表示仅当日"),
     }),
     execute: async (args: PlatformLimitArgs & { creator: string }) => {

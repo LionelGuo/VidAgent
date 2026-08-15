@@ -157,7 +157,7 @@ async def chat_completions(request: dict):
 @app.get("/api/tools/hot")
 async def tool_get_hot_videos(
     platform: str = Query(DEFAULT_PLATFORM, description="平台"),
-    limit: int = Query(DEFAULT_LIMIT, description="返回数量"),
+    limit: int = Query(DEFAULT_LIMIT, ge=1, le=50, description="返回数量"),
     date_filter: str | None = Query(None, description="日期过滤: today"),
 ):
     """获取平台热门视频榜单。"""
@@ -179,7 +179,7 @@ async def tool_get_hot_videos(
 async def tool_search_videos(
     platform: str = Query(DEFAULT_PLATFORM, description="平台"),
     keyword: str = Query(..., description="搜索关键词"),
-    limit: int = Query(DEFAULT_LIMIT, description="返回数量"),
+    limit: int = Query(DEFAULT_LIMIT, ge=1, le=50, description="返回数量"),
     date_filter: str | None = Query(None, description="日期过滤: today"),
 ):
     """按关键词搜索视频。"""
@@ -203,7 +203,7 @@ async def tool_search_videos(
 async def tool_get_creator_videos(
     platform: str = Query(DEFAULT_PLATFORM, description="平台"),
     creator: str = Query(..., description="创作者昵称或 UID"),
-    limit: int = Query(DEFAULT_LIMIT, description="返回数量"),
+    limit: int = Query(DEFAULT_LIMIT, ge=1, le=50, description="返回数量"),
     date_filter: str | None = Query(None, description="日期过滤: today"),
 ):
     """获取创作者视频列表。"""

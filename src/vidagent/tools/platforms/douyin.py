@@ -881,7 +881,7 @@ class DouyinPlatform(MediaCrawlerPlatform):
         return make_client(timeout)
 
     @classmethod
-    async def get_hot(cls, client: httpx.AsyncClient, limit: int = 20) -> list[dict]:
+    async def get_hot(cls, client: httpx.AsyncClient, limit: int = 10) -> list[dict]:
         """热搜榜（CDP 页面内 XHR，与 douyin.com/hot 页面一致，webmssdk 自动签名）。"""
         return await cls.run_on_cdp_async(_fetch_hot_list_via_page(limit))
 

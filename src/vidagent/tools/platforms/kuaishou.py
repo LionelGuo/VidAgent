@@ -546,7 +546,7 @@ class KuaishouPlatform(MediaCrawlerPlatform):
         return httpx.AsyncClient(headers=DEFAULT_HEADERS, timeout=timeout)
 
     @staticmethod
-    async def get_hot(client: httpx.AsyncClient, limit: int = 20) -> list[dict]:
+    async def get_hot(client: httpx.AsyncClient, limit: int = 10) -> list[dict]:
         raise NotImplementedError(
             "快手暂不支持热榜（MediaCrawler 无快手热榜实现，为避免风控不做自定义接口），"
             "请改用关键词搜索（search_videos）"

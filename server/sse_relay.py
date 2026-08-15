@@ -23,9 +23,6 @@ import httpx
 
 logger = logging.getLogger(__name__)
 
-# 前缀扫描：缓冲首段内容以检测 tool_call / think
-_SCAN_BUFFER_SIZE = 20
-
 # <tool_call> XML 标签模式
 _TOOL_CALL_START = "<tool_call"
 _TOOL_CALL_PATTERN = re.compile(r"<tool_call>\s*(.*?)\s*</tool_call>", re.DOTALL)

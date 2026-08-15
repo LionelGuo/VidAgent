@@ -648,7 +648,7 @@ class XiaohongshuPlatform(MediaCrawlerPlatform):
         return httpx.AsyncClient(headers=DEFAULT_HEADERS, timeout=timeout, proxy=_get_proxy())
 
     @staticmethod
-    async def get_hot(client: httpx.AsyncClient, limit: int = 20) -> list[dict]:
+    async def get_hot(client: httpx.AsyncClient, limit: int = 10) -> list[dict]:
         raise NotImplementedError(
             "小红书暂无热榜视频接口（网页端热搜为话题词形态，非视频列表），"
             "请改用关键词搜索（search_videos），例如「搜索小红书的 vlog」"
