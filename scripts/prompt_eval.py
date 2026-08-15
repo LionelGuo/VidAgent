@@ -6,8 +6,9 @@ AI SDK data stream 行协议（`CODE:JSON`：9=tool_call / a=tool_result /
 0=text / g=reasoning / d=finish），按用例声明断言「工具选择 / 参数 /
 文本启发」，输出判定表与完整转录。
 
-用法（前置：Next dev(:3000) + 后端 + provider 在线；xhs 用例需 Chrome :9222 登录态）：
-    .venv/bin/python scripts/prompt_eval.py                 # 8 用例 × 2 跑
+用法（前置：Next dev(:3000) + 后端 + provider 在线；xhs 用例需 Chrome :9222 登录态；
+     youtube_creator 用例需后端 .env 配置 YOUTUBE_API_KEY）：
+    .venv/bin/python scripts/prompt_eval.py                 # 9 用例 × 2 跑
     .venv/bin/python scripts/prompt_eval.py --filter xhs    # 只跑 id 含 xhs 的用例
     .venv/bin/python scripts/prompt_eval.py --runs 1
 
@@ -46,19 +47,24 @@ _DISCLOSURE_RE = re.compile(
 # 功能等价且零工具调用，20260815-114630）。
 _ASK_RE = re.compile(r"[？?哪]|请[^\n。]{0,10}(提供|告诉|指定|给出)")
 
+# 过时表述形态：「这是…X月X日…」式声称（B11 回归：曾把条目发布日期
+# 误当榜单时效，回复「这是8月8日的数据」）。列表内裸日期不算。
+_STALE_CLAIM_RE = re.compile(r"这是[^\n。]{0,10}\d{1,2}月\d{1,2}日")
+
 
 def parse_data_stream(raw: str) -> dict:
     """解析 AI SDK data stream（行协议 `CODE:JSON`）为结构化事件。
 
-    依赖的行：9=tool_call（toolName/args）、a=tool_result、0=text 增量
-    （JSON 字符串）、g=reasoning 增量、3=error、d=finish。其余行
-    （f/b/c/e/2/8 等）忽略；无法解析的行跳过不致命。载荷内部的冒号
-    不破坏切分（按首个冒号 partition）。
+    依赖的行：9=tool_call（toolName/args/toolCallId）、a=tool_result
+    （payload 整体保留，供断言结果内容）、0=text 增量（JSON 字符串）、
+    g=reasoning 增量、3=error、d=finish。其余行（f/b/c/e/2/8 等）忽略；
+    无法解析的行跳过不致命。载荷内部的冒号不破坏切分（按首个冒号 partition）。
     """
     text_parts: list[str] = []
     reasoning_parts: list[str] = []
     tool_calls: list[dict] = []
     tool_results = 0
+    tool_result_payloads: list[dict] = []
     errors: list[str] = []
     finish: dict | None = None
     for line in raw.splitlines():
@@ -75,9 +81,15 @@ def parse_data_stream(raw: str) -> dict:
         elif code == "g" and isinstance(value, str):
             reasoning_parts.append(value)
         elif code == "9" and isinstance(value, dict):
-            tool_calls.append({"tool": value.get("toolName", ""), "args": value.get("args") or {}})
+            tool_calls.append({
+                "tool": value.get("toolName", ""),
+                "args": value.get("args") or {},
+                "call_id": value.get("toolCallId"),
+            })
         elif code == "a":
             tool_results += 1
+            if isinstance(value, dict):
+                tool_result_payloads.append(value)
         elif code == "3" and isinstance(value, dict):
             errors.append(json.dumps(value, ensure_ascii=False)[:200])
         elif code == "d" and isinstance(value, dict):
@@ -87,6 +99,7 @@ def parse_data_stream(raw: str) -> dict:
         "reasoning": "".join(reasoning_parts),
         "tool_calls": tool_calls,
         "tool_results": tool_results,
+        "tool_result_payloads": tool_result_payloads,
         "errors": errors,
         "finish": finish,
     }
@@ -124,6 +137,23 @@ def _has_subsequence(seq: list[str], pattern: list[str]) -> bool:
     return all(x in it for x in pattern)
 
 
+def _result_items(parsed: dict, tool: str) -> list[dict]:
+    """按 call_id 关联工具结果，返回该工具的 results 列表（找不到返回 []）。
+
+    载荷形状（AI SDK data stream + 前端 execute 实测）：
+    a:{"toolCallId": ..., "result": {"status": "ok", "results": [...], "count": N}}
+    """
+    call_ids = [tc.get("call_id") for tc in parsed["tool_calls"] if tc["tool"] == tool]
+    payloads = parsed.get("tool_result_payloads") or []
+    for call_id in call_ids:
+        for pl in payloads:
+            if call_id is not None and pl.get("toolCallId") == call_id:
+                result = pl.get("result")
+                items = result.get("results") if isinstance(result, dict) else None
+                return items if isinstance(items, list) else []
+    return []
+
+
 # ---------------------------------------------------------------------------
 # 用例（定案 8 条；check 返回失败列表）
 # ---------------------------------------------------------------------------
@@ -131,9 +161,16 @@ def _has_subsequence(seq: list[str], pattern: list[str]) -> bool:
 
 def _check_hot_bilibili(p: dict) -> list[str]:
     fails = _require_tools(p, ("get_hot_videos",)) + _forbid_tools(p, _EXECUTE_TOOLS)
-    platform = _first_args(p, "get_hot_videos").get("platform")
+    args = _first_args(p, "get_hot_videos")
+    platform = args.get("platform")
     if platform not in (None, "", "bilibili"):
         fails.append(f"platform 应为 bilibili（或省略走默认），实际 {platform!r}")
+    # B11 回归：热榜工具已无 date_filter 参数——传了即旧 schema 未生效
+    if "date_filter" in args:
+        fails.append(f"热榜工具不应传 date_filter（参数已移除），实际 args={args!r}")
+    # B11 回归：不得把条目发布日期误当榜单时效（曾报「这是8月8日的数据」）
+    if _STALE_CLAIM_RE.search(p["text"]):
+        fails.append("回复出现「这是X月X日的数据」式过时表述（热榜是实时榜单）")
     if not p["text"].strip():
         fails.append("最终回复为空")
     return fails
@@ -154,6 +191,31 @@ def _check_xhs_creator(p: dict) -> list[str]:
         fails.append(f"platform 应为 xiaohongshu，实际 {args.get('platform')!r}")
     if "影视飓风" not in str(args.get("creator", "")):
         fails.append(f"creator 应含「影视飓风」，实际 {args.get('creator')!r}")
+    # B14 回归：结果按发布时间倒序（曾返回 2023 连续旧块）
+    items = _result_items(p, "get_creator_videos")
+    if items:
+        times = [int(it.get("publish_time", 0) or 0) for it in items]
+        if times != sorted(times, reverse=True):
+            fails.append(f"创作者视频应按发布时间倒序，实际 publish_time={times}")
+    return fails
+
+
+def _check_youtube_creator(p: dict) -> list[str]:
+    fails = _require_tools(p, ("get_creator_videos",)) + _forbid_tools(p, _EXECUTE_TOOLS)
+    args = _first_args(p, "get_creator_videos")
+    if args.get("platform") != "youtube":
+        fails.append(f"platform 应为 youtube，实际 {args.get('platform')!r}")
+    if "3b1b" not in str(args.get("creator", "")).lower():
+        fails.append(f"creator 应含 3b1b，实际 {args.get('creator')!r}")
+    # B15 回归：曾所有视频时长/播放量全为 0（漏调 videos.list 富化）
+    items = _result_items(p, "get_creator_videos")
+    if not items:
+        fails.append("工具结果为空（应返回 3b1b 的近期视频）")
+    for it in items:
+        if not it.get("duration"):
+            fails.append(f"视频时长不应为 0: {it.get('video_id')} {str(it.get('title'))[:30]!r}")
+        if not it.get("view_count"):
+            fails.append(f"播放量不应为 0: {it.get('video_id')} {str(it.get('title'))[:30]!r}")
     return fails
 
 
@@ -214,10 +276,13 @@ class EvalCase:
 
 
 CASES = [
-    EvalCase("hot_bilibili", "列出B站热榜", _check_hot_bilibili),
+    # B11 回归：复刻实测场景「今天的b站热榜」（曾报「这是8月8日的数据」）
+    EvalCase("hot_bilibili", "列出今天的b站热榜", _check_hot_bilibili),
     EvalCase("search_python", "搜Python教程", _check_search_python),
     # xhs 经 MediaCrawler/CDP，耗时较长
     EvalCase("xhs_creator", "列出影视飓风在小红书上发的最新视频", _check_xhs_creator, timeout_s=600),
+    # B15 回归：需后端配置 YOUTUBE_API_KEY
+    EvalCase("youtube_creator", "3b1b在油管上最近发了哪些视频？", _check_youtube_creator),
     # 真实下载 + 总结，成本最高的用例（定案：1 视频 × 2 跑控成本）
     EvalCase(
         "summarize_hot_first", "总结B站热榜第一个视频", _check_summarize_hot_first, timeout_s=1800
