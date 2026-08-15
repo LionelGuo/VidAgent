@@ -3,6 +3,21 @@
 from __future__ import annotations
 
 import time
+from datetime import datetime, timedelta, timezone
+
+# 展示时区：Asia/Shanghai 无夏令时、恒 UTC+8（中国自 1991 年起无 DST）。
+# 用固定偏移而非 zoneinfo——Docker 精简镜像可能缺 tzdata 数据库。
+_CST = timezone(timedelta(hours=8))
+
+
+def format_publish_date(ts: int) -> str:
+    """unix 秒 → 'YYYY-MM-DD'（北京时区，与中文平台 app 显示一致）。
+
+    B17（2026-08-15）：模型不擅长 epoch→日期算术（实测把 1786698013
+    换算成「2025-08-15」，实际 2026-08-14，年份错 1）——日期由后端预
+    格式化为字符串进 wire，模型直接展示即可。
+    """
+    return datetime.fromtimestamp(int(ts), _CST).strftime("%Y-%m-%d")
 
 
 def start_of_today_local() -> int:

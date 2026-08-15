@@ -191,10 +191,12 @@ def _knowledge_lines(
     hot_line += "。"
 
     # view_count 语义依平台而异（B13：小红书无公开播放量、抖音热榜为热度值），
-    # 如实声明——列表输出时按平台实际含义标注，不冒充播放量
+    # 如实声明——列表输出时按平台实际含义标注，不冒充播放量；
+    # publish_date（B17）为后端预格式化日期，模型直接展示、勿自行换算时间戳
     fields_line = (
         f"三个检索工具返回的每个视频都含 {'/'.join(video_fields)}"
         "（duration 为秒数，duration_text 如 \"12:34\"，publish_time 为发布时间；"
+        "publish_date 为可直接展示的发布日期（YYYY-MM-DD）；"
         "view_count 依平台含义不同：bilibili/youtube 为播放量、xiaohongshu 为点赞数、"
         "douyin 热榜为热度值）。"
     )

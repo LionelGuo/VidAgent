@@ -6,8 +6,8 @@
     get_creator_videos —— 指定创作者（昵称或 ID，昵称自动解析）
 
 输出统一 schema（含时长，便于 Agent 直接按时长/播放量筛选，无需下载）：
-    [{video_id, title, desc, publish_time, duration, duration_text,
-      video_url, platform, author, view_count}]
+    [{video_id, title, desc, publish_time, publish_date, duration,
+      duration_text, video_url, platform, author, view_count}]
 """
 
 from __future__ import annotations
@@ -24,10 +24,26 @@ from vidagent.tools.platforms import (
 from vidagent.tools.platforms import (
     get_platform,
 )
-from vidagent.utils.dates import filter_today
+from vidagent.utils.dates import filter_today, format_publish_date
 from vidagent.utils.timer import Timer
 
 logger = logging.getLogger(__name__)
+
+
+def _attach_publish_date(items: list[dict]) -> list[dict]:
+    """为每个视频项附 publish_date（YYYY-MM-DD 字符串，北京时区）。
+
+    B17（2026-08-15）：模型自行换算 publish_time 会错年份（实测
+    1786698013→「2025-08-15」）——日期必须后端预格式化；publish_time
+    原样保留（供排序/过滤）。无 publish_time 的项不附（不编造 1970 日期）。
+    """
+    out: list[dict] = []
+    for it in items:
+        ts = it.get("publish_time", 0) or 0
+        if ts:
+            it = {**it, "publish_date": format_publish_date(ts)}
+        out.append(it)
+    return out
 
 
 def _get_client(platform_name: str, **kwargs: object):
@@ -49,15 +65,15 @@ async def get_hot_videos(platform: str = "bilibili", limit: int = 10) -> list[di
         limit: 返回条数上限。
 
     Returns:
-        每项含 video_id/title/desc/publish_time/duration/duration_text/
-        video_url/platform/author/view_count。
+        每项含 video_id/title/desc/publish_time/publish_date/duration/
+        duration_text/video_url/platform/author/view_count。
     """
     _ensure_platforms_imported()
     p = get_platform(platform)
     with Timer(f"{p.name} 热榜"):
         async with _get_client(platform) as client:
             items = await p.get_hot(client, limit)
-    return items[:limit]
+    return _attach_publish_date(items[:limit])
 
 
 async def search_videos(
@@ -83,7 +99,7 @@ async def search_videos(
             items = await p.search(client, keyword, limit)
     if date_filter == "today":
         items = filter_today(items)
-    return items[:limit]
+    return _attach_publish_date(items[:limit])
 
 
 async def get_creator_videos(
@@ -113,4 +129,4 @@ async def get_creator_videos(
             items = await p.get_creator(client, creator, limit)
     if date_filter == "today":
         items = filter_today(items)
-    return items[:limit]
+    return _attach_publish_date(items[:limit])

@@ -30,6 +30,7 @@ VIDEO_FIELDS: tuple[str, ...] = (
     "title",
     "desc",
     "publish_time",  # unix timestamp
+    "publish_date",  # "YYYY-MM-DD"（北京时区，模型直接展示，勿自行换算）
     "duration",  # 秒
     "duration_text",  # "MM:SS" 或 "H:MM:SS"
     "video_url",  # 播放页 URL
