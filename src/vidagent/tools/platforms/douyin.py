@@ -30,8 +30,10 @@ from vidagent.config import settings
 from vidagent.tools.platforms import register
 
 from ._cdp_browser import (
+    get_cdp_context,
     get_page_for_platform,
     invalidate_page,
+    run_on_cdp_loop_async,
 )
 from ._mediacrawler import MediaCrawlerPlatform
 
@@ -106,6 +108,29 @@ def _import_mediacrawler() -> None:
     _ParseCreatorInfo = mods["help"].parse_creator_info_from_url
 
     logger.info("MediaCrawler 抖音模块已导入(签名 JS 已编译)")
+
+
+async def warm_startup() -> None:
+    """B19（2026-08-15）：后端启动时的一次性轻量预热。
+
+    预导入 MC 抖音模块（模块级 execjs 编译签名 JS，冷调用里 2-5s 的
+    一次性成本）+ 在 CDP 循环上预连 Windows Chrome（playwright 启动 +
+    连接，1-3s）。两段均静默失败：Chrome 未开、确认框未点、依赖缺失
+    都不影响启动，首次真实调用仍走现有冷路径（含确认框与重连兜底）。
+
+    刻意不做页面预热：get_page_for_platform 会在用户 Chrome 里新开可见
+    标签页——每次后端启动自动开一个抖音标签页不可接受（用户明确否决）。
+    副作用唯一：Chrome 确认框从「首次抖音调用时」前移到后端启动时刻。
+    """
+    try:
+        await asyncio.to_thread(_import_mediacrawler)
+    except Exception as e:
+        logger.info("抖音预热: MC 模块导入失败(首次调用时重试): %s", e)
+        return
+    try:
+        await run_on_cdp_loop_async(get_cdp_context())
+    except Exception as e:
+        logger.info("抖音预热: CDP 预连接失败(首次调用时重试): %s", e)
 
 
 def _get_proxy() -> str | None:

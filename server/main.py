@@ -20,7 +20,9 @@ import asyncio
 import logging
 import sys
 import uuid
+from collections.abc import AsyncIterator
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 # 确保项目根在 sys.path（server/ 从项目根启动）
@@ -44,10 +46,34 @@ setup_logging()
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
+# 启动预热（B19：douyin 冷调用 ~1min → 把一次性成本挪到启动期，不阻塞启动）
+# ---------------------------------------------------------------------------
+
+
+async def _warm_douyin() -> None:
+    """后台预热抖音（预编译签名 JS + 预连 CDP），失败静默、不阻塞启动。"""
+    try:
+        from vidagent.tools.platforms.douyin import warm_startup
+
+        await warm_startup()
+    except Exception:
+        logger.warning("抖音预热失败(不影响启动,首次调用时走冷路径)", exc_info=True)
+
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
+    warm_task = asyncio.create_task(_warm_douyin())
+    try:
+        yield
+    finally:
+        warm_task.cancel()
+
+
+# ---------------------------------------------------------------------------
 # FastAPI app
 # ---------------------------------------------------------------------------
 
-app = FastAPI(title="VidAgent Server", version="0.2.0")
+app = FastAPI(title="VidAgent Server", version="0.2.0", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
