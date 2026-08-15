@@ -631,7 +631,6 @@ async function _retryVideo(videoId: string) {
           desc: v.desc,
           author: v.author,
           duration_text: v.duration_text,
-          duration: v.duration,
           platform: v.platform,
         }],
       }),
