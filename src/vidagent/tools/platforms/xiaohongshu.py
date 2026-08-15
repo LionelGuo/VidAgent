@@ -174,6 +174,8 @@ def normalize(item: dict) -> dict:
         "video_url": video_url,
         "platform": "xiaohongshu",
         "author": author_name,
+        # view_count 语义 = 点赞数（小红书无公开播放量字段；B13 知识句
+        # fieldsLine 已向模型声明按平台语义如实标注）
         "view_count": _safe_int(stats.get("liked_count", 0)),
         # 小红书特有字段
         "xsec_token": xsec_token,
@@ -187,6 +189,18 @@ def _fmt_duration(sec: int) -> str:
     m, s = divmod(sec, 60)
     h, m = divmod(m, 60)
     return f"{h}:{m:02d}:{s:02d}" if h else f"{m:02d}:{s:02d}"
+
+
+def _note_time(item: dict) -> int:
+    """笔记发布时间提取（与 normalize 同构：note_card 内 / 顶层）。"""
+    note = item.get("note_card", item) or item
+    return _safe_int(note.get("time", 0)) if isinstance(note, dict) else 0
+
+
+def _slice_newest(items: list[dict], limit: int) -> list[dict]:
+    """按发布时间倒序取前 limit（B14：user_posted 接口无 sort 参数，
+    首页实测曾返回 2023 连续旧块；详情富化只对将返回的条目做）。"""
+    return sorted(items, key=_note_time, reverse=True)[:limit]
 
 
 # ---------------------------------------------------------------------------
@@ -247,8 +261,22 @@ async def _search_via_cdp(keyword: str, limit: int = 10) -> list[dict]:
     ]
     items = items[:limit]
 
-    # 二次查详情（官方 get_note_detail_async_task 做法）：搜索响应的 note_card
-    # 不含 type/video/duration 字段，按 note_id 逐个查询后图文/视频类型与时长才准确
+    detailed = await _enrich_details(client, items)
+    results = [normalize(it) for it in detailed]
+    logger.info("小红书搜索 '%s': %d 条", keyword, len(results))
+    # 对齐官方搜索后节流（base_config.py: CRAWLER_MAX_SLEEP_SEC=2），
+    # 连续密集请求是触发风控的主因之一
+    await asyncio.sleep(random.uniform(2, 4))
+    return results
+
+
+async def _enrich_details(client, items: list[dict]) -> list[dict]:
+    """按 note_id 逐个查详情（官方 get_note_detail_async_task 做法）。
+
+    搜索/创作者响应的 note_card 不含 type/video/duration/完整 interact_info
+    字段，详情（feed API）才有——补全后时长与点赞数才准确。并发 3 限制
+    风控风险；30s 总超时；单条失败回退原始 item（不阻断主流程）。
+    """
     _diag_done = False
 
     async def _fetch_detail(item: dict) -> dict:
@@ -261,7 +289,7 @@ async def _search_via_cdp(keyword: str, limit: int = 10) -> list[dict]:
         try:
             detail = await client.get_note_by_id(note_id, xsec_source, xsec_token)
             if isinstance(detail, dict) and detail:
-                # 官方 core.py:308：详情数据不含 xsec_token，从搜索 item 回填
+                # 官方 core.py:308：详情数据不含 xsec_token，从原始 item 回填
                 detail.setdefault("xsec_token", xsec_token)
                 detail.setdefault("xsec_source", xsec_source)
                 if not _diag_done:
@@ -270,7 +298,7 @@ async def _search_via_cdp(keyword: str, limit: int = 10) -> list[dict]:
                     src_video = src_note.get("video") if isinstance(src_note, dict) else None
                     det_video = detail.get("video")
                     logger.warning(
-                        "xhs 诊断: 搜索item keys=%s video_keys=%s | feed详情 video_keys=%s type=%s",
+                        "xhs 诊断: 列表item keys=%s video_keys=%s | feed详情 video_keys=%s type=%s",
                         sorted(item.keys()),
                         sorted(src_video.keys()) if isinstance(src_video, dict) else type(src_video).__name__,
                         sorted(det_video.keys()) if isinstance(det_video, dict) else type(det_video).__name__,
@@ -281,7 +309,7 @@ async def _search_via_cdp(keyword: str, limit: int = 10) -> list[dict]:
                            note_id, type(detail).__name__, xsec_source)
         except Exception as e:
             logger.warning("小红书详情查询异常 %s: %s", note_id, str(e)[:120])
-        return item  # 回退：用搜索原始 item（type/duration 可能缺失）
+        return item  # 回退：用原始 item（type/duration/计数可能缺失）
 
     sem = asyncio.Semaphore(3)  # 限制并发，控制风控风险
 
@@ -290,19 +318,12 @@ async def _search_via_cdp(keyword: str, limit: int = 10) -> list[dict]:
             return await _fetch_detail(item)
 
     try:
-        detailed = await asyncio.wait_for(
+        return await asyncio.wait_for(
             asyncio.gather(*[_limited(it) for it in items]), timeout=30,
         )
     except TimeoutError:
-        logger.warning("小红书详情批量查询超时(30s),使用搜索原始数据")
-        detailed = items
-
-    results = [normalize(it) for it in detailed]
-    logger.info("小红书搜索 '%s': %d 条", keyword, len(results))
-    # 对齐官方搜索后节流（base_config.py: CRAWLER_MAX_SLEEP_SEC=2），
-    # 连续密集请求是触发风控的主因之一
-    await asyncio.sleep(random.uniform(2, 4))
-    return results
+        logger.warning("小红书详情批量查询超时(30s),使用列表原始数据")
+        return items
 
 
 async def _resolve_creator_user_id(nickname: str) -> tuple[str, str] | None:
@@ -365,6 +386,9 @@ async def _get_creator_via_cdp(creator_id: str, limit: int = 10) -> list[dict]:
     """创作者笔记：URL/纯 user_id → 官方 parse；昵称 → 用户 tab 搜索解析。
 
     单页取回（page_size=30 ≥ 默认 limit=10），不翻页（防风控，与抖音同策）。
+    B14（2026-08-15）：user_posted 无 sort 参数、首页实测曾返回 2023 连续
+    旧块——客户端按发布时间倒序后取前 limit；随后详情富化补全 interact_info
+    （搜索路径同款 _enrich_details，点赞数不再零值）。
     """
     from ._cdp_browser import check_mediacrawler_available
     if (msg := check_mediacrawler_available()) is not None:
@@ -398,8 +422,13 @@ async def _get_creator_via_cdp(creator_id: str, limit: int = 10) -> list[dict]:
         logger.warning("小红书创作者查询失败: %s", e)
         return []
     items = resp.get("notes", []) if isinstance(resp, dict) else []
-    results = [normalize(it) for it in items[:limit]]
+    items = _slice_newest(items, limit)  # B14：时间倒序（接口无 sort 参数）
+    detailed = await _enrich_details(client, items)
+    results = [normalize(it) for it in detailed]
     logger.info("小红书创作者 %s: %d 篇笔记", user_id, len(results))
+    # 对齐官方搜索后节流（base_config.py: CRAWLER_MAX_SLEEP_SEC=2），
+    # 连续密集请求是触发风控的主因之一
+    await asyncio.sleep(random.uniform(2, 4))
     return results
 
 
