@@ -39,14 +39,15 @@ type PlatformLimitArgs = {
   date_filter?: string | null;
 };
 
-interface BatchVideo {
-  video_url: string;
-  video_id?: string;
-  title: string;
-  desc?: string | null;
-  author?: string | null;
-  duration_text?: string | null;
-  platform?: string | null;
+/** 检索工具通用查询串：平台/条数默认值 + 可选日期过滤 + 附加键。 */
+function buildQuery(args: PlatformLimitArgs, extra: Record<string, string> = {}): string {
+  const p = new URLSearchParams({
+    platform: args.platform || DEFAULT_PLATFORM,
+    limit: String(args.limit || DEFAULT_LIMIT),
+    ...extra,
+  });
+  if (args.date_filter) p.set("date_filter", args.date_filter);
+  return `?${p}`;
 }
 
 interface SummaryMetadata {
@@ -57,6 +58,19 @@ interface SummaryMetadata {
   author?: string;
   duration_text?: string;
 }
+
+/** 批量总结的单个视频条目（execute 参数类型 = zod 声明的推导） */
+const videoItemSchema = z.object({
+  video_url: z.string().describe("视频播放页地址"),
+  video_id: z.string().optional().describe("视频 ID（如 BVxxx，缺失时从 video_url 自动提取）"),
+  title: z.string().describe("视频标题"),
+  desc: z.string().nullable().optional().describe("视频简介"),
+  author: z.string().nullable().optional().describe("作者/UP 主"),
+  duration_text: z.string().nullable().optional().describe("时长文本"),
+  platform: z.string().nullable().optional().describe("平台（默认从 URL 自动检测）"),
+});
+
+type BatchVideo = z.infer<typeof videoItemSchema>;
 
 // ---------------------------------------------------------------------------
 // 助手
@@ -137,13 +151,8 @@ export const TOOLS = {
         .optional()
         .describe("按发布日期过滤。通常不传（热榜已反映当前热度）。仅在用户明确要求'只看今天发布的'时才传 'today'"),
     }),
-    execute: async ({ platform, limit, date_filter }: PlatformLimitArgs) => {
-      const p = new URLSearchParams({
-        platform: platform || DEFAULT_PLATFORM,
-        limit: String(limit || DEFAULT_LIMIT),
-      });
-      if (date_filter) p.set("date_filter", date_filter);
-      const res = await fetch(`${API_BASE}/api/tools/hot?${p}`);
+    execute: async (args: PlatformLimitArgs) => {
+      const res = await fetch(`${API_BASE}/api/tools/hot${buildQuery(args)}`);
       if (!res.ok) throw new Error(`获取热门失败: HTTP ${res.status}`);
       return trimVideoResults(await res.json());
     },
@@ -164,14 +173,8 @@ export const TOOLS = {
       limit: z.number().nullable().default(DEFAULT_LIMIT).describe("返回条数上限"),
       date_filter: z.string().nullable().optional().describe("时间过滤：today 表示仅当日"),
     }),
-    execute: async ({ platform, keyword, limit, date_filter }: PlatformLimitArgs & { keyword: string }) => {
-      const p = new URLSearchParams({
-        platform: platform || DEFAULT_PLATFORM,
-        keyword,
-        limit: String(limit || DEFAULT_LIMIT),
-      });
-      if (date_filter) p.set("date_filter", date_filter);
-      const res = await fetch(`${API_BASE}/api/tools/search?${p}`);
+    execute: async (args: PlatformLimitArgs & { keyword: string }) => {
+      const res = await fetch(`${API_BASE}/api/tools/search${buildQuery(args, { keyword: args.keyword })}`);
       if (!res.ok) throw new Error(`搜索失败: HTTP ${res.status}`);
       return trimVideoResults(await res.json());
     },
@@ -192,14 +195,8 @@ export const TOOLS = {
       limit: z.number().nullable().default(DEFAULT_LIMIT).describe("返回条数上限"),
       date_filter: z.string().nullable().optional().describe("时间过滤：today 表示仅当日"),
     }),
-    execute: async ({ platform, creator, limit, date_filter }: PlatformLimitArgs & { creator: string }) => {
-      const p = new URLSearchParams({
-        platform: platform || DEFAULT_PLATFORM,
-        creator,
-        limit: String(limit || DEFAULT_LIMIT),
-      });
-      if (date_filter) p.set("date_filter", date_filter);
-      const res = await fetch(`${API_BASE}/api/tools/creator?${p}`);
+    execute: async (args: PlatformLimitArgs & { creator: string }) => {
+      const res = await fetch(`${API_BASE}/api/tools/creator${buildQuery(args, { creator: args.creator })}`);
       if (!res.ok) throw new Error(`获取创作者视频失败: HTTP ${res.status}`);
       return trimVideoResults(await res.json());
     },
@@ -231,19 +228,7 @@ export const TOOLS = {
     description:
       "【推荐】批量并行总结多个视频。传入视频列表，后端并行处理并等待全部完成（无需额外查询状态）。返回所有视频的完整总结文本。每个视频独立重试、独立错误。",
     parameters: z.object({
-      videos: z
-        .array(
-          z.object({
-            video_url: z.string().describe("视频播放页地址"),
-            video_id: z.string().optional().describe("视频 ID（如 BVxxx，缺失时从 video_url 自动提取）"),
-            title: z.string().describe("视频标题"),
-            desc: z.string().nullable().optional().describe("视频简介"),
-            author: z.string().nullable().optional().describe("作者/UP 主"),
-            duration_text: z.string().nullable().optional().describe("时长文本"),
-            platform: z.string().nullable().optional().describe("平台（默认从 URL 自动检测）"),
-          })
-        )
-        .describe("要总结的视频列表"),
+      videos: z.array(videoItemSchema).describe("要总结的视频列表"),
     }),
     execute: async ({ videos }: { videos: BatchVideo[] }) => {
       const controller = new AbortController();

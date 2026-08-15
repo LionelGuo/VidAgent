@@ -44,8 +44,8 @@ export const VIDEO_FIELDS = [
   "view_count",
 ] as const;
 
-/** 字段清单文本（检索工具 describe 的「每项含 …」片段）。 */
-export const FIELDS_TEXT = "video_id/title/desc/publish_time/duration/duration_text/video_url/platform/author/view_count";
+/** 字段清单文本（检索工具 describe 的「每项含 …」片段，由 VIDEO_FIELDS 派生）。 */
+export const FIELDS_TEXT = VIDEO_FIELDS.join("/");
 
 /** 工具 API 默认值（来源：server/main.py 的 DEFAULT_PLATFORM / DEFAULT_LIMIT）。 */
 export const DEFAULT_PLATFORM = "bilibili";

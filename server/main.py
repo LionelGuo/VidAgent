@@ -439,7 +439,6 @@ async def tool_batch_summarize(req: BatchSummarizeRequest):
                 "video_id": video_id,
                 "author": video.get("author"),
                 "duration_text": video.get("duration_text"),
-                "duration": video.get("duration"),
             }
             summary = extract_and_summarize(local_path, metadata, task_id=task_id)
 

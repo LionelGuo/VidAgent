@@ -200,8 +200,8 @@ export const VIDEO_FIELDS = [
 {fields_lines}
 ] as const;
 
-/** 字段清单文本（检索工具 describe 的「每项含 …」片段）。 */
-export const FIELDS_TEXT = {json.dumps("/".join(video_fields), ensure_ascii=False)};
+/** 字段清单文本（检索工具 describe 的「每项含 …」片段，由 VIDEO_FIELDS 派生）。 */
+export const FIELDS_TEXT = VIDEO_FIELDS.join("/");
 
 /** 工具 API 默认值（来源：server/main.py 的 DEFAULT_PLATFORM / DEFAULT_LIMIT）。 */
 export const DEFAULT_PLATFORM = {json.dumps(default_platform, ensure_ascii=False)};
