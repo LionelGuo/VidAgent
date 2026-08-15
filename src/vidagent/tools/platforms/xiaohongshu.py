@@ -710,6 +710,13 @@ class XiaohongshuPlatform(MediaCrawlerPlatform):
         logger.warning("小红书登录等待超时(%ds),继续尝试", _LOGIN_POLL_SECONDS)
         return client
 
+    @classmethod
+    def _client_proxy(cls) -> str | None:
+        """国内平台直连（#9 修复：MC client 曾走基类默认 youtube_proxy——
+        get_note_by_keyword 搜索路径经代理出口 IP 会被风控静默拒绝，
+        douyin 已修 xhs 未修；模块级 _get_proxy 只覆盖下载/httpx 路径）。"""
+        return None
+
     # -- 检索 / 下载 --
 
     @staticmethod
