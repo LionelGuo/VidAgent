@@ -35,13 +35,23 @@ def _attach_publish_date(items: list[dict]) -> list[dict]:
 
     B17（2026-08-15）：模型自行换算 publish_time 会错年份（实测
     1786698013→「2025-08-15」）——日期必须后端预格式化；publish_time
-    原样保留（供排序/过滤）。无 publish_time 的项不附（不编造 1970 日期）。
+    原样保留（供排序/过滤）。无有效时间戳的项不附——曾字符串 "0"
+    truthy 产生 1970 假日期、毫秒级值会抛 OverflowError 使整个工具
+    调用失败，故强制 int 归一并守卫异常（缺字段宁可省略，不编造不崩溃）。
     """
     out: list[dict] = []
     for it in items:
-        ts = it.get("publish_time", 0) or 0
+        try:
+            ts = int(it.get("publish_time", 0) or 0)
+        except (TypeError, ValueError):
+            ts = 0
         if ts:
-            it = {**it, "publish_date": format_publish_date(ts)}
+            try:
+                date = format_publish_date(ts)
+            except (OverflowError, OSError, ValueError):
+                date = None
+            if date:
+                it = {**it, "publish_date": date}
         out.append(it)
     return out
 

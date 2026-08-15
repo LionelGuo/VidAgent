@@ -72,5 +72,5 @@ export const SYSTEM_KNOWLEDGE = {
   platformsLine: "平台支持 bilibili、douyin、kuaishou、xiaohongshu、youtube；用户未指定时默认 bilibili。",
   searchCreatorLine: "search_videos 与 get_creator_videos 在五平台均可用（小红书创作者视频列表无时长信息（平台接口限制）；小红书搜索结果无时长信息（平台接口限制）；YouTube 创作者查询需后端配置 API key）。",
   hotLine: "get_hot_videos 仅 bilibili、douyin、youtube 支持热榜（热榜为实时榜单，条目可能发布于数日前——「今天的热榜」即当前榜单）；kuaishou、xiaohongshu 没有热榜——不要对它们调用 get_hot_videos。用户想看这些平台的热门内容时：改用 search_videos（关键词贴近用户意图，不要照搬「热门」二字），并在回复开头说明该平台无热榜、以下为关键词搜索的结果（非官方榜单）。",
-  fieldsLine: "三个检索工具返回的每个视频都含 video_id/title/desc/publish_time/publish_date/duration/duration_text/video_url/platform/author/view_count（duration 为秒数，duration_text 如 \"12:34\"，publish_time 为发布时间；publish_date 为可直接展示的发布日期（YYYY-MM-DD）；view_count 依平台含义不同：bilibili/youtube 为播放量、xiaohongshu 为点赞数、douyin 热榜为热度值）。",
+  fieldsLine: "三个检索工具返回的每个视频都含 video_id/title/desc/publish_time/publish_date/duration/duration_text/video_url/platform/author/view_count（duration 为秒数，duration_text 如 \"12:34\"，publish_time 为 unix 时间戳（秒）；publish_date 为可直接展示的发布日期（YYYY-MM-DD）；view_count 依平台含义不同：bilibili/youtube 为播放量、xiaohongshu 为点赞数、douyin 热榜为热度值）。",
 } as const;

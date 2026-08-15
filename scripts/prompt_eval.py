@@ -51,10 +51,18 @@ _ASK_RE = re.compile(r"[？?哪]|请[^\n。]{0,10}(提供|告诉|指定|给出)"
 # 发布日期误当榜单时效，回复「这是8月8日的数据」）。列表内裸日期不算。
 _STALE_CLAIM_RE = re.compile(r"(这是|以上是)[^\n。]{0,10}\d{1,2}月\d{1,2}[日号]")
 
-# 完整日期形态：ISO「2026-08-14」或中文「2026年8月14日」，归一为
-# YYYY-MM-DD 与载荷 publish_date 比对（B17 回归：曾模型自行换算
+# 完整日期形态：ISO「2026-08-14」/点号「2026.8.14」或中文「2026年8月14日」，
+# 归一为 YYYY-MM-DD 与载荷 publish_date 比对（B17 回归：曾模型自行换算
 # 时间戳错年份）。「8月混剪」类无年份表述不匹配——避免标题假阳性。
-_DATE_RE = re.compile(r"(\d{4})[-/年](\d{1,2})[-/月](\d{1,2})日?")
+_DATE_RE = re.compile(r"(\d{4})[-/.年](\d{1,2})[-/.月](\d{1,2})日?")
+
+# 日期提及（含无年份「8月14日」式）——仅用于判断「回复是否提及日期」，
+# 不做载荷比对（无年份无法唯一比对）；「5.4万」类不匹配（须带年月日）。
+_DATE_MENTION_RE = re.compile(r"\d{4}[-/.年]\d{1,2}[-/.月]\d{1,2}日?|\d{1,2}月\d{1,2}日")
+
+# 「今天是2026年8月15日」式开场——模型报当前日期属正常行为，但当前日期
+# 几乎必然不在载荷内，须先剥除再比对（评审：不剥除会假 FAIL）。
+_TODAY_PHRASE_RE = re.compile(r"今天是[^\n。]{0,12}?\d{4}[-/.年]\d{1,2}[-/.月]\d{1,2}日?")
 
 
 def parse_data_stream(raw: str) -> dict:
@@ -147,21 +155,59 @@ def _dates_in_text(text: str) -> list[str]:
     return [f"{y}-{int(m):02d}-{int(d):02d}" for y, m, d in _DATE_RE.findall(text)]
 
 
+def _verifiable_dates(text: str) -> list[str]:
+    """剥除「今天是…」开场后提取可校验的完整日期（防当前日期假 FAIL）。"""
+    return _dates_in_text(_TODAY_PHRASE_RE.sub("", text))
+
+
+def _has_date_mention(text: str) -> bool:
+    """回复是否提及了任何日期（完整或「8月14日」式无年份）。"""
+    return bool(_DATE_MENTION_RE.search(text))
+
+
+def _payload_dates(items: list[dict]) -> list[str]:
+    """载荷 publish_date 列表（保持载荷顺序；缺失条目为空串）。"""
+    return [str(it.get("publish_date", "") or "") for it in items]
+
+
+def _ordered_in_payload(payload: list[str], mentions: list[str]) -> bool:
+    """mentions 是否为 payload 的有序出现序列（允许同一日期被反复提及）。
+
+    与 _has_subsequence 的差异：匹配后不消耗位置——「最新一条发布于
+    2026-08-14」+ 列表行再提 08-14 的重复提及不导致假失败（评审：
+    共享迭代器逐次消费会把重复提及判败）。
+    """
+    i = 0
+    n = len(payload)
+    for t in mentions:
+        while i < n and payload[i] != t:
+            i += 1
+        if i >= n:
+            return False
+    return True
+
+
 def _result_items(parsed: dict, tool: str) -> list[dict]:
-    """按 call_id 关联工具结果，返回该工具的 results 列表（找不到返回 []）。
+    """按 call_id 关联工具结果，返回该工具最后一次成功载荷的 results 列表。
 
     载荷形状（AI SDK data stream + 前端 execute 实测）：
     a:{"toolCallId": ..., "result": {"status": "ok", "results": [...], "count": N}}
+
+    模型对同一工具先失败再重试（CDP 确认框/xhs cookie 过期等瞬态失败）
+    会产生多个载荷——绑定最后一条含 results 的载荷，避免把重试前失败
+    误归因为「载荷缺 publish_date」（评审：曾只取第一条）。
     """
     call_ids = [tc.get("call_id") for tc in parsed["tool_calls"] if tc["tool"] == tool]
     payloads = parsed.get("tool_result_payloads") or []
+    last: list[dict] | None = None
     for call_id in call_ids:
         for pl in payloads:
             if call_id is not None and pl.get("toolCallId") == call_id:
                 result = pl.get("result")
                 items = result.get("results") if isinstance(result, dict) else None
-                return items if isinstance(items, list) else []
-    return []
+                if isinstance(items, list):
+                    last = items
+    return last if last is not None else []
 
 
 # ---------------------------------------------------------------------------
@@ -181,17 +227,18 @@ def _check_hot_bilibili(p: dict) -> list[str]:
     # B11 回归：不得把条目发布日期误当榜单时效（曾报「这是8月8日的数据」）
     if _STALE_CLAIM_RE.search(p["text"]):
         fails.append("回复出现「这是X月X日的数据」式过时表述（热榜是实时榜单）")
-    # B17 顺带加固（条件性）：文本若出现完整日期，必须来自载荷 publish_date
-    # （热榜条目非按日期排序，只查子集不查顺序；①的模型输出有时不带日期，
-    # 无条件断言会假阳）
-    payload_dates = {
-        str(it.get("publish_date", "") or "")
-        for it in _result_items(p, "get_hot_videos")
-        if it.get("publish_date")
-    }
-    if payload_dates:
-        for d in _dates_in_text(p["text"]):
-            if d not in payload_dates:
+    # B17 顺带加固：模式 A 强制逐行列发布时间，此处钉日期正确性——
+    # 载荷缺 publish_date 判败（后端未重启时不可静默跳过，否则回归网失效）；
+    # 回复若出现完整日期必须 ⊆ 载荷日期集（热榜条目非按日期排序，只查子集
+    # 不查顺序）；「今天是…」开场已剥除（当前日期几乎必然不在载荷内）。
+    payload_dates = [d for d in _payload_dates(_result_items(p, "get_hot_videos")) if d]
+    if not payload_dates:
+        fails.append("载荷缺 publish_date（后端未重启/B17 未生效），无法核验日期")
+    elif not _has_date_mention(p["text"]):
+        fails.append("回复未列出发布日期（模式 A 要求逐条列发布时间）")
+    else:
+        for d in _verifiable_dates(p["text"]):
+            if d not in set(payload_dates):
                 fails.append(f"回复出现载荷之外的日期 {d}（应直接使用 publish_date）")
                 break
     if not p["text"].strip():
@@ -227,16 +274,16 @@ def _check_xhs_creator(p: dict) -> list[str]:
     zero = [it.get("video_id") for it in items if not it.get("view_count")]
     if zero:
         fails.append(f"存在 view_count=0 的条目（疑似万格式解析回退）: {zero}")
-    # B17 回归：模型列出的发布日期必须直接来自载荷 publish_date（有序子序列，
+    # B17 回归：模型列出的发布日期必须直接来自载荷 publish_date（有序出现序列，
     # 防串列/换序/自行换算——模型应直接抄字段值；载荷缺字段判败防假阴）
-    payload_dates = [str(it.get("publish_date", "") or "") for it in items]
+    payload_dates = _payload_dates(items)
     if not any(payload_dates):
         fails.append("载荷缺 publish_date（后端未重启/B17 未生效），无法核验日期")
+    elif not _has_date_mention(p["text"]):
+        fails.append("回复未列出任何发布日期（应直接使用 publish_date 字段值）")
     else:
-        text_dates = _dates_in_text(p["text"])
-        if not text_dates:
-            fails.append("回复未列出任何发布日期（应直接使用 publish_date 字段值）")
-        elif not _has_subsequence(payload_dates, text_dates):
+        text_dates = _verifiable_dates(p["text"])
+        if text_dates and not _ordered_in_payload(payload_dates, text_dates):
             fails.append(
                 f"回复日期与载荷不一致（应为载荷 publish_date 的有序子序列）: "
                 f"载荷={payload_dates} 回复={text_dates}"
