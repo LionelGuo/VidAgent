@@ -16,8 +16,11 @@ from vidagent import llm_provider
 from vidagent.tools.summarize.progress import Progress, ProgressStage
 from vidagent.tools.summarize.prompts import (
     _CHUNK_SUMMARY_SYS,
+    _CHUNK_SUMMARY_USER,
     _MERGE_SYS,
+    _MERGE_USER,
     _SUMMARY_SYS_MULTIMODAL,
+    _SUMMARY_USER_MULTIMODAL,
     build_meta_block,
 )
 from vidagent.tools.summarize.transport import _chat_completion_stream
@@ -99,10 +102,12 @@ def _summarize_chunk(
     if not chunk_frames and frames:
         chunk_frames = frames[:4]
 
-    prompt = (
-        f"{meta_block}"
-        f"【视频段落 {chunk_index}/{total_chunks}】时间范围 {time_start:.0f}s–{time_end:.0f}s\n"
-        f"请聆听该段落的音频并结合画面帧，输出 150-300 字的详细段落总结，覆盖关键信息与细节。"
+    prompt = _CHUNK_SUMMARY_USER.format(
+        meta_block=meta_block,
+        chunk_index=chunk_index,
+        total_chunks=total_chunks,
+        time_start=time_start,
+        time_end=time_end,
     )
 
     content_parts: list[dict] = [
@@ -150,7 +155,7 @@ def _merge_summaries(
     parts = "\n\n---\n\n".join(
         f"**段落 {i+1}**：{s}" for i, s in enumerate(chunk_summaries)
     )
-    prompt = f"{meta_block}\n请合并以下段落摘要为完整总结：\n\n{parts}"
+    prompt = _MERGE_USER.format(meta_block=meta_block, parts=parts)
     payload = {
         "model": model,
         "messages": [
@@ -236,7 +241,7 @@ def _summarize_multimodal(
     frames_encode_elapsed = time.perf_counter() - t0_frames_encode
 
     meta_block = build_meta_block(metadata)
-    prompt_text = f"{meta_block}\n请结合音频和关键帧画面，输出结构化总结。"
+    prompt_text = _SUMMARY_USER_MULTIMODAL.format(meta_block=meta_block)
 
     content_parts.insert(0, llm_provider.build_audio_part(mp3_b64))
     content_parts.insert(0, {"type": "text", "text": prompt_text})

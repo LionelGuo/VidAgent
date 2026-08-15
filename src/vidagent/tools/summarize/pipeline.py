@@ -13,7 +13,7 @@ from pathlib import Path
 from vidagent import llm_provider
 from vidagent.tools.summarize.multimodal import _summarize_multimodal
 from vidagent.tools.summarize.progress import create_progress, get_progress
-from vidagent.tools.summarize.prompts import _SUMMARY_SYS, build_meta_block
+from vidagent.tools.summarize.prompts import _SUMMARY_SYS, _SUMMARY_USER, build_meta_block
 from vidagent.tools.summarize.short_video import _summarize_short_video
 from vidagent.tools.summarize.transport import _chat_completion
 from vidagent.utils.audio import extract_audio
@@ -128,7 +128,7 @@ def _summarize(transcript: str, metadata: dict) -> str:
         )
 
     meta_block = build_meta_block(metadata)
-    user = f"{meta_block}\n【语音转写】\n{transcript or '(空)'}\n\n请输出结构化总结。"
+    user = _SUMMARY_USER.format(meta_block=meta_block, transcript=transcript or "(空)")
 
     payload = {
         "model": model,

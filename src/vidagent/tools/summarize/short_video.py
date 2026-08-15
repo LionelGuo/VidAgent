@@ -17,7 +17,7 @@ from pathlib import Path
 
 from vidagent import llm_provider
 from vidagent.tools.summarize.progress import Progress
-from vidagent.tools.summarize.prompts import _SUMMARY_SYS_SHORT, build_meta_block
+from vidagent.tools.summarize.prompts import _SUMMARY_SYS_SHORT, _SUMMARY_USER_SHORT, build_meta_block
 from vidagent.tools.summarize.transport import _chat_completion_stream
 
 logger = logging.getLogger(__name__)
@@ -99,7 +99,7 @@ def _summarize_short_video(
     meta_block = build_meta_block(metadata)
 
     content_parts: list[dict] = [
-        {"type": "text", "text": f"{meta_block}\n请仔细分析这个短视频的音频和画面，输出精准详细的总结。"},
+        {"type": "text", "text": _SUMMARY_USER_SHORT.format(meta_block=meta_block)},
         llm_provider.build_audio_part(mp3_b64),
         llm_provider.build_video_part(video_b64),
     ]
