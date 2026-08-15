@@ -178,7 +178,10 @@ def normalize(item: dict) -> dict:
     # 图片笔记无时长
     if not duration_sec and note.get("type") == "video" and video_info:
         duration_sec = _safe_int(video_info.get("video_duration", 0))
-    create_time = _safe_int(note.get("time", 0))
+    # 单位归一化：xhs 的 time 是毫秒，wire publish_time 必须是秒
+    # （bilibili/youtube/kuaishou 同规）。曾直取毫秒：filter_today 对
+    # xhs 恒真、模型把 ms 当秒换算，端到端列表日期错一年半
+    create_time = _safe_int(note.get("time", 0)) // 1000
 
     # video_url 附带 xsec_token，下载时可直接解析（分享 URL 同构）
     video_url = f"https://www.xiaohongshu.com/explore/{note_id}" if note_id else ""
@@ -218,7 +221,11 @@ def _fmt_duration(sec: int) -> str:
 
 
 def _note_time(item: dict) -> int:
-    """笔记发布时间提取（与 normalize 同构：note_card 内 / 顶层）。"""
+    """笔记发布时间提取（与 normalize 同构：note_card 内 / 顶层）。
+
+    返回原始毫秒值——仅供排序比较（同单位单调即可），不进 wire；
+    wire 的 publish_time 由 normalize 归一为秒。
+    """
     note = item.get("note_card", item) or item
     return _safe_int(note.get("time", 0)) if isinstance(note, dict) else 0
 
