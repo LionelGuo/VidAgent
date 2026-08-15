@@ -47,6 +47,15 @@ _DISCLOSURE_RE = re.compile(
 # 功能等价且零工具调用，20260815-114630）。
 _ASK_RE = re.compile(r"[？?哪]|请[^\n。]{0,10}(提供|告诉|指定|给出)")
 
+# 内部术语黑名单（B18，用户反馈）：字段名/工具名不得出现在面向用户的
+# 回复里（曾「说明：…（字段 duration 为 0）」）。大小写不敏感匹配。
+_INTERNAL_TOKENS = (
+    "duration", "publish_time", "publish_date", "video_id",
+    "duration_text", "view_count", "video_url",
+    "get_hot_videos", "search_videos", "get_creator_videos",
+    "batch_summarize_videos", "download_video", "extract_and_summarize",
+)
+
 # 过时表述形态：「这是/以上是…X月X日(号)…」式声称（B11 回归：曾把条目
 # 发布日期误当榜单时效，回复「这是8月8日的数据」）。列表内裸日期不算。
 _STALE_CLAIM_RE = re.compile(r"(这是|以上是)[^\n。]{0,10}\d{1,2}月\d{1,2}[日号]")
@@ -130,6 +139,19 @@ def _tool_names(parsed: dict) -> list[str]:
 def _require_tools(parsed: dict, names: tuple[str, ...]) -> list[str]:
     called = _tool_names(parsed)
     return [f"缺少预期工具调用: {n}" for n in names if n not in called]
+
+
+def _check_no_internal_jargon(parsed: dict, *, allow_platform_note: bool = False) -> list[str]:
+    """B18：回复不得出现字段名/工具名；未问起不得附加平台接口限制注脚。
+
+    allow_platform_note=True 用于「按时长筛选」类用例——该场景说明
+    时长缺失是任务本身要求（如实说明义务），接口限制注脚合法。
+    """
+    text = (parsed.get("text") or "").lower()
+    fails = [f"回复出现内部术语 {tok}（应用自然语言表达）" for tok in _INTERNAL_TOKENS if tok in text]
+    if not allow_platform_note and "接口限制" in (parsed.get("text") or ""):
+        fails.append("回复出现平台接口限制注脚（未问起不应附加说明）")
+    return fails
 
 
 def _forbid_tools(parsed: dict, names: tuple[str, ...]) -> list[str]:
@@ -216,7 +238,11 @@ def _result_items(parsed: dict, tool: str) -> list[dict]:
 
 
 def _check_hot_bilibili(p: dict) -> list[str]:
-    fails = _require_tools(p, ("get_hot_videos",)) + _forbid_tools(p, _EXECUTE_TOOLS)
+    fails = (
+        _require_tools(p, ("get_hot_videos",))
+        + _forbid_tools(p, _EXECUTE_TOOLS)
+        + _check_no_internal_jargon(p)
+    )
     args = _first_args(p, "get_hot_videos")
     platform = args.get("platform")
     if platform not in (None, "", "bilibili"):
@@ -247,7 +273,11 @@ def _check_hot_bilibili(p: dict) -> list[str]:
 
 
 def _check_search_python(p: dict) -> list[str]:
-    fails = _require_tools(p, ("search_videos",)) + _forbid_tools(p, _EXECUTE_TOOLS)
+    fails = (
+        _require_tools(p, ("search_videos",))
+        + _forbid_tools(p, _EXECUTE_TOOLS)
+        + _check_no_internal_jargon(p)
+    )
     keyword = _first_args(p, "search_videos").get("keyword", "")
     if not keyword or "python" not in str(keyword).lower():
         fails.append(f"keyword 应含 python，实际 {keyword!r}")
@@ -255,7 +285,11 @@ def _check_search_python(p: dict) -> list[str]:
 
 
 def _check_xhs_creator(p: dict) -> list[str]:
-    fails = _require_tools(p, ("get_creator_videos",)) + _forbid_tools(p, _EXECUTE_TOOLS)
+    fails = (
+        _require_tools(p, ("get_creator_videos",))
+        + _forbid_tools(p, _EXECUTE_TOOLS)
+        + _check_no_internal_jargon(p)
+    )
     args = _first_args(p, "get_creator_videos")
     if args.get("platform") != "xiaohongshu":
         fails.append(f"platform 应为 xiaohongshu，实际 {args.get('platform')!r}")
@@ -292,7 +326,11 @@ def _check_xhs_creator(p: dict) -> list[str]:
 
 
 def _check_youtube_creator(p: dict) -> list[str]:
-    fails = _require_tools(p, ("get_creator_videos",)) + _forbid_tools(p, _EXECUTE_TOOLS)
+    fails = (
+        _require_tools(p, ("get_creator_videos",))
+        + _forbid_tools(p, _EXECUTE_TOOLS)
+        + _check_no_internal_jargon(p)
+    )
     args = _first_args(p, "get_creator_videos")
     if args.get("platform") != "youtube":
         fails.append(f"platform 应为 youtube，实际 {args.get('platform')!r}")
@@ -329,7 +367,11 @@ def _check_ask_missing_param(p: dict) -> list[str]:
 
 
 def _check_xhs_duration_filter(p: dict) -> list[str]:
-    fails = _require_tools(p, ("search_videos",)) + _forbid_tools(p, _EXECUTE_TOOLS)
+    fails = (
+        _require_tools(p, ("search_videos",))
+        + _forbid_tools(p, _EXECUTE_TOOLS)
+        + _check_no_internal_jargon(p, allow_platform_note=True)
+    )
     args = _first_args(p, "search_videos")
     if args.get("platform") != "xiaohongshu":
         fails.append(f"platform 应为 xiaohongshu，实际 {args.get('platform')!r}")
@@ -339,7 +381,11 @@ def _check_xhs_duration_filter(p: dict) -> list[str]:
 
 
 def _check_ks_hot_redirect(p: dict) -> list[str]:
-    fails = _forbid_tools(p, ("get_hot_videos",)) + _require_tools(p, ("search_videos",))
+    fails = (
+        _forbid_tools(p, ("get_hot_videos",))
+        + _require_tools(p, ("search_videos",))
+        + _check_no_internal_jargon(p)
+    )
     args = _first_args(p, "search_videos")
     if args.get("platform") != "kuaishou":
         fails.append(f"platform 应为 kuaishou，实际 {args.get('platform')!r}")
