@@ -82,6 +82,10 @@ class DouyinLoginError(DouyinClientError):
     """抖音未登录且扫码引导失败。"""
 
 
+class DouyinSearchThrottled(RuntimeError):
+    """抖音搜索被频控（verify_check 空响应）：继续请求只会加深限流。"""
+
+
 # ---------------------------------------------------------------------------
 # MediaCrawler 模块一次性导入（#3：chdir 语义与缓存由 _mediacrawler 门户负责）
 # ---------------------------------------------------------------------------
@@ -525,6 +529,14 @@ async def _search_first_video_for_word(client: Any, word: str) -> dict | None:
             return None
 
         data = resp.get("data", []) if isinstance(resp, dict) else []
+        # 频控识别（2026-08-15 诊断）：search_nil_type=verify_check 是抖音搜索
+        # 限流态（会话级、随空闲衰减）。空结果重试会向频控桶塞更多请求，
+        # 抛出由 _enrich_words 熔断本批剩余词条
+        nil_type = ""
+        if isinstance(resp, dict):
+            nil_type = (resp.get("search_nil_info") or {}).get("search_nil_type") or ""
+        if nil_type == "verify_check":
+            raise DouyinSearchThrottled(word)
         fallback = None
         for item in data:
             aweme = item.get("aweme_info") or item.get("aweme_detail") or item
@@ -549,15 +561,30 @@ async def _enrich_words(client: Any, words: list[dict]) -> list[dict]:
 
     client 由调用方构造（锁内）；数据请求在锁外并发（xhs 同款纪律）。
     单条失败降级为纯词条。返回与 words 同序的结果列表。
+    频控熔断（2026-08-15）：任一词条收到 verify_check 即停止本批剩余
+    搜索（排队词条直接降级纯词条）——限流态下继续请求只会加深限流。
     """
     # 并发 5（B19：10 词 4 波→2 波）。每词含同步 execjs 签名（阻塞 CDP 循环），
     # 并发收益会打折扣；风控面由整批后节流与官方搜索路径兜底
     sem = asyncio.Semaphore(5)
+    throttled = asyncio.Event()
 
     async def _one(w: dict) -> dict:
+        if throttled.is_set():
+            return _merge_word_video(w, None)
         async with sem:
-            video = await _search_first_video_for_word(client, w.get("word", ""))
-        return _merge_word_video(w, video)
+            if throttled.is_set():  # 排队期间其它词条已触发熔断
+                return _merge_word_video(w, None)
+            try:
+                video = await _search_first_video_for_word(client, w.get("word", ""))
+            except DouyinSearchThrottled:
+                if not throttled.is_set():
+                    throttled.set()
+                    logger.warning(
+                        "抖音搜索被频控(verify_check): 本批剩余词条降级为纯词条, 稍后再试可恢复"
+                    )
+                video = None
+            return _merge_word_video(w, video)
 
     return await asyncio.gather(*[_one(w) for w in words])
 
