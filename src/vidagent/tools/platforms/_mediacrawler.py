@@ -57,6 +57,13 @@ PLATFORM_CONFIG: dict[str, dict[str, Any]] = {
     "kuaishou": {
         "PLATFORM": "ks",
     },
+    "weibo": {
+        "PLATFORM": "wb",
+        "ENABLE_GET_COMMENTS": False,
+        # 上游自述 True 会增加被风控概率（搜索遍历后每帖再请求详情）——关
+        "ENABLE_WEIBO_FULL_TEXT": False,
+        "WEIBO_SEARCH_TYPE": "video",
+    },
 }
 
 # 已导入的 MC 平台子模块：platform → {submodule: module}

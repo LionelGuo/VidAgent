@@ -26,6 +26,7 @@ LOG_TAGS: dict[str, str] = {
     "vidagent.tools.platforms.xiaohongshu": "xhs",
     "vidagent.tools.platforms.kuaishou": "kuaishou",
     "vidagent.tools.platforms.bilibili": "bilibili",
+    "vidagent.tools.platforms.weibo": "weibo",
     "vidagent.tools.platforms.youtube": "youtube",
     "vidagent.tools.platforms._cdp_browser": "cdp",
     "vidagent.tools.platforms._mediacrawler": "mediacrawler",

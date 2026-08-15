@@ -181,6 +181,7 @@ PLATFORM_MODULES: tuple[str, ...] = (
     "vidagent.tools.platforms.bilibili",
     "vidagent.tools.platforms.douyin",
     "vidagent.tools.platforms.kuaishou",
+    "vidagent.tools.platforms.weibo",
     "vidagent.tools.platforms.xiaohongshu",
     "vidagent.tools.platforms.youtube",
 )
