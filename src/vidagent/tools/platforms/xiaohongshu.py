@@ -12,6 +12,7 @@ import os
 import random
 import re
 from collections.abc import Callable
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any, ClassVar
 from urllib.parse import quote
@@ -133,6 +134,30 @@ def _safe_int(v: Any) -> int:
         return 0
 
 
+_WAN_RE = re.compile(r"^([\d.]+)万\+?$")
+
+
+def _parse_count(v: Any) -> int:
+    """xhs 计数字符串解析：支持「5.4万」「10万+」「1万」与纯数字；空值 0。
+
+    点赞数 ≥1 万时 xhs 接口返回「X万」格式字符串（实测 '5.4万'/'10万+'），
+    旧实现 _safe_int 直接 0——端到端实测「影视飓风几万点赞显示为 0」。
+    Decimal 乘万避免浮点误差（5.4*10000 的浮点结果非精确整数）。
+    """
+    if v is None or v == "":
+        return 0
+    if isinstance(v, (int, float)):
+        return int(v)
+    s = str(v).strip()
+    m = _WAN_RE.match(s)
+    if m:
+        try:
+            return int(Decimal(m.group(1)) * 10000)
+        except (InvalidOperation, ValueError):
+            return 0
+    return _safe_int(s)
+
+
 def normalize(item: dict) -> dict:
     note = item.get("note_card", item) or item
     # note_id / xsec_token 在搜索结果的 item 顶层（MediaCrawler 官方
@@ -175,8 +200,9 @@ def normalize(item: dict) -> dict:
         "platform": "xiaohongshu",
         "author": author_name,
         # view_count 语义 = 点赞数（小红书无公开播放量字段；B13 知识句
-        # fieldsLine 已向模型声明按平台语义如实标注）
-        "view_count": _safe_int(stats.get("liked_count", 0)),
+        # fieldsLine 已向模型声明按平台语义如实标注）。
+        # 万格式字符串（'5.4万'）需 _parse_count 解析——曾直接 0
+        "view_count": _parse_count(stats.get("liked_count", 0)),
         # 小红书特有字段
         "xsec_token": xsec_token,
         "note_type": note.get("type", ""),

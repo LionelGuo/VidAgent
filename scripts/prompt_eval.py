@@ -200,6 +200,10 @@ def _check_xhs_creator(p: dict) -> list[str]:
     times = [int(it.get("publish_time", 0) or 0) for it in items]
     if times != sorted(times, reverse=True):
         fails.append(f"创作者视频应按发布时间倒序，实际 publish_time={times}")
+    # 点赞数解析回归：影视飓风视频均有点赞，「X万」字符串曾解析为 0
+    zero = [it.get("video_id") for it in items if not it.get("view_count")]
+    if zero:
+        fails.append(f"存在 view_count=0 的条目（疑似万格式解析回退）: {zero}")
     return fails
 
 
