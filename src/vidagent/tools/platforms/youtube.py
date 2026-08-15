@@ -68,7 +68,7 @@ def _ytdlp_cookiefile() -> str | None:
 async def _enrich(client: httpx.AsyncClient, results: list[dict]) -> None:
     """用一次 videos.list 补全时长/播放量（search 只返回 snippet，无 contentDetails）。
 
-    失败静默忽略——元数据缺失不阻断搜索主流程（前端显示 00:00 而已）。
+    失败仅告警、不阻断主流程（元数据缺失时前端显示 00:00，检索结果仍可用）。
     """
     ids = [v.get("video_id") for v in results if v.get("video_id")]
     if not ids:
@@ -509,7 +509,11 @@ class YoutubePlatform(Platform):
             "maxResults": min(limit, 50),
         })
         items = data.get("items", [])
-        return [normalize(it) for it in items[:limit]]
+        results = [normalize(it) for it in items[:limit]]
+        # 与 search 同款富化（B15 修复：曾漏调导致时长/播放量全为 0——
+        # search.list 只返回 snippet，无 contentDetails/statistics）
+        await _enrich(client, results)
+        return results
 
     @staticmethod
     def download(video_url: str, file_name: str,
