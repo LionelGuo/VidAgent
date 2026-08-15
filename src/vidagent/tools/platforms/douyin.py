@@ -405,7 +405,7 @@ async def _fetch_hot_list_via_page(limit: int = 10) -> list[dict]:
     搜索（search_info_by_keyword）取第一条真实视频填充数据；搜索失败
     降级为纯词条。title 保持词条（与页面热榜一致），video_url 用真实
     视频直链（可直接下载总结）。B16：富化并发 3（曾逐词串行 + 每词
-    sleep(2)，实测 10 条 ~60s）。
+    sleep(2)，实测 10 条 ~60s）；B19：并发 5、goto commit、启动轻量预热。
 
     直接 httpx / DouYinClient 签名请求会被风控拒绝，而页面自身 XHR 会被
     webmssdk 的 XHR hook 自动补签名，与真实浏览行为一致（同旧方案）。
@@ -543,12 +543,14 @@ async def _search_first_video_for_word(client: Any, word: str) -> dict | None:
 
 
 async def _enrich_words(client: Any, words: list[dict]) -> list[dict]:
-    """热榜词条富化：并发 3 搜索每条词条的真实视频并合并（B16）。
+    """热榜词条富化：并发 5 搜索每条词条的真实视频并合并（B16/B19）。
 
     client 由调用方构造（锁内）；数据请求在锁外并发（xhs 同款纪律）。
     单条失败降级为纯词条。返回与 words 同序的结果列表。
     """
-    sem = asyncio.Semaphore(3)  # 并发 3：官方搜索节奏与风控平衡
+    # 并发 5（B19：10 词 4 波→2 波）。每词含同步 execjs 签名（阻塞 CDP 循环），
+    # 并发收益会打折扣；风控面由整批后节流与官方搜索路径兜底
+    sem = asyncio.Semaphore(5)
 
     async def _one(w: dict) -> dict:
         async with sem:
