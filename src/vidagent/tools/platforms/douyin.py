@@ -808,6 +808,9 @@ class DouyinPlatform(MediaCrawlerPlatform):
     name: ClassVar[str] = "douyin"
     aliases: ClassVar[tuple[str, ...]] = ("dy", "抖音")
     url_patterns: ClassVar[tuple[str, ...]] = ("douyin.com",)
+    supports_hot: ClassVar[bool] = True
+    supports_search: ClassVar[bool] = True
+    supports_creator: ClassVar[bool] = True
 
     # -- MediaCrawlerPlatform 声明（#3） --
     cdp_page_key: ClassVar[str] = "dy"

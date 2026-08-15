@@ -410,6 +410,12 @@ class YoutubePlatform(Platform):
     name: ClassVar[str] = "youtube"
     aliases: ClassVar[tuple[str, ...]] = ("yt", "ytb", "油管")
     url_patterns: ClassVar[tuple[str, ...]] = ("youtube.com", "youtu.be")
+    supports_hot: ClassVar[bool] = True
+    supports_search: ClassVar[bool] = True
+    supports_creator: ClassVar[bool] = True
+    capability_notes: ClassVar[dict[str, str]] = {
+        "creator": "YouTube 创作者查询需后端配置 API key",
+    }
 
     @staticmethod
     def extract_video_id(url: str) -> str | None:

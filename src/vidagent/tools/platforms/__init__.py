@@ -23,18 +23,20 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # 统一 Schema（所有平台 normalize() 的输出格式）
 # ---------------------------------------------------------------------------
-# {
-#     "video_id": str,        # 平台原生 ID
-#     "title": str,
-#     "desc": str,
-#     "publish_time": int,    # unix timestamp
-#     "duration": int,        # 秒
-#     "duration_text": str,   # "MM:SS" 或 "H:MM:SS"
-#     "video_url": str,       # 播放页 URL
-#     "platform": str,        # "bilibili" | "youtube" | ...
-#     "author": str,
-#     "view_count": int,
-# }
+# 字段清单的单一来源：scripts/gen-tool-schema.py 提取本常量生成前端
+# 工具 describe 的字段列表文本
+VIDEO_FIELDS: tuple[str, ...] = (
+    "video_id",  # 平台原生 ID
+    "title",
+    "desc",
+    "publish_time",  # unix timestamp
+    "duration",  # 秒
+    "duration_text",  # "MM:SS" 或 "H:MM:SS"
+    "video_url",  # 播放页 URL
+    "platform",  # "bilibili" | "youtube" | ...
+    "author",
+    "view_count",
+)
 
 
 # ---------------------------------------------------------------------------
@@ -53,6 +55,14 @@ class Platform:
     # 平台 URL 域名模式（小写子串，如 "bilibili.com" / "b23.tv"）：
     # detect_platform 遍历注册表按此匹配，新平台在此声明即可
     url_patterns: ClassVar[tuple[str, ...]] = ()
+
+    # 能力声明（单一来源：scripts/gen-tool-schema.py 提取生成前端工具
+    # describe 的平台句）。子类按实测能力显式覆盖；capability_notes 按
+    # 能力名附加使用条件（如 youtube 创作者查询需 API key）。
+    supports_hot: ClassVar[bool] = False
+    supports_search: ClassVar[bool] = False
+    supports_creator: ClassVar[bool] = False
+    capability_notes: ClassVar[dict[str, str]] = {}
 
     # -- 工具方法（子类必须实现） --
 

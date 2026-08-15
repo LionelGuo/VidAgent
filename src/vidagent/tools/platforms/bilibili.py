@@ -376,6 +376,9 @@ class BilibiliPlatform(Platform):
     name: ClassVar[str] = "bilibili"
     aliases: ClassVar[tuple[str, ...]] = ("bili", "b站")
     url_patterns: ClassVar[tuple[str, ...]] = ("bilibili.com", "b23.tv")
+    supports_hot: ClassVar[bool] = True
+    supports_search: ClassVar[bool] = True
+    supports_creator: ClassVar[bool] = True
 
     @staticmethod
     def extract_video_id(url: str) -> str | None:

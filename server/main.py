@@ -85,6 +85,10 @@ _summarize_tasks: dict[str, TaskRecord] = {}
 # video_id → task_id 映射（供浏览器按视频 ID 连接 SSE）
 _video_task_map: dict[str, str] = {}
 
+# 工具 API 默认值（单一来源：scripts/gen-tool-schema.py 提取生成前端 zod default）
+DEFAULT_PLATFORM = "bilibili"
+DEFAULT_LIMIT = 10
+
 # ---------------------------------------------------------------------------
 # Pydantic models
 # ---------------------------------------------------------------------------
@@ -152,8 +156,8 @@ async def chat_completions(request: dict):
 
 @app.get("/api/tools/hot")
 async def tool_get_hot_videos(
-    platform: str = Query("bilibili", description="平台"),
-    limit: int = Query(10, description="返回数量"),
+    platform: str = Query(DEFAULT_PLATFORM, description="平台"),
+    limit: int = Query(DEFAULT_LIMIT, description="返回数量"),
     date_filter: str | None = Query(None, description="日期过滤: today"),
 ):
     """获取平台热门视频榜单。"""
@@ -173,9 +177,9 @@ async def tool_get_hot_videos(
 
 @app.get("/api/tools/search")
 async def tool_search_videos(
-    platform: str = Query("bilibili", description="平台"),
+    platform: str = Query(DEFAULT_PLATFORM, description="平台"),
     keyword: str = Query(..., description="搜索关键词"),
-    limit: int = Query(10, description="返回数量"),
+    limit: int = Query(DEFAULT_LIMIT, description="返回数量"),
     date_filter: str | None = Query(None, description="日期过滤: today"),
 ):
     """按关键词搜索视频。"""
@@ -197,9 +201,9 @@ async def tool_search_videos(
 
 @app.get("/api/tools/creator")
 async def tool_get_creator_videos(
-    platform: str = Query("bilibili", description="平台"),
+    platform: str = Query(DEFAULT_PLATFORM, description="平台"),
     creator: str = Query(..., description="创作者昵称或 UID"),
-    limit: int = Query(10, description="返回数量"),
+    limit: int = Query(DEFAULT_LIMIT, description="返回数量"),
     date_filter: str | None = Query(None, description="日期过滤: today"),
 ):
     """获取创作者视频列表。"""

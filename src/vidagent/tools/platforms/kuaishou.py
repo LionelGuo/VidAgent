@@ -520,6 +520,9 @@ class KuaishouPlatform(MediaCrawlerPlatform):
     name: ClassVar[str] = "kuaishou"
     aliases: ClassVar[tuple[str, ...]] = ("ks", "快手")
     url_patterns: ClassVar[tuple[str, ...]] = ("kuaishou.com", "chenzhongtech.com")
+    supports_hot: ClassVar[bool] = False
+    supports_search: ClassVar[bool] = True
+    supports_creator: ClassVar[bool] = True
 
     # -- MediaCrawlerPlatform 声明（#3） --
     # 无 client（页面监听方案）：不用 ensure_client 模板，只走门户 + 锁 + page 设施
