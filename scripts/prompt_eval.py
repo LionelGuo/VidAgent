@@ -47,9 +47,9 @@ _DISCLOSURE_RE = re.compile(
 # 功能等价且零工具调用，20260815-114630）。
 _ASK_RE = re.compile(r"[？?哪]|请[^\n。]{0,10}(提供|告诉|指定|给出)")
 
-# 过时表述形态：「这是…X月X日…」式声称（B11 回归：曾把条目发布日期
-# 误当榜单时效，回复「这是8月8日的数据」）。列表内裸日期不算。
-_STALE_CLAIM_RE = re.compile(r"这是[^\n。]{0,10}\d{1,2}月\d{1,2}日")
+# 过时表述形态：「这是/以上是…X月X日(号)…」式声称（B11 回归：曾把条目
+# 发布日期误当榜单时效，回复「这是8月8日的数据」）。列表内裸日期不算。
+_STALE_CLAIM_RE = re.compile(r"(这是|以上是)[^\n。]{0,10}\d{1,2}月\d{1,2}[日号]")
 
 
 def parse_data_stream(raw: str) -> dict:
@@ -191,12 +191,15 @@ def _check_xhs_creator(p: dict) -> list[str]:
         fails.append(f"platform 应为 xiaohongshu，实际 {args.get('platform')!r}")
     if "影视飓风" not in str(args.get("creator", "")):
         fails.append(f"creator 应含「影视飓风」，实际 {args.get('creator')!r}")
-    # B14 回归：结果按发布时间倒序（曾返回 2023 连续旧块）
+    # B14 回归：结果按发布时间倒序（曾返回 2023 连续旧块）。
+    # 结果载荷缺失/为空时直接判败——防假阴（评审修复：曾静默通过）
     items = _result_items(p, "get_creator_videos")
-    if items:
-        times = [int(it.get("publish_time", 0) or 0) for it in items]
-        if times != sorted(times, reverse=True):
-            fails.append(f"创作者视频应按发布时间倒序，实际 publish_time={times}")
+    if not items:
+        fails.append("工具结果无载荷或为空，无法验证倒序（应返回影视飓风近期视频）")
+        return fails
+    times = [int(it.get("publish_time", 0) or 0) for it in items]
+    if times != sorted(times, reverse=True):
+        fails.append(f"创作者视频应按发布时间倒序，实际 publish_time={times}")
     return fails
 
 

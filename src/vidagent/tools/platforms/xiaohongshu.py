@@ -197,6 +197,15 @@ def _note_time(item: dict) -> int:
     return _safe_int(note.get("time", 0)) if isinstance(note, dict) else 0
 
 
+async def _throttle() -> None:
+    """对齐官方搜索后节流（base_config.py: CRAWLER_MAX_SLEEP_SEC=2）。
+
+    连续密集请求是触发风控的主因之一——搜索与创作者两条检索路径
+    都在批量请求后调用（评审修复：曾两处重复注释 + 同款 sleep）。
+    """
+    await asyncio.sleep(random.uniform(2, 4))
+
+
 def _slice_newest(items: list[dict], limit: int) -> list[dict]:
     """按发布时间倒序取前 limit（B14：user_posted 接口无 sort 参数，
     首页实测曾返回 2023 连续旧块；详情富化只对将返回的条目做）。"""
@@ -264,9 +273,7 @@ async def _search_via_cdp(keyword: str, limit: int = 10) -> list[dict]:
     detailed = await _enrich_details(client, items)
     results = [normalize(it) for it in detailed]
     logger.info("小红书搜索 '%s': %d 条", keyword, len(results))
-    # 对齐官方搜索后节流（base_config.py: CRAWLER_MAX_SLEEP_SEC=2），
-    # 连续密集请求是触发风控的主因之一
-    await asyncio.sleep(random.uniform(2, 4))
+    await _throttle()
     return results
 
 
@@ -426,9 +433,7 @@ async def _get_creator_via_cdp(creator_id: str, limit: int = 10) -> list[dict]:
     detailed = await _enrich_details(client, items)
     results = [normalize(it) for it in detailed]
     logger.info("小红书创作者 %s: %d 篇笔记", user_id, len(results))
-    # 对齐官方搜索后节流（base_config.py: CRAWLER_MAX_SLEEP_SEC=2），
-    # 连续密集请求是触发风控的主因之一
-    await asyncio.sleep(random.uniform(2, 4))
+    await _throttle()
     return results
 
 

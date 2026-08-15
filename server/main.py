@@ -159,7 +159,7 @@ async def tool_get_hot_videos(
     platform: str = Query(DEFAULT_PLATFORM, description="平台"),
     limit: int = Query(DEFAULT_LIMIT, ge=1, le=50, description="返回数量"),
 ):
-    """获取平台热门视频榜单（热榜为实时榜单，无按发布日期过滤参数）。"""
+    """获取平台热门视频榜单（B11：热榜为实时榜单，无按发布日期过滤参数）。"""
     from vidagent.tools.crawler import get_hot_videos
 
     try:
