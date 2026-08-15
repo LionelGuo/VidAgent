@@ -26,7 +26,6 @@ from typing import Any, ClassVar
 
 import httpx
 
-from vidagent.config import settings
 from vidagent.tools.platforms import register
 
 from ._cdp_browser import (
@@ -134,7 +133,10 @@ async def warm_startup() -> None:
 
 
 def _get_proxy() -> str | None:
-    return settings.youtube_proxy or None
+    # douyin 为国内平台：直连（不走 youtube_proxy/clash），镜像 xhs 先例。
+    # 外国/代理出口 IP + 国内账号 cookie 会被风控静默拒绝（2026-08-15 实测：
+    # 富化搜索经代理出口返回空 data，直连浏览器路径不受影响）。
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -944,6 +946,11 @@ class DouyinPlatform(MediaCrawlerPlatform):
             f"抖音未登录：扫码登录超时（{_LOGIN_POLL_SECONDS}s），"
             "请先在 Chrome 中登录抖音后重试"
         )
+
+    @classmethod
+    def _client_proxy(cls) -> str | None:
+        """国内平台直连（镜像 xhs：代理出口 IP 会被抖音风控静默拒绝）。"""
+        return None
 
     # -- 检索 / 下载 --
 
