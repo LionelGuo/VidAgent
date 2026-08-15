@@ -15,5 +15,10 @@ commit `1779dde9725f6b7ef42e29022c0054b3e678f1af`，沿用其《非商业学习�
 
 **删除的目录**（本工程不需要，未随 vendored 拷贝）：
 `api/ cmd_arg/ constant/ webui/ test/ tests/ docs/ data/ workspace/ .github/`
-以及 `media_platform/{bilibili,weibo,tieba,zhihu}/`、`model/m_{bilibili,weibo,tieba,zhihu}.py`、
+以及 `media_platform/{bilibili,tieba,zhihu}/`、`model/m_{bilibili,weibo,tieba,zhihu}.py`、
 `main.py recv_sms.py`、构建/依赖清单文件（`pyproject.toml requirements.txt uv.lock package.json` 等）。
+
+> 注（2026-08-15，#9 微博接入）：`media_platform/weibo/` 7 文件已从上游
+> @1779dde **原样恢复**（`model/m_weibo.py` 为空壳仍未恢复——weibo core
+> 不使用 dataclass 模型，恢复无意义）。`store/weibo/`、`config/weibo_config.py`
+> 自始保留（恢复后成为 weibo core 的 load-bearing 依赖）。
