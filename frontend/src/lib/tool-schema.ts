@@ -27,7 +27,7 @@ export const PLATFORM_CAPABILITIES: Record<
   "bilibili": { hot: true, search: true, creator: true, notes: {} },
   "douyin": { hot: true, search: true, creator: true, notes: {} },
   "kuaishou": { hot: false, search: true, creator: true, notes: {} },
-  "xiaohongshu": { hot: false, search: true, creator: true, notes: {"search": "小红书搜索结果无时长信息（平台接口限制）", "creator": "小红书创作者视频列表无时长信息（平台接口限制）"} },
+  "xiaohongshu": { hot: false, search: true, creator: true, notes: {"search": "小红书搜索结果无时长（列表时直接省略，不主动说明）", "creator": "小红书创作者视频列表无时长（列表时直接省略，不主动说明）"} },
   "youtube": { hot: true, search: true, creator: true, notes: {"creator": "YouTube 创作者查询需后端配置 API key"} },
 };
 
@@ -56,8 +56,8 @@ export const DEFAULT_LIMIT = 10;
 /** 检索工具 describe 的平台句（由能力矩阵生成；行为指导 prose 留在调用点）。 */
 const PLATFORM_DESCRIBE: Record<"hot" | "search" | "creator", string> = {
   hot: "平台：bilibili / douyin / youtube（kuaishou、xiaohongshu 不支持热榜）",
-  search: "平台：bilibili / douyin / kuaishou / xiaohongshu / youtube（五平台均支持搜索；小红书搜索结果无时长信息（平台接口限制））",
-  creator: "平台：bilibili / douyin / kuaishou / xiaohongshu / youtube（五平台均支持创作者查询；小红书创作者视频列表无时长信息（平台接口限制）；YouTube 创作者查询需后端配置 API key）",
+  search: "平台：bilibili / douyin / kuaishou / xiaohongshu / youtube（五平台均支持搜索；小红书搜索结果无时长（列表时直接省略，不主动说明））",
+  creator: "平台：bilibili / douyin / kuaishou / xiaohongshu / youtube（五平台均支持创作者查询；小红书创作者视频列表无时长（列表时直接省略，不主动说明）；YouTube 创作者查询需后端配置 API key）",
 };
 
 export function describePlatformsFor(tool: keyof typeof PLATFORM_DESCRIBE): string {
@@ -70,7 +70,7 @@ export function describePlatformsFor(tool: keyof typeof PLATFORM_DESCRIBE): stri
  *  拼装这些片段；行为指导散文手写在 prompts.ts，勿在此手写同义句。 */
 export const SYSTEM_KNOWLEDGE = {
   platformsLine: "平台支持 bilibili、douyin、kuaishou、xiaohongshu、youtube；用户未指定时默认 bilibili。",
-  searchCreatorLine: "search_videos 与 get_creator_videos 在五平台均可用（小红书创作者视频列表无时长信息（平台接口限制）；小红书搜索结果无时长信息（平台接口限制）；YouTube 创作者查询需后端配置 API key）。",
+  searchCreatorLine: "search_videos 与 get_creator_videos 在五平台均可用（小红书创作者视频列表无时长（列表时直接省略，不主动说明）；小红书搜索结果无时长（列表时直接省略，不主动说明）；YouTube 创作者查询需后端配置 API key）。",
   hotLine: "get_hot_videos 仅 bilibili、douyin、youtube 支持热榜（热榜为实时榜单，条目可能发布于数日前——「今天的热榜」即当前榜单）；kuaishou、xiaohongshu 没有热榜——不要对它们调用 get_hot_videos。用户想看这些平台的热门内容时：改用 search_videos（关键词贴近用户意图，不要照搬「热门」二字），并在回复开头说明该平台无热榜、以下为关键词搜索的结果（非官方榜单）。",
   fieldsLine: "三个检索工具返回的每个视频都含 video_id/title/desc/publish_time/publish_date/duration/duration_text/video_url/platform/author/view_count（duration 为秒数，duration_text 如 \"12:34\"，publish_time 为 unix 时间戳（秒）；publish_date 为可直接展示的发布日期（YYYY-MM-DD）；view_count 依平台含义不同：bilibili/youtube 为播放量、xiaohongshu 为点赞数、douyin 热榜为热度值）。",
 } as const;

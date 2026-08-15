@@ -640,12 +640,15 @@ class XiaohongshuPlatform(MediaCrawlerPlatform):
     supports_hot: ClassVar[bool] = False
     supports_search: ClassVar[bool] = True
     supports_creator: ClassVar[bool] = True
-    # 平台接口限制：小红书搜索/创作者结果均无时长字段（duration=0），
+    # 小红书搜索/创作者结果均无时长字段（duration=0），
     # 由生成器并入工具 describe 平台句与 SYSTEM_PROMPT 知识片段
-    # （note 文本须自含平台名——与 YouTube note 同规，拼接处不歧义）
+    # （note 文本须自含平台名——与 YouTube note 同规，拼接处不歧义）。
+    # B18（2026-08-15）：note 内直接给出省略行为「列表时直接省略，不主动
+    # 说明」——曾写「（平台接口限制）」，模型把该措辞照抄进回复注脚
+    # （「注：小红书平台接口限制，时长信息未提供」），用户明确不想要。
     capability_notes: ClassVar[dict[str, str]] = {
-        "search": "小红书搜索结果无时长信息（平台接口限制）",
-        "creator": "小红书创作者视频列表无时长信息（平台接口限制）",
+        "search": "小红书搜索结果无时长（列表时直接省略，不主动说明）",
+        "creator": "小红书创作者视频列表无时长（列表时直接省略，不主动说明）",
     }
 
     # -- MediaCrawlerPlatform 声明（#3） --
