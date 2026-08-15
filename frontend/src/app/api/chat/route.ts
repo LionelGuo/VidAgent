@@ -33,9 +33,9 @@ async function shouldIncludeToolCallProtocol(): Promise<boolean> {
       }
     }
   } catch {
-    // 网络/后端未就绪：兜底包含
+    // 网络/后端未就绪：兜底包含（不写缓存——后端晚启动时不至于把 XML 段
+    // 钉死整个透明模式进程，下次请求重试 meta）
   }
-  _includeToolCallProtocol = true;
   return true;
 }
 

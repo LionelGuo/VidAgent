@@ -4,7 +4,7 @@
 //
 // 结构化知识（平台句/字段清单/默认值）引用 lib/tool-schema.ts 的生成片段
 // （codegen 单一来源：scripts/gen-tool-schema.py，CI --check 守漂移）；
-// 行为指导 prose（「【推荐】」「应引导用户改用搜索」等）在此人工维护。
+// 行为指导 prose（「【推荐】」「仅在用户明确要下载时才调用」等）在此人工维护。
 //
 // 行为变化标注（#8）：
 // - B1：creator 平台句由生成器重建（含「YouTube 创作者查询需后端配置
@@ -14,6 +14,8 @@
 //   后端 BatchVideoItem 从不读取（pydantic 静默丢弃），属死字段。
 //
 // 行为变化标注（调优专项，2026-08-15）：
+// - B0：limit 增加 zod int/min(1)/max(50) 边界与 describe「1-50」（透明
+//   模式模型可见）；50 与后端 Query(ge=1, le=50) 是 wire 契约，两端同步。
 // - B3：describe 侧只做减法（R1Q7 知识通道原则）——hot/search describe
 //   的手写平台 prose（不支持热榜引导句 / 小红书无时长句）撤出，改由
 //   生成平台句与 SYSTEM_KNOWLEDGE 承载；describe 保留生成片段 + 工具
@@ -78,6 +80,16 @@ const videoItemSchema = z.object({
 });
 
 type BatchVideo = z.infer<typeof videoItemSchema>;
+
+/** 检索工具的 limit 参数：与后端 Query(ge=1, le=50) 同步（wire 契约，
+ *  50 对齐 youtube 适配器既有的内部截断上限）。 */
+const limitSchema = z.number()
+  .int()
+  .min(1)
+  .max(50)
+  .nullable()
+  .default(DEFAULT_LIMIT)
+  .describe("返回条数上限（1-50）");
 
 // ---------------------------------------------------------------------------
 // 助手
@@ -144,14 +156,14 @@ export const TOOLS = {
     description:
       "获取平台综合热门视频榜单（热榜本身反映当前热度，不限发布日期）。返回视频列表，每项含 " +
       FIELDS_TEXT +
-      "。不支持热榜的平台会返回含 message 的空结果（见 platform 参数说明）。",
+      "。",
     parameters: z.object({
       platform: z
         .string()
         .nullable()
         .default(DEFAULT_PLATFORM)
         .describe("平台：" + describePlatformsFor("hot")),
-      limit: z.number().int().min(1).max(50).nullable().default(DEFAULT_LIMIT).describe("返回条数上限（1-50）"),
+      limit: limitSchema,
       date_filter: z
         .string()
         .nullable()
@@ -175,7 +187,7 @@ export const TOOLS = {
         .default(DEFAULT_PLATFORM)
         .describe("平台：" + describePlatformsFor("search")),
       keyword: z.string().describe("搜索关键词（必填）"),
-      limit: z.number().int().min(1).max(50).nullable().default(DEFAULT_LIMIT).describe("返回条数上限（1-50）"),
+      limit: limitSchema,
       date_filter: z.string().nullable().optional().describe("时间过滤：today 表示仅当日"),
     }),
     execute: async (args: PlatformLimitArgs & { keyword: string }) => {
@@ -197,7 +209,7 @@ export const TOOLS = {
         .default(DEFAULT_PLATFORM)
         .describe("平台：" + describePlatformsFor("creator")),
       creator: z.string().describe("创作者昵称或数字 UID（必填）"),
-      limit: z.number().int().min(1).max(50).nullable().default(DEFAULT_LIMIT).describe("返回条数上限（1-50）"),
+      limit: limitSchema,
       date_filter: z.string().nullable().optional().describe("时间过滤：today 表示仅当日"),
     }),
     execute: async (args: PlatformLimitArgs & { creator: string }) => {

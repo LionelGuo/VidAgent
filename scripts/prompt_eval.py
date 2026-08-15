@@ -178,6 +178,9 @@ def _check_ks_hot_redirect(p: dict) -> list[str]:
     args = _first_args(p, "search_videos")
     if args.get("platform") != "kuaishou":
         fails.append(f"platform 应为 kuaishou，实际 {args.get('platform')!r}")
+    # 用户措辞是「热门」，回复含「热榜」即视为做了无热榜说明（防纯回声误判）
+    if "热榜" not in p["text"]:
+        fails.append("最终回复应说明该平台无热榜并已改用搜索（含「热榜」）")
     return fails
 
 
