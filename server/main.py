@@ -158,13 +158,12 @@ async def chat_completions(request: dict):
 async def tool_get_hot_videos(
     platform: str = Query(DEFAULT_PLATFORM, description="平台"),
     limit: int = Query(DEFAULT_LIMIT, ge=1, le=50, description="返回数量"),
-    date_filter: str | None = Query(None, description="日期过滤: today"),
 ):
-    """获取平台热门视频榜单。"""
+    """获取平台热门视频榜单（热榜为实时榜单，无按发布日期过滤参数）。"""
     from vidagent.tools.crawler import get_hot_videos
 
     try:
-        results = await get_hot_videos(platform=platform, limit=limit, date_filter=date_filter)
+        results = await get_hot_videos(platform=platform, limit=limit)
         return {"status": "ok", "results": results, "count": len(results)}
     except NotImplementedError as e:
         # 平台明确不支持热榜（如小红书）：返回带提示的正常结果而非 400，

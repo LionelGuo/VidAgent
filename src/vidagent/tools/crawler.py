@@ -38,15 +38,15 @@ def _get_client(platform_name: str, **kwargs: object):
     return p.make_client(**kwargs)
 
 
-async def get_hot_videos(
-    platform: str = "bilibili", limit: int = 10, date_filter: str | None = None
-) -> list[dict]:
+async def get_hot_videos(platform: str = "bilibili", limit: int = 10) -> list[dict]:
     """获取平台综合热门视频（最贴近「今日热榜」）。
+
+    热榜是实时榜单（B11：无 date_filter 参数——榜单条目可能发布于数日前，
+    「今天的热榜」即当前榜单；按发布日期过滤仅 search/creator 提供）。
 
     Args:
         platform: 平台名称，如 "bilibili" / "youtube"。
         limit: 返回条数上限。
-        date_filter: 时间过滤，目前支持 "today"。
 
     Returns:
         每项含 video_id/title/desc/publish_time/duration/duration_text/
@@ -57,8 +57,6 @@ async def get_hot_videos(
     with Timer(f"{p.name} 热榜"):
         async with _get_client(platform) as client:
             items = await p.get_hot(client, limit)
-    if date_filter == "today":
-        items = filter_today(items)
     return items[:limit]
 
 

@@ -176,7 +176,10 @@ def _knowledge_lines(
     search_creator_line += "。"
 
     hot_supported = [n for n in platform_names if caps[n]["hot"]]
-    hot_line = f"get_hot_videos 仅 {'、'.join(hot_supported)} 支持热榜"
+    hot_line = (
+        f"get_hot_videos 仅 {'、'.join(hot_supported)} 支持热榜"
+        "（热榜为实时榜单，条目可能发布于数日前——「今天的热榜」即当前榜单）"
+    )
     unsupported = [n for n in platform_names if not caps[n]["hot"]]
     if unsupported:
         hot_line += (

@@ -21,6 +21,12 @@
 //   生成平台句与 SYSTEM_KNOWLEDGE 承载；describe 保留生成片段 + 工具
 //   自身行为说明。vllm 模式 describe 本就不可见，透明模式下知识就近
 //   重复由生成句统一。
+//
+// 行为变化标注（稳定性专项，2026-08-15）：
+// - B11：get_hot_videos 删除 date_filter 参数（zod + 描述同步）——热榜
+//   是实时榜单、无按发布日期过滤（平台能力如实化到参数级；曾因
+//   date_filter=today 过滤空后静默回退全量引发「这是8月8日的数据」
+//   误报）。search_videos / get_creator_videos 保留 date_filter。
 
 import { z } from "zod";
 
@@ -154,7 +160,7 @@ export const TOOLS = {
   // ── 检索工具 ──
   get_hot_videos: {
     description:
-      "获取平台综合热门视频榜单（热榜本身反映当前热度，不限发布日期）。返回视频列表，每项含 " +
+      "获取平台综合热门视频榜单（热榜为实时榜单，条目可能发布于数日前，无按发布日期过滤参数）。返回视频列表，每项含 " +
       FIELDS_TEXT +
       "。",
     parameters: z.object({
@@ -164,11 +170,6 @@ export const TOOLS = {
         .default(DEFAULT_PLATFORM)
         .describe("平台：" + describePlatformsFor("hot")),
       limit: limitSchema,
-      date_filter: z
-        .string()
-        .nullable()
-        .optional()
-        .describe("按发布日期过滤。通常不传（热榜已反映当前热度）。仅在用户明确要求'只看今天发布的'时才传 'today'"),
     }),
     execute: async (args: PlatformLimitArgs) => {
       const res = await fetch(`${API_BASE}/api/tools/hot${buildQuery(args)}`);
