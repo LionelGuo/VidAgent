@@ -19,6 +19,8 @@ jobs:
         run: uv run ruff check .
       - name: Check generated SSE types
         run: uv run python scripts/gen-sse-types.py --check
+      - name: Check generated tool schema
+        run: uv run python scripts/gen-tool-schema.py --check
 
   frontend:
     name: Frontend (build)
