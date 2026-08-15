@@ -5,7 +5,8 @@
 // 重新生成：python scripts/gen-tool-schema.py
 // 一致性检查：python scripts/gen-tool-schema.py --check
 // 本文件是工具 schema 结构化知识的单一来源：平台清单 / 能力矩阵 / 字段清单 /
-// 默认值。前端手写 describe 引用本文件的生成片段，人工行为指导 prose 不在此处。
+// 默认值 / SYSTEM_PROMPT 知识片段（SYSTEM_KNOWLEDGE）。前端手写 describe 与
+// prompts.ts 知识段引用本文件的生成片段，人工行为指导 prose 不在此处。
 
 /** 平台清单（PLATFORM_MODULES 注册序）。 */
 export const PLATFORMS = [
@@ -26,7 +27,7 @@ export const PLATFORM_CAPABILITIES: Record<
   "bilibili": { hot: true, search: true, creator: true, notes: {} },
   "douyin": { hot: true, search: true, creator: true, notes: {} },
   "kuaishou": { hot: false, search: true, creator: true, notes: {} },
-  "xiaohongshu": { hot: false, search: true, creator: true, notes: {} },
+  "xiaohongshu": { hot: false, search: true, creator: true, notes: {"search": "小红书搜索结果无时长信息（平台接口限制）", "creator": "小红书创作者视频列表无时长信息（平台接口限制）"} },
   "youtube": { hot: true, search: true, creator: true, notes: {"creator": "YouTube 创作者查询需后端配置 API key"} },
 };
 
@@ -54,10 +55,21 @@ export const DEFAULT_LIMIT = 10;
 /** 检索工具 describe 的平台句（由能力矩阵生成；行为指导 prose 留在调用点）。 */
 const PLATFORM_DESCRIBE: Record<"hot" | "search" | "creator", string> = {
   hot: "平台：bilibili / douyin / youtube（kuaishou、xiaohongshu 不支持热榜）",
-  search: "平台：bilibili / douyin / kuaishou / xiaohongshu / youtube（五平台均支持搜索）",
-  creator: "平台：bilibili / douyin / kuaishou / xiaohongshu / youtube（五平台均支持创作者查询；YouTube 创作者查询需后端配置 API key）",
+  search: "平台：bilibili / douyin / kuaishou / xiaohongshu / youtube（五平台均支持搜索；小红书搜索结果无时长信息（平台接口限制））",
+  creator: "平台：bilibili / douyin / kuaishou / xiaohongshu / youtube（五平台均支持创作者查询；小红书创作者视频列表无时长信息（平台接口限制）；YouTube 创作者查询需后端配置 API key）",
 };
 
 export function describePlatformsFor(tool: keyof typeof PLATFORM_DESCRIBE): string {
   return PLATFORM_DESCRIBE[tool];
 }
+
+/** SYSTEM_PROMPT 知识片段（能力事实句，来源同上；R1Q7 知识通道原则：
+ *  vllm 模式 relay 剥掉 tools 字段、describe 模型不可见，SYSTEM_PROMPT 是
+ *  唯一两种 relay 模式都可见的知识通道）。prompts.ts 的【能力与知识】段
+ *  拼装这些片段；行为指导散文手写在 prompts.ts，勿在此手写同义句。 */
+export const SYSTEM_KNOWLEDGE = {
+  platformsLine: "平台支持 bilibili、douyin、kuaishou、xiaohongshu、youtube；用户未指定时默认 bilibili。",
+  searchCreatorLine: "search_videos 与 get_creator_videos 在五平台均可用（小红书创作者视频列表无时长信息（平台接口限制）；小红书搜索结果无时长信息（平台接口限制）；YouTube 创作者查询需后端配置 API key）。",
+  hotLine: "get_hot_videos 仅 bilibili、douyin、youtube 支持热榜；kuaishou、xiaohongshu 没有热榜——不要对它们调用 get_hot_videos，用户想看这些平台的热门内容时改用 search_videos 并向用户说明。",
+  fieldsLine: "三个检索工具返回的每个视频都含 video_id/title/desc/publish_time/duration/duration_text/video_url/platform/author/view_count（duration 为秒数，duration_text 如 \"12:34\"，publish_time 为发布时间）。",
+} as const;

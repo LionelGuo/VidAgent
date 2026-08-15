@@ -8,9 +8,13 @@
   capability_notes 声明（能力矩阵，含使用条件备注）
 - server/main.py 的 DEFAULT_PLATFORM / DEFAULT_LIMIT（工具 API 默认值）
 
-生成前端 zod/describe 引用的结构化片段（平台句 / 字段清单文本 / 默认值）。
-人工行为指导 prose（「【推荐】」「应引导用户改用搜索」等）不生成——
-Q8a 定案：codegen 只覆盖结构化知识，散文提示词人工维护。
+生成前端 zod/describe 引用的结构化片段（平台句 / 字段清单文本 / 默认值），
+以及 SYSTEM_PROMPT 的知识片段（SYSTEM_KNOWLEDGE：平台清单句 / 检索创作者
+可用句 / 热榜限制句 / 字段句）——R1Q7 知识通道原则：vllm 模式 relay 剥掉
+请求体 tools 字段，describe 对模型不可见，SYSTEM_PROMPT 是唯一两种 relay
+模式都可见的知识通道，其能力事实同样从后端声明生成（与 describe 同源，
+允许受控重复）。能力耦合的引导句（无热榜改用搜索）随声明生成；
+其余行为指导 prose（「【推荐】」等）不生成，仍在 prompts.ts 人工维护。
 
 --check 模式对比生成结果与磁盘文件，不一致退出 1（CI 与本地 pytest 使用）。
 纯 stdlib（ast），无第三方依赖。
@@ -37,7 +41,8 @@ HEADER = """\
 // 重新生成：python scripts/gen-tool-schema.py
 // 一致性检查：python scripts/gen-tool-schema.py --check
 // 本文件是工具 schema 结构化知识的单一来源：平台清单 / 能力矩阵 / 字段清单 /
-// 默认值。前端手写 describe 引用本文件的生成片段，人工行为指导 prose 不在此处。
+// 默认值 / SYSTEM_PROMPT 知识片段（SYSTEM_KNOWLEDGE）。前端手写 describe 与
+// prompts.ts 知识段引用本文件的生成片段，人工行为指导 prose 不在此处。
 """
 
 _CN_NUMS = {1: "一", 2: "二", 3: "三", 4: "四", 5: "五", 6: "六", 7: "七", 8: "八", 9: "九", 10: "十"}
@@ -139,6 +144,59 @@ def extract_capabilities(module_names: list[str]) -> dict[str, dict]:
     return caps
 
 
+def _knowledge_lines(
+    platform_names: list[str],
+    caps: dict[str, dict],
+    video_fields: list[str],
+    default_platform: str,
+) -> dict[str, str]:
+    """SYSTEM_PROMPT 知识片段（事实句；行为散文由 prompts.ts 手写）。"""
+    platforms_line = f"平台支持 {'、'.join(platform_names)}；用户未指定时默认 {default_platform}。"
+
+    search_supported = [n for n in platform_names if caps[n]["search"]]
+    creator_supported = [n for n in platform_names if caps[n]["creator"]]
+    # note 文本自含平台名（YouTube 先例），拼接处不歧义
+    notes: list[str] = []
+    for n in platform_names:
+        for capability in ("creator", "search"):
+            note = caps[n]["notes"].get(capability)
+            if note:
+                notes.append(note)
+    if search_supported == creator_supported:
+        search_creator_line = (
+            f"search_videos 与 get_creator_videos 在{_CN_NUMS[len(search_supported)]}平台均可用"
+        )
+    else:
+        search_creator_line = (
+            f"search_videos 在{_CN_NUMS[len(search_supported)]}平台可用、"
+            f"get_creator_videos 在{_CN_NUMS[len(creator_supported)]}平台可用"
+        )
+    if notes:
+        search_creator_line += f"（{'；'.join(notes)}）"
+    search_creator_line += "。"
+
+    hot_supported = [n for n in platform_names if caps[n]["hot"]]
+    hot_line = f"get_hot_videos 仅 {'、'.join(hot_supported)} 支持热榜"
+    unsupported = [n for n in platform_names if not caps[n]["hot"]]
+    if unsupported:
+        hot_line += (
+            f"；{'、'.join(unsupported)} 没有热榜——不要对它们调用 get_hot_videos，"
+            "用户想看这些平台的热门内容时改用 search_videos 并向用户说明"
+        )
+    hot_line += "。"
+
+    fields_line = (
+        f"三个检索工具返回的每个视频都含 {'/'.join(video_fields)}"
+        "（duration 为秒数，duration_text 如 \"12:34\"，publish_time 为发布时间）。"
+    )
+    return {
+        "platformsLine": platforms_line,
+        "searchCreatorLine": search_creator_line,
+        "hotLine": hot_line,
+        "fieldsLine": fields_line,
+    }
+
+
 def _platform_sentence(order: list[str], caps: dict[str, dict], capability: str, label: str) -> str:
     supported = [n for n in order if caps[n][capability]]
     names = " / ".join(supported)
@@ -179,6 +237,7 @@ def render(
     hot = _platform_sentence(platform_names, caps, "hot", "")
     search = _platform_sentence(platform_names, caps, "search", "搜索")
     creator = _platform_sentence(platform_names, caps, "creator", "创作者查询")
+    knowledge = _knowledge_lines(platform_names, caps, video_fields, default_platform)
     return f"""{HEADER}
 /** 平台清单（PLATFORM_MODULES 注册序）。 */
 export const PLATFORMS = [
@@ -217,6 +276,17 @@ const PLATFORM_DESCRIBE: Record<"hot" | "search" | "creator", string> = {{
 export function describePlatformsFor(tool: keyof typeof PLATFORM_DESCRIBE): string {{
   return PLATFORM_DESCRIBE[tool];
 }}
+
+/** SYSTEM_PROMPT 知识片段（能力事实句，来源同上；R1Q7 知识通道原则：
+ *  vllm 模式 relay 剥掉 tools 字段、describe 模型不可见，SYSTEM_PROMPT 是
+ *  唯一两种 relay 模式都可见的知识通道）。prompts.ts 的【能力与知识】段
+ *  拼装这些片段；行为指导散文手写在 prompts.ts，勿在此手写同义句。 */
+export const SYSTEM_KNOWLEDGE = {{
+  platformsLine: {json.dumps(knowledge["platformsLine"], ensure_ascii=False)},
+  searchCreatorLine: {json.dumps(knowledge["searchCreatorLine"], ensure_ascii=False)},
+  hotLine: {json.dumps(knowledge["hotLine"], ensure_ascii=False)},
+  fieldsLine: {json.dumps(knowledge["fieldsLine"], ensure_ascii=False)},
+}} as const;
 """
 
 

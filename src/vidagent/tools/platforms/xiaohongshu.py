@@ -573,6 +573,13 @@ class XiaohongshuPlatform(MediaCrawlerPlatform):
     supports_hot: ClassVar[bool] = False
     supports_search: ClassVar[bool] = True
     supports_creator: ClassVar[bool] = True
+    # 平台接口限制：小红书搜索/创作者结果均无时长字段（duration=0），
+    # 由生成器并入工具 describe 平台句与 SYSTEM_PROMPT 知识片段
+    # （note 文本须自含平台名——与 YouTube note 同规，拼接处不歧义）
+    capability_notes: ClassVar[dict[str, str]] = {
+        "search": "小红书搜索结果无时长信息（平台接口限制）",
+        "creator": "小红书创作者视频列表无时长信息（平台接口限制）",
+    }
 
     # -- MediaCrawlerPlatform 声明（#3） --
     cdp_page_key: ClassVar[str] = "xhs"

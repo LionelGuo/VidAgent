@@ -12,6 +12,13 @@
 // - B2：三处检索 describe 字段清单改为生成片段（补漏列的 publish_time）。
 // - B3：batch_summarize_videos 的 videos 元素删除 duration 字段——
 //   后端 BatchVideoItem 从不读取（pydantic 静默丢弃），属死字段。
+//
+// 行为变化标注（调优专项，2026-08-15）：
+// - B3：describe 侧只做减法（R1Q7 知识通道原则）——hot/search describe
+//   的手写平台 prose（不支持热榜引导句 / 小红书无时长句）撤出，改由
+//   生成平台句与 SYSTEM_KNOWLEDGE 承载；describe 保留生成片段 + 工具
+//   自身行为说明。vllm 模式 describe 本就不可见，透明模式下知识就近
+//   重复由生成句统一。
 
 import { z } from "zod";
 
@@ -137,7 +144,7 @@ export const TOOLS = {
     description:
       "获取平台综合热门视频榜单（热榜本身反映当前热度，不限发布日期）。返回视频列表，每项含 " +
       FIELDS_TEXT +
-      "。注意：kuaishou、xiaohongshu 不支持热榜，返回结果含 message 提示，应引导用户改用搜索。",
+      "。不支持热榜的平台会返回含 message 的空结果（见 platform 参数说明）。",
     parameters: z.object({
       platform: z
         .string()
@@ -160,9 +167,7 @@ export const TOOLS = {
 
   search_videos: {
     description:
-      "按关键词搜索视频。返回视频列表，每项含 " +
-      FIELDS_TEXT +
-      "。注意：xiaohongshu 搜索结果没有时长信息（duration=0，平台限制，属正常现象）。",
+      "按关键词搜索视频。返回视频列表，每项含 " + FIELDS_TEXT + "。",
     parameters: z.object({
       platform: z
         .string()
