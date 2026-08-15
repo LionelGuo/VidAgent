@@ -354,9 +354,10 @@ async def _fetch_hot_list_via_page(limit: int = 10) -> list[dict]:
 
     词条本身不是视频（无作者/时长/播放量）——直接返回会导致列表输出
     「作者：无 时长：0 播放量：0」。因此对每个词条用 MediaCrawler 官方
-    搜索（search_info_by_keyword）取第一条真实视频填充数据（串行 + 节流，
-    对齐官方搜索节奏）；搜索失败降级为纯词条。title 保持词条（与页面
-    热榜一致），video_url 用真实视频直链（可直接下载总结）。
+    搜索（search_info_by_keyword）取第一条真实视频填充数据；搜索失败
+    降级为纯词条。title 保持词条（与页面热榜一致），video_url 用真实
+    视频直链（可直接下载总结）。B16：富化并发 3（曾逐词串行 + 每词
+    sleep(2)，实测 10 条 ~60s）。
 
     直接 httpx / DouYinClient 签名请求会被风控拒绝，而页面自身 XHR 会被
     webmssdk 的 XHR hook 自动补签名，与真实浏览行为一致（同旧方案）。
@@ -411,51 +412,67 @@ async def _fetch_hot_list_via_page(limit: int = 10) -> list[dict]:
     # 过滤无热度词条（横幅/头条位，hot_value=0 未入榜），保持页面原始排序
     words = [w for w in word_list if _safe_int(w.get("hot_value", 0)) > 0]
 
-    results = []
-    for w in words[:limit]:
-        video = await _search_first_video_for_word(w.get("word", ""))
-        if video is not None:
-            # 词条 + 真实视频数据合并：title 保持词条（页面一致），
-            # 作者/时长/下载地址用视频真实数据；view_count 用词条热度
-            # （与页面热榜显示的数值一致——用户按页面热度核对播放量；
-            # 抖音视频本身无公开播放数字段，digg_count 是点赞数易误读）
-            hot_value = _safe_int(w.get("hot_value", 0))
-            hot_text = f"{hot_value / 10000:.1f}万"
-            video_title = video["title"]
-            video["title"] = w.get("word", "")
-            video["desc"] = f"抖音热搜 · 热度 {hot_text} · 视频: {video_title}"
-            video["view_count"] = hot_value
-            video["hot_value"] = hot_value
-            results.append(video)
-        else:
-            results.append(_normalize_trending(w))  # 搜索失败降级为纯词条
-        await asyncio.sleep(2)  # 逐词条搜索节流（对齐官方 CRAWLER_MAX_SLEEP_SEC）
+    # B16（2026-08-15，实测 10 条 ~60s）：曾逐词串行搜索 + 每词 sleep(2)
+    # 纯节流（~20s）+ 串行搜索（~20-40s，_client_call 持全局锁无法并行）。
+    # 改为：client 构造一次（锁内，构造/登录检查串行化）、富化并发 3
+    # （锁外数据请求，xhs 同款纪律）、整批后一次节流。
+    async with DouyinPlatform.mc_lock:
+        client = await DouyinPlatform.ensure_client()
+    results = await _enrich_words(client, words[:limit])
+    await asyncio.sleep(2)  # 整批后一次节流（对齐官方 CRAWLER_MAX_SLEEP_SEC=2）
 
     logger.info("抖音热搜榜: %d 条", len(results))
     return results
 
 
-async def _search_first_video_for_word(word: str) -> dict | None:
-    """搜索词条并返回第一条真实视频（MediaCrawler 官方搜索路径）。
+def _merge_word_video(w: dict, video: dict | None) -> dict:
+    """词条 + 真实视频数据合并；搜索失败（None）降级为纯词条。
 
-    容错：搜索超时/失败重试一次（_client_call 超时后已重建 page，重试
-    大概率成功）；优先取第一条有真实时长的视频（跳过 duration=0 的
-    异常条目，全部无时长则退回第一条）。
+    title 保持词条（与 douyin.com/hot 页面一致），作者/时长/下载地址
+    用视频真实数据；view_count 用词条热度（与页面热榜显示的数值一致——
+    用户按页面热度核对；抖音视频本身无公开播放数字段，digg_count 是
+    点赞数易误读，B13 知识句已声明 view_count 语义）。
+    """
+    if video is None:
+        return _normalize_trending(w)
+    hot_value = _safe_int(w.get("hot_value", 0))
+    hot_text = f"{hot_value / 10000:.1f}万"
+    video_title = video["title"]
+    video["title"] = w.get("word", "")
+    video["desc"] = f"抖音热搜 · 热度 {hot_text} · 视频: {video_title}"
+    video["view_count"] = hot_value
+    video["hot_value"] = hot_value
+    return video
+
+
+async def _search_first_video_for_word(client: Any, word: str) -> dict | None:
+    """在已就绪的 client 上搜索词条并返回第一条真实视频（MC 官方搜索路径）。
+
+    B16：client 由调用方构造（锁内），本函数不持锁、不重建（批量并发
+    时共享同一 client）。容错：单条超时/失败重试一次；优先取第一条有
+    真实时长的视频（跳过 duration=0 的异常条目，全部无时长则退回第一条）。
     """
     if not word:
         return None
     _import_mediacrawler()
     for attempt in range(2):
         try:
-            resp = await _client_call(
-                lambda c: c.search_info_by_keyword(
+            resp = await asyncio.wait_for(
+                client.search_info_by_keyword(
                     keyword=word, offset=0,
                     search_channel=_SearchChannelType.GENERAL,
-                )
+                ),
+                timeout=_CALL_TIMEOUT,
             )
-        except DouyinClientError as e:
+        except TimeoutError:
             if attempt == 0:
-                logger.warning("热榜词条搜索失败 '%s'(页面已重建,重试): %s", word, e)
+                logger.warning("热榜词条搜索超时 '%s'(%ds,重试)", word, _CALL_TIMEOUT)
+                continue
+            logger.warning("热榜词条搜索超时 '%s'", word)
+            return None
+        except Exception as e:
+            if attempt == 0:
+                logger.warning("热榜词条搜索失败 '%s'(重试): %s", word, e)
                 continue
             logger.warning("热榜词条搜索失败 '%s': %s", word, e)
             return None
@@ -478,6 +495,22 @@ async def _search_first_video_for_word(word: str) -> dict | None:
             continue
     logger.warning("热榜词条搜索无结果: '%s'", word)
     return None
+
+
+async def _enrich_words(client: Any, words: list[dict]) -> list[dict]:
+    """热榜词条富化：并发 3 搜索每条词条的真实视频并合并（B16）。
+
+    client 由调用方构造（锁内）；数据请求在锁外并发（xhs 同款纪律）。
+    单条失败降级为纯词条。返回与 words 同序的结果列表。
+    """
+    sem = asyncio.Semaphore(3)  # 并发 3：官方搜索节奏与风控平衡
+
+    async def _one(w: dict) -> dict:
+        async with sem:
+            video = await _search_first_video_for_word(client, w.get("word", ""))
+        return _merge_word_video(w, video)
+
+    return await asyncio.gather(*[_one(w) for w in words])
 
 
 # ---------------------------------------------------------------------------
