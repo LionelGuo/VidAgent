@@ -223,7 +223,7 @@ export const TOOLS = {
   // ── 下载工具 ──
   download_video: {
     description:
-      "下载无水印视频到本地。传入视频 URL（来自搜索/热榜结果的 video_url），下载到 workspace 目录。返回 local_path 供后续总结使用。",
+      "下载无水印视频到本地。传入视频 URL（来自搜索/热榜结果的 video_url），下载到 workspace 目录。返回 local_path 供后续总结使用。B站分P视频（未指定分P）返回分P清单而非下载——需询问用户后再按条目重调。",
     parameters: z.object({
       video_url: z.string().describe("视频播放页地址（来自检索结果的 video_url）"),
       file_name: z
@@ -244,7 +244,7 @@ export const TOOLS = {
   // ── 批量总结工具（并行下载 + 总结多个视频）──
   batch_summarize_videos: {
     description:
-      "【推荐】批量并行总结多个视频。传入视频列表，后端并行处理并等待全部完成（无需额外查询状态）。返回所有视频的完整总结文本。每个视频独立重试、独立错误。",
+      "【推荐】批量并行总结多个视频。传入视频列表，后端并行处理并等待全部完成（无需额外查询状态）。返回所有视频的完整总结文本。每个视频独立重试、独立错误。B站分P视频（未指定分P）返回分P清单而非总结——需询问用户后再以分P条目重调。",
     parameters: z.object({
       videos: z.array(videoItemSchema).describe("要总结的视频列表"),
     }),
@@ -274,11 +274,18 @@ export const TOOLS = {
       const errorNote = errors.length > 0
         ? `\n\n⚠️ ${errors.length} 个视频处理失败：${errors.map((e: any) => e.video_id).join(", ")}`
         : "";
+      // B站分P引导必须进模型可见的摘要通道（否则 done=0/failed=0 时 result 为空串，
+      // 模型只能翻 results 数组）；entries 全量留在 results，摘要只给行动指引
+      const multiParts = results.filter((r: any) => r.status === "multi_part");
+      const multiNote = multiParts.length > 0
+        ? `\n\n${multiParts.map((m: any) =>
+            `【${m.title}】为分P视频（共 ${m.total_parts} 个分P），未总结：请先询问用户要总结哪一P还是全部，再按该条目 entries 中的分P条目重新调用`).join("\n")}`
+        : "";
       return {
         batch_id: data.batch_id,
         done: summaries.length,
         failed: errors.length,
-        result: summaries + errorNote,
+        result: summaries + errorNote + multiNote,
         results: data.results,  // 保留原始 results 供前端 VideoStore 使用
       };
     },

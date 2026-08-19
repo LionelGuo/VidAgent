@@ -6,9 +6,12 @@ import { memo, useEffect, useRef, useState, type MutableRefObject, type ReactNod
  *  必须与后端 _video_task_map 的键一致（后端用 platform.extract_video_id 的纯 ID），
  *  否则 by-video SSE 会 404、卡片进度永远停 0%。 */
 function extractVideoId(videoUrl: string): string | null {
-  // B站: BVxxx
+  // B站: BVxxx（URL 带 p=N 时为 BVxxx-pN：分P条目独立卡片/文件键，与后端一致）
   const bv = videoUrl.match(/BV[\w]+/);
-  if (bv) return bv[0];
+  if (bv) {
+    const p = videoUrl.match(/[?&]p=(\d+)/);
+    return p ? `${bv[0]}-p${p[1]}` : bv[0];
+  }
   // 抖音: /video/数字ID
   const dy = videoUrl.match(/douyin\.com\/video\/(\d+)/);
   if (dy) return dy[1];
@@ -34,6 +37,7 @@ import { apiBaseUrl, streamSummaryByVideo, type SSEController } from "@/lib/api"
 import {
   CheckCircle,
   ChevronRight,
+  Layers,
   Loader2,
   Search,
   Flame,
@@ -131,6 +135,8 @@ export const VideoCard = memo(function VideoCard({
   const downloadProgress = stored?.download_progress ?? 0;
   const isDone = taskStatus === "done";
   const isError = taskStatus === "error";
+  // B站分P待选：未指定分P、未总结——等模型问完用户后 -pN 新卡接续
+  const isMultiPart = taskStatus === "multi_part";
   const isSummarizing = taskStatus != null && SUMMARIZING_STAGES.includes(taskStatus);
   const isDownloading = taskStatus === "downloading";
 
@@ -142,6 +148,9 @@ export const VideoCard = memo(function VideoCard({
     isBgOverride = true;
   } else if (isError) {
     statusBgClass = "bg-red-400/10 border-red-400/30";
+    isBgOverride = true;
+  } else if (isMultiPart) {
+    statusBgClass = "bg-amber-400/10 border-amber-400/30";
     isBgOverride = true;
   } else if (isSummarizing) {
     statusBgClass = "card-status-summarizing";
@@ -184,6 +193,15 @@ export const VideoCard = memo(function VideoCard({
               <p className="text-xs text-muted-foreground mt-2 line-clamp-2">
                 {displayDesc}
               </p>
+            )}
+            {isMultiPart && (
+              <div className="flex items-center gap-2 mt-2 text-xs text-amber-600 dark:text-amber-400">
+                <Layers className="w-3.5 h-3.5 shrink-0" />
+                <span className="truncate">
+                  分P视频{stored?.total_parts ? `（共 ${stored.total_parts} 个分P）` : ""}
+                  · 请在对话中选择要总结的分P
+                </span>
+              </div>
             )}
             {isError && (
               <div
@@ -344,10 +362,19 @@ function extractVideoResults(toolInvocations: any[]): VideoInfo[] {
           if (r.local_path) {
             useVideoStore.getState().setLocalPath(vid, r.local_path);
           }
-          useVideoStore.getState().updateProgress(vid, {
-            task_status: r.status === "done" ? "done" : "error",
-            error: r.status === "done" ? undefined : (r.error || "处理失败"),
-          });
+          if (r.status === "multi_part") {
+            // B站分P视频：未指定分P未总结——卡片转「分P待选」态（非错误），
+            // 模型正在向用户询问要总结哪一P；用户选择后 -pN 新卡独立出现
+            useVideoStore.getState().updateProgress(vid, {
+              task_status: "multi_part",
+              total_parts: r.total_parts,
+            });
+          } else {
+            useVideoStore.getState().updateProgress(vid, {
+              task_status: r.status === "done" ? "done" : "error",
+              error: r.status === "done" ? undefined : (r.error || "处理失败"),
+            });
+          }
         }
       }
     }

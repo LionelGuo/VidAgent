@@ -136,6 +136,12 @@ def extract_capabilities(module_names: list[str]) -> dict[str, dict]:
                 "hot": _const_bool(assigns.get("supports_hot"), name="supports_hot", where=where),
                 "search": _const_bool(assigns.get("supports_search"), name="supports_search", where=where),
                 "creator": _const_bool(assigns.get("supports_creator"), name="supports_creator", where=where),
+                # 分P支持（缺省 False：仅声明的平台生成 partsLine）
+                "multi_part": (
+                    _const_bool(assigns["supports_multi_part"], name="supports_multi_part", where=where)
+                    if "supports_multi_part" in assigns
+                    else False
+                ),
                 "notes": _parse_notes(assigns.get("capability_notes"), where=where),
             }
     missing = [m for m in module_names if m.split(".")[-1] not in caps]
@@ -202,11 +208,27 @@ def _knowledge_lines(
         "view_count 依平台含义不同：bilibili/youtube 为播放量、xiaohongshu/weibo 为点赞数、"
         "douyin 热榜为热度值）。"
     )
+    # 分P知识句（仅声明的平台生成）：分P=同一 BV 多页（URL ?p=N）；
+    # UGC 合集/系列（跨多个独立 BV）不属分P——各成员本就是独立视频（Q6 边界）
+    mp_supported = [n for n in platform_names if caps[n]["multi_part"]]
+    if mp_supported:
+        parts_line = (
+            f"{'、'.join(mp_supported)} 存在分P视频：同一视频下含多个分P"
+            "（每个分P有独立标题与时长，URL 以 p=N 指定）；总结入口对未指定分P的"
+            "分P视频返回分P清单与可直接使用的分P条目，不直接总结"
+            "（处理规则见行为规则段）。"
+            "B站 UGC 合集/系列（跨多个独立视频）不属分P——各成员按独立视频对待，"
+            "不展开。"
+        )
+    else:
+        parts_line = ""
+
     return {
         "platformsLine": platforms_line,
         "searchCreatorLine": search_creator_line,
         "hotLine": hot_line,
         "fieldsLine": fields_line,
+        **({"partsLine": parts_line} if parts_line else {}),
     }
 
 
@@ -238,11 +260,13 @@ def render(
     platforms_lines = "\n".join(f"  {json.dumps(n, ensure_ascii=False)}," for n in platform_names)
     fields_lines = "\n".join(f"  {json.dumps(f, ensure_ascii=False)}," for f in video_fields)
     cap_lines = "\n".join(
-        "  {name}: {{ hot: {hot}, search: {search}, creator: {creator}, notes: {notes} }},".format(
+        "  {name}: {{ hot: {hot}, search: {search}, creator: {creator},"
+        " multi_part: {mp}, notes: {notes} }},".format(
             name=json.dumps(n, ensure_ascii=False),
             hot="true" if caps[n]["hot"] else "false",
             search="true" if caps[n]["search"] else "false",
             creator="true" if caps[n]["creator"] else "false",
+            mp="true" if caps[n]["multi_part"] else "false",
             notes=json.dumps(caps[n]["notes"], ensure_ascii=False),
         )
         for n in platform_names
@@ -262,7 +286,7 @@ export type PlatformName = (typeof PLATFORMS)[number];
 /** 平台能力矩阵（来源：各平台类的 supports_* / capability_notes 声明）。 */
 export const PLATFORM_CAPABILITIES: Record<
   PlatformName,
-  {{ hot: boolean; search: boolean; creator: boolean; notes: Record<string, string> }}
+  {{ hot: boolean; search: boolean; creator: boolean; multi_part: boolean; notes: Record<string, string> }}
 > = {{
 {cap_lines}
 }};
@@ -299,6 +323,7 @@ export const SYSTEM_KNOWLEDGE = {{
   searchCreatorLine: {json.dumps(knowledge["searchCreatorLine"], ensure_ascii=False)},
   hotLine: {json.dumps(knowledge["hotLine"], ensure_ascii=False)},
   fieldsLine: {json.dumps(knowledge["fieldsLine"], ensure_ascii=False)},
+  partsLine: {json.dumps(knowledge.get("partsLine", ""), ensure_ascii=False)},
 }} as const;
 """
 

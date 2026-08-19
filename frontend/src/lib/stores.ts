@@ -37,7 +37,9 @@ export interface VideoChunk {
  *  由后端枚举生成的 SummaryStage/TaskStatus 派生——后端加新值时此处自动收编。 */
 export type StoredTaskStatus =
   | Exclude<SummaryStage, "" | "downloaded">
-  | Exclude<TaskStatus, "processing">;
+  | Exclude<TaskStatus, "processing">
+  /** 前端本地态：B站分P视频未指定分P（分P待选，等模型问用户后以 -pN 新卡继续） */
+  | "multi_part";
 
 /** 落库状态中「总结进行中」的集合（ChatView 状态指示器）：排除下载相关阶段。
  *  由生成的 SUMMARY_STAGES 派生——后端新增阶段自动落入「进行中」分支。 */
@@ -68,6 +70,8 @@ export interface VideoInfo {
   summary?: string;
   /** 任务状态 */
   task_status?: StoredTaskStatus;
+  /** 分P总数（task_status=multi_part 时显示「分P待选」提示用） */
+  total_parts?: number;
   /** 下载进度 0-100 */
   download_progress?: number;
   /** 失败原因（task_status=error 时显示） */
@@ -85,7 +89,7 @@ interface VideoStore {
   /** 设置总结内容 */
   setSummary: (id: string, summary: string) => void;
   /** 更新进度字段 */
-  updateProgress: (id: string, data: Partial<Pick<VideoInfo, "task_status" | "download_progress" | "error">>) => void;
+  updateProgress: (id: string, data: Partial<Pick<VideoInfo, "task_status" | "download_progress" | "error" | "total_parts">>) => void;
   /** 设置视频时长 */
   setDuration: (id: string, duration: number) => void;
   /** 设置分段总结进度 */
