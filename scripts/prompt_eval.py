@@ -54,6 +54,7 @@ _INTERNAL_TOKENS = (
     "duration_text", "view_count", "video_url",
     "get_hot_videos", "search_videos", "get_creator_videos",
     "batch_summarize_videos", "download_video", "extract_and_summarize",
+    "multi_part", "entries",
 )
 
 # 过时表述形态：「这是/以上是…X月X日(号)…」式声称（B11 回归：曾把条目
@@ -232,8 +233,37 @@ def _result_items(parsed: dict, tool: str) -> list[dict]:
     return last if last is not None else []
 
 
+def _check_bili_multi_part_ask(p: dict) -> list[str]:
+    """分P先询问（分P专项）：23P 裸 BV → batch 秒回 multi_part → 回复询问。
+
+    断言三件事：① batch 确实被调用且结果含 multi_part 引导（引导链路真实
+    发生，而非模型碰巧没总结）；② 无 done 条目（分P未选定不得产出总结）；
+    ③ 最终回复说明分P并询问（哪一P/全部）。
+    """
+    fails = (
+        _require_tools(p, ("batch_summarize_videos",))
+        + _forbid_tools(p, ("extract_and_summarize",))
+        + _check_no_internal_jargon(p)
+    )
+    statuses = [
+        str(r.get("status", ""))
+        for r in _result_items(p, "batch_summarize_videos")
+    ]
+    if "multi_part" not in statuses:
+        fails.append(
+            f"batch 结果应含 multi_part 引导（BV1bK411W797 为 23P 分P视频），实际 {statuses}"
+        )
+    if "done" in statuses:
+        fails.append("分P未选定不应产出总结（应先询问用户）")
+    if "分P" not in p["text"] and "分 P" not in p["text"]:
+        fails.append("最终回复应说明这是分P视频")
+    if not _ASK_RE.search(p["text"]):
+        fails.append("最终回复应询问用户要总结哪一P或全部")
+    return fails
+
+
 # ---------------------------------------------------------------------------
-# 用例（定案 8 条；check 返回失败列表）
+# 用例（check 返回失败列表）
 # ---------------------------------------------------------------------------
 
 
@@ -425,6 +455,13 @@ CASES = [
         "summarize_hot_first", "总结B站热榜第一个视频", _check_summarize_hot_first, timeout_s=1800
     ),
     EvalCase("ask_missing_param", "帮我总结一下", _check_ask_missing_param),
+    # 分P专项：23P 稳定样例（yt-dlp 官方测试视频「物语中的人物是如何吐槽自己的OP的」，
+    # 近十年稳定、每P独立标题+91-98s）——断言「先询问、零总结产出」
+    EvalCase(
+        "bili_multi_part_ask",
+        "总结这个B站视频 https://www.bilibili.com/video/BV1bK411W797",
+        _check_bili_multi_part_ask,
+    ),
     EvalCase(
         "xhs_duration_filter",
         "在小红书搜索旅行攻略，列出时长超过10分钟的",
