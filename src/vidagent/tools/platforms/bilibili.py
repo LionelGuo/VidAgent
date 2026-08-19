@@ -9,6 +9,7 @@ import asyncio
 import logging
 import os
 import re
+import time
 from collections.abc import Callable
 from pathlib import Path
 from typing import ClassVar
@@ -319,6 +320,76 @@ async def fetch_parts(client: httpx.AsyncClient, bvid: str) -> list[dict]:
     return parts
 
 
+# 分P清单缓存（检索富化 / 总结入口检测 / 分P选择展开三方共用）：
+# TTL 平衡新鲜度与零延迟——UP 主 15min 内加P不可见，可容忍；失败不缓存
+_PARTS_CACHE_TTL = 15 * 60.0
+_PARTS_CACHE_MAX = 256
+_parts_cache: dict[str, tuple[float, list[dict]]] = {}
+
+# 检索富化上限：并发 + 整体超时（检索延迟有界）；清单上送截断（防千P
+# 课程视频撑爆上下文——total_parts 仍是真实总数，截断时 parts 少于
+# total_parts，用户仍可按 P 号指定任意分P）
+_PARTS_ENRICH_CONCURRENCY = 6
+_PARTS_ENRICH_TIMEOUT = 3.0
+_PARTS_LIST_CAP = 50
+
+
+async def get_parts_cached(client: httpx.AsyncClient, bvid: str) -> list[dict] | None:
+    """带 TTL 缓存的分P清单；获取失败返回 None（不缓存失败）。"""
+    now = time.monotonic()
+    hit = _parts_cache.get(bvid)
+    if hit is not None and now - hit[0] < _PARTS_CACHE_TTL:
+        return hit[1]
+    try:
+        parts = await fetch_parts(client, bvid)
+    except BiliAPIError as e:
+        logger.warning("B站分P清单获取失败(%s): %s", bvid, e)
+        return None
+    if len(_parts_cache) >= _PARTS_CACHE_MAX:
+        oldest = min(_parts_cache, key=lambda k: _parts_cache[k][0])
+        _parts_cache.pop(oldest, None)
+    _parts_cache[bvid] = (now, parts)
+    return parts
+
+
+async def enrich_parts(client: httpx.AsyncClient, items: list[dict]) -> list[dict]:
+    """检索结果富化：B站多P条目附加 total_parts + parts 清单。
+
+    单P / 获取失败 / 超时 → 条目不带字段（按单P对待，检测是增强能力
+    非硬依赖，与总结入口降级口径一致）。并发受限 + 整体超时；超时本轮
+    全部静默放弃。清单截断至 _PARTS_LIST_CAP。
+    """
+    bvids = list(dict.fromkeys(
+        str(it.get("video_id", "")) for it in items
+        if str(it.get("video_id", "")).startswith("BV")
+    ))
+    if not bvids:
+        return items
+    sem = asyncio.Semaphore(_PARTS_ENRICH_CONCURRENCY)
+
+    async def _one(bvid: str) -> tuple[str, list[dict] | None]:
+        async with sem:
+            return bvid, await get_parts_cached(client, bvid)
+
+    try:
+        pairs = await asyncio.wait_for(
+            asyncio.gather(*(_one(bvid) for bvid in bvids)),
+            timeout=_PARTS_ENRICH_TIMEOUT,
+        )
+    except TimeoutError:
+        logger.warning("B站分P富化超时(%.1fs), 本轮按无分P信息返回", _PARTS_ENRICH_TIMEOUT)
+        return items
+    multi = {bvid: parts for bvid, parts in pairs if parts and len(parts) > 1}
+    if not multi:
+        return items
+    for it in items:
+        parts = multi.get(str(it.get("video_id", "")))
+        if parts:
+            it["total_parts"] = len(parts)
+            it["parts"] = parts[:_PARTS_LIST_CAP]
+    return items
+
+
 async def _resolve_short_link(client: httpx.AsyncClient, url: str) -> str:
     """b23.tv 短链 → 最终 URL（跟随重定向；失败返回空串）。"""
     try:
@@ -351,10 +422,8 @@ async def detect_parts(video_url: str) -> tuple[str, list[dict]]:
         if not m:
             return "", []
         bvid = m.group(1)
-        try:
-            parts = await fetch_parts(client, bvid)
-        except BiliAPIError as e:
-            logger.warning("B站分P检测失败,按单P处理(%s): %s", bvid, e)
+        parts = await get_parts_cached(client, bvid)
+        if parts is None:
             return "", []
     return (bvid, parts) if len(parts) > 1 else ("", [])
 
@@ -458,7 +527,8 @@ class BilibiliPlatform(Platform):
     supports_hot: ClassVar[bool] = True
     supports_search: ClassVar[bool] = True
     supports_creator: ClassVar[bool] = True
-    # 分P支持（#B站分P专项）：下载/总结入口对裸 BV 查 pagelist，多P引导询问
+    # 分P支持（#B站分P专项 + 检索前置询问专项）：检索结果富化分P清单，
+    # 下载/总结入口对裸 BV 检测引导（兜底）
     supports_multi_part: ClassVar[bool] = True
 
     @staticmethod
@@ -476,12 +546,12 @@ class BilibiliPlatform(Platform):
     @staticmethod
     async def search(client: httpx.AsyncClient, keyword: str, limit: int = 10) -> list[dict]:
         items = await search_videos(client, keyword, page_size=max(limit, 20))
-        return items[:limit]
+        return await enrich_parts(client, items[:limit])
 
     @staticmethod
     async def get_hot(client: httpx.AsyncClient, limit: int = 10) -> list[dict]:
         items = await fetch_popular(client, ps=max(limit, 20))
-        return items[:limit]
+        return await enrich_parts(client, items[:limit])
 
     @staticmethod
     async def get_creator(client: httpx.AsyncClient, creator: str, limit: int = 10) -> list[dict]:
@@ -490,7 +560,7 @@ class BilibiliPlatform(Platform):
             mid, uname, fans = await resolve_creator_mid(client, mid)
             logger.info("创作者'%s'解析为 mid=%s(%s,粉丝 %s)", creator, mid, uname, fans)
         items = await fetch_user_videos(client, mid, ps=max(limit, 30))
-        return items[:limit]
+        return await enrich_parts(client, items[:limit])
 
     @staticmethod
     def download(video_url: str, file_name: str,
