@@ -35,6 +35,7 @@ DEFAULT_HEADERS = {
 
 _TAG_RE = re.compile(r"<[^>]+>")
 _BV_RE = re.compile(r"(BV[\w]+)")
+_P_RE = re.compile(r"[?&]p=(\d+)")
 
 
 def _parse_cookies(cookie_str: str) -> dict:
@@ -169,9 +170,16 @@ def normalize(item: dict) -> dict:
 
 
 def extract_video_id(url: str) -> str | None:
-    """从 B站 URL 提取 BV 号。"""
+    """从 B站 URL 提取视频标识：BV 号；URL 带 ?p=N 时返回 BVxxx-pN。
+
+    分P条目（每P一张卡）以 -pN 后缀作独立去重键与文件名，检索阶段的
+    合集卡保持裸 BV 不变。
+    """
     m = _BV_RE.search(url)
-    return m.group(1) if m else None
+    if not m:
+        return None
+    pm = _P_RE.search(url)
+    return f"{m.group(1)}-p{pm.group(1)}" if pm else m.group(1)
 
 
 async def fetch_popular(client: httpx.AsyncClient, ps: int = 20, pn: int = 1) -> list[dict]:
@@ -281,6 +289,72 @@ async def resolve_creator_mid(client: httpx.AsyncClient, name: str) -> tuple[str
 
 
 # ---------------------------------------------------------------------------
+# 分P（多页视频）
+# ---------------------------------------------------------------------------
+
+
+async def fetch_parts(client: httpx.AsyncClient, bvid: str) -> list[dict]:
+    """分P清单（pagelist 免签接口）：[{page, part, duration, duration_text}]。
+
+    单P视频也返回 1 条；长度 >1 即分P视频。
+    """
+    data = _check(
+        await _get(client, f"{API_BASE}/x/player/pagelist", {"bvid": bvid}),
+        "pagelist",
+    )
+    parts = []
+    for p in data.get("data") or []:
+        sec = int(p.get("duration") or 0)
+        parts.append({
+            "page": int(p.get("page") or 0),
+            "part": _strip_html(p.get("part") or ""),
+            "duration": sec,
+            "duration_text": _fmt_duration(sec),
+        })
+    return parts
+
+
+async def _resolve_short_link(client: httpx.AsyncClient, url: str) -> str:
+    """b23.tv 短链 → 最终 URL（跟随重定向；失败返回空串）。"""
+    try:
+        resp = await client.head(url, follow_redirects=True)
+        return str(resp.url)
+    except httpx.HTTPError:
+        return ""
+
+
+async def detect_parts(video_url: str) -> tuple[str, list[dict]]:
+    """分P检测：URL 是 B站视频且未显式指定 ?p= 时返回 (bvid, 分P清单)。
+
+    其余一律 ("", [])：非 B站 URL、URL 已带 ?p=（用户已选分P，直达该P）、
+    BV 提取失败、b23.tv 短链解析失败、pagelist 失败——全部降级为按单P
+    处理（与分P支持上线前的行为一致，检测是增强能力而非硬依赖）。
+    清单长度 >1 才返回（单P视频 pagelist 也是 1 条）。
+    """
+    if "b23.tv/" not in video_url and "bilibili.com/" not in video_url:
+        return "", []
+    async with make_client() as client:
+        url = video_url
+        if "b23.tv/" in url:
+            url = await _resolve_short_link(client, url)
+            if not url:
+                logger.warning("B站短链解析失败,按单P处理: %s", video_url)
+                return "", []
+        if _P_RE.search(url):
+            return "", []  # 已显式指定分P
+        m = _BV_RE.search(url)
+        if not m:
+            return "", []
+        bvid = m.group(1)
+        try:
+            parts = await fetch_parts(client, bvid)
+        except BiliAPIError as e:
+            logger.warning("B站分P检测失败,按单P处理(%s): %s", bvid, e)
+            return "", []
+    return (bvid, parts) if len(parts) > 1 else ("", [])
+
+
+# ---------------------------------------------------------------------------
 # 下载
 # ---------------------------------------------------------------------------
 
@@ -379,10 +453,12 @@ class BilibiliPlatform(Platform):
     supports_hot: ClassVar[bool] = True
     supports_search: ClassVar[bool] = True
     supports_creator: ClassVar[bool] = True
+    # 分P支持（#B站分P专项）：下载/总结入口对裸 BV 查 pagelist，多P引导询问
+    supports_multi_part: ClassVar[bool] = True
 
     @staticmethod
     def extract_video_id(url: str) -> str | None:
-        return _BV_RE.search(url).group(1) if _BV_RE.search(url) else None
+        return extract_video_id(url)
 
     @staticmethod
     def normalize(raw: dict) -> dict:

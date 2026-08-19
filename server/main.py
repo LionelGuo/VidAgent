@@ -260,6 +260,26 @@ async def tool_download_video(req: DownloadRequest):
     """下载视频到本地 workspace。"""
     from vidagent.tools.downloader import download_video
 
+    # B站分P检测：裸 BV 的多P视频不下载，返回分P清单引导模型询问用户（秒回）
+    multi = await _detect_bili_multi_part(req.video_url)
+    if multi:
+        multi["status"] = "multi_part"
+        multi["video_url"] = req.video_url
+        multi["entries"] = [
+            {
+                "video_url": f"https://www.bilibili.com/video/{multi['bvid']}?p={p['page']}",
+                "file_name": f"{multi['bvid']}-p{p['page']}",
+            }
+            for p in multi["parts"]
+        ]
+        multi.pop("bvid")
+        multi["message"] = (
+            f"该视频是分P视频（共 {multi['total_parts']} 个分P），未指定分P，未下载。"
+            "请告知用户这是分P视频并询问要处理哪一P或全部；"
+            "确定后按 entries 中对应条目的 video_url 与 file_name 重新调用下载。"
+        )
+        return multi
+
     try:
         loop = asyncio.get_event_loop()
         result = await loop.run_in_executor(
@@ -386,7 +406,7 @@ async def tool_summarize_stream_by_video(video_id: str):
 def _extract_video_id(video_url: str) -> str | None:
     """从视频 URL 中提取平台原生 video_id。
 
-    支持：B站 BV 号、YouTube video ID 等。
+    支持：B站 BV 号（带 ?p=N 时为 BVxxx-pN）、YouTube video ID 等。
     """
     # 确保平台模块已注册（清单单一来源，见 platforms/__init__.py）
     from vidagent.tools.platforms import detect_platform, ensure_platforms_imported
@@ -402,6 +422,21 @@ def _extract_video_id(video_url: str) -> str | None:
     return m.group(1) if m else None
 
 
+async def _detect_bili_multi_part(video_url: str) -> dict | None:
+    """B站分P检测（batch-summarize 与 download 两入口共用）。
+
+    返回 None = 非分P场景（非 B站 URL / 已带 ?p= / 检测失败降级单P），
+    调用方按原流程处理；返回 dict = 分P视频（bvid/parts/total_parts），
+    调用方据此组装 multi_part 引导结构（不下载、秒回）。
+    """
+    from vidagent.tools.platforms import bilibili
+
+    bvid, parts = await bilibili.detect_parts(video_url)
+    if not parts:
+        return None
+    return {"bvid": bvid, "parts": parts, "total_parts": len(parts)}
+
+
 @app.post("/api/tools/batch-summarize")
 async def tool_batch_summarize(req: BatchSummarizeRequest):
     """批量并行总结：接受视频列表，后端并行处理下载+总结。
@@ -409,8 +444,11 @@ async def tool_batch_summarize(req: BatchSummarizeRequest):
     每个视频独立：下载 → 抽取音频+帧 → Omni 多模态总结。
     各视频完全独立，一视频失败不影响其他。下载/总结各重试最多 5 次（指数退避）。
 
+    B站分P视频（裸 BV 未指定 ?p=）不下载：该条目返回 status="multi_part"
+    （含 parts 清单与可照抄的 entries 条目），由模型询问用户后带 ?p= 重调。
+
     返回：
-        { batch_id, tasks: [{ task_id, video_id, status }] }
+        { batch_id, results: [{ video_id, status, ... }] }
     前端可立即按 video_id 连接 SSE 获取各视频流式进度。
     """
     from vidagent.tools.downloader import MAX_RETRIES, download_video_with_retry
@@ -484,9 +522,22 @@ async def tool_batch_summarize(req: BatchSummarizeRequest):
         finally:
             cleanup_progress(task_id)
 
-    # 预注册所有 task（SSE 连接在 POST 请求期间就会到达，需提前建立映射）
+    # ── B站分P检测（裸 BV 多P：不下载、不注册任务，秒回引导）──
     video_list = [v.model_dump() for v in req.videos]
-    for video in video_list:
+    detects = await asyncio.gather(
+        *(_detect_bili_multi_part(v.get("video_url", "")) for v in video_list)
+    )
+    multi_by_index: dict[int, dict] = {}
+    runnable: list[tuple[int, dict]] = []  # (请求序号, video)
+    for i, video in enumerate(video_list):
+        if detects[i]:
+            multi_by_index[i] = detects[i]
+        else:
+            runnable.append((i, video))
+
+    # 预注册 runnable 的 task（SSE 连接在 POST 请求期间就会到达，需提前建立映射）
+    tasks: list[tuple[int, dict]] = []  # (请求序号, task_entry)
+    for i, video in runnable:
         task_id = uuid.uuid4().hex[:12]
         video_id = (
             video.get("video_id")
@@ -497,57 +548,92 @@ async def tool_batch_summarize(req: BatchSummarizeRequest):
         video["_video_id"] = video_id
         _video_task_map[video_id] = task_id
         _summarize_tasks[task_id] = TaskRecord(status=TaskStatus.PROCESSING)
-        tasks.append({"task_id": task_id, "video_id": video_id, "status": "processing"})
+        tasks.append((i, {"task_id": task_id, "video_id": video_id, "status": "processing"}))
 
-    # 所有视频并行提交到线程池（task_entry 按序对应：多线程各自写自己的状态，
+    # runnable 并行提交到线程池（task_entry 按序对应：多线程各自写自己的状态，
     # 避免旧实现 tasks[-1] 共享最后一个条目导致的跨任务状态覆盖）
     futures = []
-    for i, video in enumerate(video_list):
-        futures.append(_executor.submit(_run_one, video, tasks[i]))
+    for (_, video), (_, task_entry) in zip(runnable, tasks, strict=True):
+        futures.append(_executor.submit(_run_one, video, task_entry))
 
-    logger.info("批量总结启动: batch=%s, %d 个视频,等待完成...", batch_id, len(req.videos))
-    logger.info("批量总结注册键: %s", [v["_video_id"] for v in video_list])
+    logger.info("批量总结启动: batch=%s, %d 个视频, 分P引导 %d 个, 等待完成...",
+                batch_id, len(req.videos), len(multi_by_index))
+    logger.info("批量总结注册键: %s", [v["_video_id"] for _, v in runnable])
 
     # ★ 关键：等待移到线程池，释放 asyncio 事件循环给 SSE 请求
     loop = asyncio.get_event_loop()
     await loop.run_in_executor(None, lambda: [f.result() for f in futures])
 
-    # 汇总结果
+    # 汇总结果（按请求顺序：multi_part 引导与正常结果交错）
     # 构建 video_id → 原始请求数据 的映射（用于 title + video_url 回填）
     req_by_id: dict[str, dict] = {}
     for v in req.videos:
         rid = v.video_id or _extract_video_id(v.video_url or "")
         if rid:
             req_by_id[rid] = v.model_dump()
-    results = []
-    for t in tasks:
+    results: list[dict | None] = [None] * len(video_list)
+    for i, t in tasks:
         task_data = _summarize_tasks.get(t["task_id"])
         video_id = t["video_id"]
         req_v = req_by_id.get(video_id, {})
         if task_data is not None and task_data.status is TaskStatus.DONE:
-            results.append({
+            results[i] = {
                 "video_id": video_id,
                 "video_url": req_v.get("video_url", ""),
                 "title": req_v.get("title") or video_id,
                 "status": "done",
                 "summary": task_data.result or "",
                 "local_path": task_data.local_path or "",
-            })
+            }
         else:
-            results.append({
+            results[i] = {
                 "video_id": video_id,
                 "status": "error",
                 # 旧 .get("result", 默认) 只在键缺失时兜底；此处等价改为仅 None 兜底，
                 # 空串错误信息（str(e) == ""）必须原样透传而非被默认值遮蔽
                 "error": task_data.result if task_data is not None and task_data.result is not None else "未知错误",
+            }
+    for i, multi in multi_by_index.items():
+        video = video_list[i]
+        video_id = (
+            video.get("video_id")
+            or _extract_video_id(video.get("video_url", ""))
+            or multi["bvid"]
+        )
+        base_title = video.get("title") or multi["bvid"]
+        entries = []
+        for p in multi["parts"]:
+            seg = f"P{p['page']} {p['part']}".strip()
+            entries.append({
+                "video_url": f"https://www.bilibili.com/video/{multi['bvid']}?p={p['page']}",
+                "video_id": f"{multi['bvid']}-p{p['page']}",
+                "title": f"{base_title} · {seg}" if seg else base_title,
+                "desc": video.get("desc") or "",
+                "author": video.get("author"),
+                "duration_text": p.get("duration_text"),
+                "platform": "bilibili",
             })
+        results[i] = {
+            "video_id": video_id,
+            "video_url": video.get("video_url", ""),
+            "title": base_title,
+            "status": "multi_part",
+            "total_parts": multi["total_parts"],
+            "parts": multi["parts"],
+            "entries": entries,
+            "message": (
+                f"该视频是分P视频（共 {multi['total_parts']} 个分P），未指定分P，未总结。"
+                "请告知用户这是分P视频并询问要总结哪一P或全部；"
+                "总结某一P：从 entries 中取对应条目；全部总结：将 entries 整个数组传入。"
+            ),
+        }
 
     # 清理 video_id → task_id 映射
-    for video in video_list:
+    for _, video in runnable:
         _video_task_map.pop(video["_video_id"], None)
 
     logger.info("批量总结完成: batch=%s, done=%d/%d", batch_id,
-                sum(1 for r in results if r["status"] == "done"), len(results))
+                sum(1 for r in results if r and r["status"] == "done"), len(results))
     return {"batch_id": batch_id, "results": results}
 
 
