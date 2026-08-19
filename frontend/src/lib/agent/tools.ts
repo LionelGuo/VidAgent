@@ -84,9 +84,9 @@ const videoItemSchema = z.object({
   duration_text: z.string().nullable().optional().describe("时长文本"),
   platform: z.string().nullable().optional().describe("平台（默认从 URL 自动检测）"),
   // B站分P选择（检索前置询问专项）：P 号数组由后端展开为分P条目，
-  // 模型无需转写分P标题/URL
-  parts: z.array(z.number().int().min(1)).min(1).optional()
-    .describe("B站分P选择：用户已选定的分P P号数组（如 [2] 选P2、[2,5] 选P2和P5、全部为 1 到分P总数的完整数组）；仅 B站视频可用，传入后无需构造 ?p= URL"),
+  // 模型无需转写分P标题/URL；上限 100 与后端 pydantic 同步
+  parts: z.array(z.number().int().min(1)).min(1).max(100).optional()
+    .describe("B站分P选择：用户已选定的分P P号数组（如 [2] 选P2、[2,5] 选P2和P5、全部为 1 到分P总数的完整数组，勿遗漏勿重复，至多 100 个）；仅 B站视频可用，传入后无需构造 ?p= URL"),
 });
 
 type BatchVideo = z.infer<typeof videoItemSchema>;

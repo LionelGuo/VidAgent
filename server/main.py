@@ -34,7 +34,7 @@ from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from server.models import TaskRecord, TaskStatus
 from server.sse_relay import relay_stream, relay_stream_transparent
@@ -142,8 +142,9 @@ class BatchVideoItem(BaseModel):
     platform: str | None = None
     # 分P选择（B站）：用户已选定分P，服务端按 pagelist 展开为 per-P 条目
     # （?p=N URL / BVxxx-pN 键 /「主标题 · PN 子标题」全服务端生成，
-    # 模型只传 BV 号 + P 号数组，不转写标题/URL）
-    parts: list[int] | None = None
+    # 模型只传 BV 号 + P 号数组，不转写标题/URL）。上限 100 与前端 zod
+    # 同步（防「全部」展开千P任务洪泛，提示词 >10P 已劝阻）
+    parts: list[int] | None = Field(default=None, max_length=100)
 
 
 class BatchSummarizeRequest(BaseModel):
@@ -267,10 +268,12 @@ async def tool_download_video(req: DownloadRequest):
     # B站分P检测：裸 BV 的多P视频不下载，返回分P清单引导模型询问用户（秒回）
     multi = await _detect_bili_multi_part(req.video_url)
     if multi:
-        from vidagent.tools.platforms.bilibili import part_url
+        from vidagent.tools.platforms.bilibili import PARTS_LIST_CAP, part_url
 
         multi["status"] = "multi_part"
-        multi["video_url"] = req.video_url
+        multi["video_url"] = f"https://www.bilibili.com/video/{multi['bvid']}"
+        # 清单/条目上送截断（与 batch 入口同口径；total_parts 仍是真实总数）
+        multi["parts"] = multi["parts"][:PARTS_LIST_CAP]
         multi["entries"] = [
             {
                 "video_url": part_url(multi["bvid"], p["page"]),
@@ -444,7 +447,9 @@ async def _detect_bili_multi_part(video_url: str) -> dict | None:
 
 
 async def _expand_bili_parts(video: dict, sel: list[int]) -> list[dict]:
-    """分P选择展开：请求条目 + P 号数组 → per-P 条目（长度恒等于 len(sel)）。
+    """分P选择展开：请求条目 + P 号数组 → per-P 条目（长度恒等于去重后的
+    P 号数）。重复 P 号先去重保序（评审：[2,2] 曾展开双任务并发写同一
+    文件、前端同键双卡；与前端 new Set 同规则）。
 
     前端按同规则从 args 合成卡片（P 号序、BVxxx-pN 键），results 与卡片
     一一对应（索引对齐契约）。可执行条目带 ?p= URL（下方检测自然跳过）；
@@ -453,6 +458,8 @@ async def _expand_bili_parts(video: dict, sel: list[int]) -> list[dict]:
     """
     from vidagent.tools.platforms import bilibili
 
+    sel = list(dict.fromkeys(sel))
+
     bvid = bilibili.extract_bvid(video.get("video_url", "") or "")
     base_title = video.get("title") or bvid or "未知视频"
     if not bvid:
@@ -460,7 +467,12 @@ async def _expand_bili_parts(video: dict, sel: list[int]) -> list[dict]:
             {**video, "_error": "parts 仅适用于 B站视频（URL 需含 BV 号）"}
             for _ in sel
         ]
-    parts = await bilibili.parts_for_bvid(bvid)
+    try:
+        # 整体超时兜底（评审：_get 3 次重试最坏 ~48s，会推迟占位注册致
+        # 卡片 404 闪烁；超时走既有 error 占位）
+        parts = await asyncio.wait_for(bilibili.parts_for_bvid(bvid), timeout=20.0)
+    except TimeoutError:
+        parts = None
     if parts is None:
         return [
             {
@@ -484,8 +496,7 @@ async def _expand_bili_parts(video: dict, sel: list[int]) -> list[dict]:
         if p is None:
             entry["_error"] = f"无效分P号 P{n}（有效范围 1-{len(parts)}）"
         else:
-            seg = f"P{n} {p['part']}".strip()
-            entry["title"] = f"{base_title} · {seg}" if seg else base_title
+            entry["title"] = bilibili.part_title(base_title, p)
             entry["duration_text"] = p["duration_text"]
             entry["duration"] = p["duration"]
         entries.append(entry)
@@ -679,6 +690,8 @@ async def tool_batch_summarize(req: BatchSummarizeRequest):
                 "video_id": video_id,
                 "video_url": req_v.get("video_url", ""),
                 "title": req_v.get("title") or video_id,
+                # 分P展开条目带单P时长（评审修复：卡片原先显示合集总时长）
+                "duration_text": req_v.get("duration_text"),
                 "status": "done",
                 "summary": task_data.result or "",
                 "local_path": task_data.local_path or "",
@@ -693,7 +706,13 @@ async def tool_batch_summarize(req: BatchSummarizeRequest):
             }
     for i, multi in multi_by_index.items():
         video = video_list[i]
-        from vidagent.tools.platforms.bilibili import PARTS_LIST_CAP, part_url
+        from vidagent.tools.platforms.bilibili import (
+            PARTS_LIST_CAP,
+            part_url,
+        )
+        from vidagent.tools.platforms.bilibili import (
+            part_title as bilibili_part_title,
+        )
 
         video_id = video.get("_video_id") or multi["bvid"]
         base_title = video.get("title") or multi["bvid"]
@@ -702,11 +721,10 @@ async def tool_batch_summarize(req: BatchSummarizeRequest):
         shown = multi["parts"][:PARTS_LIST_CAP]
         entries = []
         for p in shown:
-            seg = f"P{p['page']} {p['part']}".strip()
             entries.append({
                 "video_url": part_url(multi["bvid"], p["page"]),
                 "video_id": f"{multi['bvid']}-p{p['page']}",
-                "title": f"{base_title} · {seg}" if seg else base_title,
+                "title": bilibili_part_title(base_title, p),
                 "desc": video.get("desc") or "",
                 "author": video.get("author"),
                 "duration": p.get("duration"),
@@ -715,7 +733,10 @@ async def tool_batch_summarize(req: BatchSummarizeRequest):
             })
         results[i] = {
             "video_id": video_id,
-            "video_url": video.get("video_url", ""),
+            # canonical 地址（评审修复：入参为 b23.tv 短链时，模型按引导以
+            # parts 参数重调需要含 BV 号的地址——原样回传短链会让展开
+            # 提取不到 BV 而误报「parts 仅适用于 B站视频」）
+            "video_url": f"https://www.bilibili.com/video/{multi['bvid']}",
             "title": base_title,
             "status": "multi_part",
             "total_parts": multi["total_parts"],

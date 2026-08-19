@@ -33,7 +33,10 @@ function extractVideoId(videoUrl: string): string | null {
 /** 分P选择展开（与后端 _expand_bili_parts 同规则，检索前置询问专项）：
  *  带 parts 的条目按 P 号序合成 per-P 伪条目（?p=N URL，键由
  *  extractVideoId 提取为 BVxxx-pN）。卡片 / SSE / results / 元数据四处
- *  消费同一展开列表，与后端展开结果同长同序（索引对齐契约）；
+ *  消费同一展开列表，与后端展开结果同长同序（索引对齐契约）。
+ *  重复 P 号去重保序（Set 与后端 dict.fromkeys 同规则）；
+ *  URL 先剥除既有 query 再追加 ?p=N（评审：原 URL 带 ?p= 时追加会令
+ *  extractVideoId 取到旧 P 号 → 双卡同键 + SSE 键与后端分歧）；
  *  标题无分P子标题（卡片键与进度对齐才是契约，全称由后端结果携带）。 */
 function expandBatchVideos(videos: any[] | undefined | null): any[] {
   if (!videos?.length) return [];
@@ -44,13 +47,13 @@ function expandBatchVideos(videos: any[] | undefined | null): any[] {
       out.push(v);
       continue;
     }
-    for (const n of parts) {
-      const url: string = v.video_url ?? "";
+    const base = (v.video_url ?? "").split("?", 1)[0];
+    for (const n of new Set(parts)) {
       out.push({
         ...v,
         parts: undefined,
         video_id: undefined,
-        video_url: url + (url.includes("?") ? "&" : "?") + `p=${n}`,
+        video_url: `${base}?p=${n}`,
         title: v.title ? `${v.title} · P${n}` : `P${n}`,
       });
     }
@@ -554,7 +557,8 @@ function AssistantContent({
             videoId={vid}
             title={v.title ?? "未知标题"}
             author={v.author}
-            duration={v.duration_text}
+            // 优先取结果时长（分P展开条目为单P时长；args 里是合集总时长）
+            duration={result?.duration_text || v.duration_text}
             summary={result?.summary}
           />
         );

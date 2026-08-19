@@ -188,6 +188,12 @@ def part_url(bvid: str, page: int) -> str:
     return f"https://www.bilibili.com/video/{bvid}?p={page}"
 
 
+def part_title(base_title: str, p: dict) -> str:
+    """分P条目标题「主标题 · PN 子标题」（展开与引导 entries 的单一口径）。"""
+    seg = f"P{p['page']} {p['part']}".strip()
+    return f"{base_title} · {seg}" if seg else base_title
+
+
 def extract_bvid(url: str) -> str | None:
     """从 URL 提取裸 BV 号（忽略 p 参数；分P选择展开用）。"""
     m = _BV_RE.search(url)

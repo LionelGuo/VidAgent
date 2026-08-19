@@ -95,6 +95,22 @@ def extract_defaults() -> tuple[str, int]:
     return platform, limit.value
 
 
+def extract_parts_list_cap(module_names: list[str]) -> int | None:
+    """PARTS_LIST_CAP 常量（分P清单上送截断上限；检索富化与引导同源）。
+
+    从平台模块提取（与能力声明同一单一来源），避免生成文本硬编码漂移；
+    无任何模块声明时返回 None（无分P平台，常量不会被引用）。
+    """
+    for module_name in module_names:
+        path = PLATFORMS_INIT.parent / f"{module_name.split('.')[-1]}.py"
+        value = _module_assigns(path).get("PARTS_LIST_CAP")
+        if value is not None:
+            if not (isinstance(value, ast.Constant) and isinstance(value.value, int)):
+                raise SystemExit(f"{path}: PARTS_LIST_CAP 必须是整数常量")
+            return value.value
+    return None
+
+
 def _class_assigns(cls: ast.ClassDef) -> dict[str, ast.expr]:
     result: dict[str, ast.expr] = {}
     for stmt in cls.body:
@@ -155,6 +171,7 @@ def _knowledge_lines(
     caps: dict[str, dict],
     video_fields: list[str],
     default_platform: str,
+    parts_cap: int | None,
 ) -> dict[str, str]:
     """SYSTEM_PROMPT 知识片段（事实句；行为散文由 prompts.ts 手写）。"""
     platforms_line = f"平台支持 {'、'.join(platform_names)}；用户未指定时默认 {default_platform}。"
@@ -213,11 +230,13 @@ def _knowledge_lines(
     # ——各成员本就是独立视频（Q6 边界）。检索前置询问专项：检索结果自带
     # parts/total_parts（>50P 截断），总结入口引导为裸 URL 兜底
     mp_supported = [n for n in platform_names if caps[n]["multi_part"]]
+    if mp_supported and parts_cap is None:
+        raise SystemExit("supports_multi_part 平台模块缺 PARTS_LIST_CAP 常量（生成文本与其同源）")
     parts_line = (
         f"{'、'.join(mp_supported)} 存在分P视频：同一视频下含多个分P"
         "（每个分P有独立标题与时长，URL 以 p=N 指定）；检索结果中多P视频额外带"
         " parts（分P清单：page/part/duration/duration_text）与 total_parts"
-        "（分P总数；parts 少于 total_parts 时为截断，仅列前 50，"
+        f"（分P总数；parts 少于 total_parts 时为截断，仅列前 {parts_cap} 个，"
         "仍可按 P 号指定任意分P）；总结入口对未指定分P的分P视频返回分P清单"
         "与分P条目，不直接总结（处理规则见行为规则段）。"
         "B站 UGC 合集/系列（跨多个独立视频）不属分P——各成员按独立视频对待，"
@@ -254,6 +273,7 @@ def render(
     video_fields: list[str],
     default_platform: str,
     default_limit: int,
+    parts_cap: int | None,
 ) -> str:
     """组装生成文件全文（值来自 AST，句式来自模板）。"""
     # ensure_ascii=False：生成文件里的中文保持原样（可读性；TS 字符串字面量
@@ -275,7 +295,7 @@ def render(
     hot = _platform_sentence(platform_names, caps, "hot", "")
     search = _platform_sentence(platform_names, caps, "search", "搜索")
     creator = _platform_sentence(platform_names, caps, "creator", "创作者查询")
-    knowledge = _knowledge_lines(platform_names, caps, video_fields, default_platform)
+    knowledge = _knowledge_lines(platform_names, caps, video_fields, default_platform, parts_cap)
     return f"""{HEADER}
 /** 平台清单（PLATFORM_MODULES 注册序）。 */
 export const PLATFORMS = [
@@ -338,7 +358,8 @@ def generate() -> str:
         raise SystemExit(f"能力声明与平台清单不一致: {sorted(set(platform_names) - set(caps))}")
     video_fields = extract_video_fields()
     default_platform, default_limit = extract_defaults()
-    return render(platform_names, caps, video_fields, default_platform, default_limit)
+    parts_cap = extract_parts_list_cap(module_names)
+    return render(platform_names, caps, video_fields, default_platform, default_limit, parts_cap)
 
 
 def check() -> int:
