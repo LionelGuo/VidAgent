@@ -140,6 +140,10 @@ class BatchVideoItem(BaseModel):
     author: str | None = None
     duration_text: str | None = None
     platform: str | None = None
+    # 分P选择（B站）：用户已选定分P，服务端按 pagelist 展开为 per-P 条目
+    # （?p=N URL / BVxxx-pN 键 /「主标题 · PN 子标题」全服务端生成，
+    # 模型只传 BV 号 + P 号数组，不转写标题/URL）
+    parts: list[int] | None = None
 
 
 class BatchSummarizeRequest(BaseModel):
@@ -439,6 +443,55 @@ async def _detect_bili_multi_part(video_url: str) -> dict | None:
     return {"bvid": bvid, "parts": parts, "total_parts": len(parts)}
 
 
+async def _expand_bili_parts(video: dict, sel: list[int]) -> list[dict]:
+    """分P选择展开：请求条目 + P 号数组 → per-P 条目（长度恒等于 len(sel)）。
+
+    前端按同规则从 args 合成卡片（P 号序、BVxxx-pN 键），results 与卡片
+    一一对应（索引对齐契约）。可执行条目带 ?p= URL（下方检测自然跳过）；
+    无法获取清单 / 无效 P 号 → 对应位置 error 占位（诚实失败，不静默降级
+    到 P1——用户已显式选择）；同一请求内其余分P独立执行不受影响。
+    """
+    from vidagent.tools.platforms import bilibili
+
+    bvid = bilibili.extract_bvid(video.get("video_url", "") or "")
+    base_title = video.get("title") or bvid or "未知视频"
+    if not bvid:
+        return [
+            {**video, "_error": "parts 仅适用于 B站视频（URL 需含 BV 号）"}
+            for _ in sel
+        ]
+    parts = await bilibili.parts_for_bvid(bvid)
+    if parts is None:
+        return [
+            {
+                **video,
+                "video_url": bilibili.part_url(bvid, n),
+                "video_id": f"{bvid}-p{n}",
+                "_error": "分P清单获取失败，请稍后重试",
+            }
+            for n in sel
+        ]
+    by_page = {p["page"]: p for p in parts}
+    entries = []
+    for n in sel:
+        p = by_page.get(n)
+        entry = {
+            **video,
+            "video_url": bilibili.part_url(bvid, n),
+            "video_id": f"{bvid}-p{n}",
+            "platform": "bilibili",
+        }
+        if p is None:
+            entry["_error"] = f"无效分P号 P{n}（有效范围 1-{len(parts)}）"
+        else:
+            seg = f"P{n} {p['part']}".strip()
+            entry["title"] = f"{base_title} · {seg}" if seg else base_title
+            entry["duration_text"] = p["duration_text"]
+            entry["duration"] = p["duration"]
+        entries.append(entry)
+    return entries
+
+
 @app.post("/api/tools/batch-summarize")
 async def tool_batch_summarize(req: BatchSummarizeRequest):
     """批量并行总结：接受视频列表，后端并行处理下载+总结。
@@ -447,7 +500,10 @@ async def tool_batch_summarize(req: BatchSummarizeRequest):
     各视频完全独立，一视频失败不影响其他。下载/总结各重试最多 5 次（指数退避）。
 
     B站分P视频（裸 BV 未指定 ?p=）不下载：该条目返回 status="multi_part"
-    （含 parts 清单与可照抄的 entries 条目），由模型询问用户后带 ?p= 重调。
+    （含 parts 清单与可照抄的 entries 条目），由模型询问用户后重调。
+    分P选择展开：条目带 parts（P 号数组）时服务端按 pagelist 展开为 per-P
+    条目执行（URL/标题/键全服务端生成）；无效 P 号/清单获取失败 → 该分P
+    error 占位（诚实失败），其余分P独立执行。
 
     返回：
         { batch_id, results: [{ video_id, status, ... }] }
@@ -524,11 +580,29 @@ async def tool_batch_summarize(req: BatchSummarizeRequest):
         finally:
             cleanup_progress(task_id)
 
-    # ── B站分P检测（裸 BV 多P：不下载，秒回引导）──
-    video_list = [v.model_dump() for v in req.videos]
+    # ── 分P选择展开（parts 参数）+ B站分P检测（裸 BV 兜底引导）──
+    # 展开条目与前端按同规则合成（P 号序、BVxxx-pN 键），results 与卡片索引对齐
+    video_list: list[dict] = []
+    for v in req.videos:
+        video = v.model_dump()
+        sel = video.pop("parts", None)
+        if sel:
+            video_list.extend(await _expand_bili_parts(video, sel))
+        else:
+            video_list.append(video)
     detects = await asyncio.gather(
         *(_detect_bili_multi_part(v.get("video_url", "")) for v in video_list)
     )
+
+    def _register_pending(video_id: str) -> str:
+        """待定条目（multi 引导/展开错误占位）注册 PROCESSING 任务：call 态
+        前端会对每条 args 开 by-video SSE，不注册则 5s 轮询 404 → 卡片被
+        错误态覆盖（混批时持续到整批完成）。注册后不产事件、流静默保持，
+        终态由 POST 返回的 results 驱动。"""
+        task_id = uuid.uuid4().hex[:12]
+        _video_task_map[video_id] = task_id
+        _summarize_tasks[task_id] = TaskRecord(status=TaskStatus.PROCESSING)
+        return task_id
 
     def _derive_video_id(video: dict, task_id: str) -> str:
         return (
@@ -537,20 +611,27 @@ async def tool_batch_summarize(req: BatchSummarizeRequest):
             or f"vid_{abs(hash(video.get('video_url') or video.get('title', task_id))) & 0xFFFFFFFF:08x}"
         )
 
+    prebaked: dict[int, dict] = {}  # 请求序号 → 预定制结果（展开错误占位）
     multi_by_index: dict[int, dict] = {}
     runnable: list[tuple[int, dict]] = []  # (请求序号, video)
     for i, video in enumerate(video_list):
-        if detects[i]:
-            multi_by_index[i] = detects[i]
-            # 待选卡也注册任务映射：call 态前端会对每条 args 开 by-video SSE，
-            # 不注册则 5s 轮询后 404 → 卡片被错误态覆盖（混批时持续到整批
-            # 完成）。注册后 PROCESSING 任务不产事件、流静默保持，终态由
-            # POST 返回的 results 驱动（multi_part 待选态）
-            task_id = uuid.uuid4().hex[:12]
-            video_id = _derive_video_id(video, task_id)
+        err = video.pop("_error", None)
+        if err:
+            # 展开错误占位：该分P诚实失败（不执行），其余分P独立执行
+            video_id = _derive_video_id(video, "pending")
+            _register_pending(video_id)
             video["_video_id"] = video_id
-            _video_task_map[video_id] = task_id
-            _summarize_tasks[task_id] = TaskRecord(status=TaskStatus.PROCESSING)
+            prebaked[i] = {
+                "video_id": video_id,
+                "video_url": video.get("video_url", ""),
+                "title": video.get("title") or video_id,
+                "status": "error",
+                "error": err,
+            }
+        elif detects[i]:
+            multi_by_index[i] = detects[i]
+            video["_video_id"] = _derive_video_id(video, "multi")
+            _register_pending(video["_video_id"])
         else:
             runnable.append((i, video))
 
@@ -571,21 +652,23 @@ async def tool_batch_summarize(req: BatchSummarizeRequest):
     for (_, video), (_, task_entry) in zip(runnable, tasks, strict=True):
         futures.append(_executor.submit(_run_one, video, task_entry))
 
-    logger.info("批量总结启动: batch=%s, %d 个视频, 分P引导 %d 个, 等待完成...",
-                batch_id, len(req.videos), len(multi_by_index))
+    logger.info("批量总结启动: batch=%s, %d 个请求条目, 展开 %d 个分P, 分P引导 %d 个, 等待完成...",
+                batch_id, len(req.videos), len(video_list) - len(req.videos),
+                len(multi_by_index))
     logger.info("批量总结注册键: %s", [v["_video_id"] for _, v in runnable])
 
     # ★ 关键：等待移到线程池，释放 asyncio 事件循环给 SSE 请求
     loop = asyncio.get_event_loop()
     await loop.run_in_executor(None, lambda: [f.result() for f in futures])
 
-    # 汇总结果（按请求顺序：multi_part 引导与正常结果交错）
-    # 构建 video_id → 原始请求数据 的映射（用于 title + video_url 回填）
+    # 汇总结果（按展开后顺序：multi_part 引导/展开错误占位与正常结果交错；
+    # 与前端 expandBatchVideos 合成的卡片索引一致）
+    # 构建 video_id → 展开后条目 的映射（用于 title + video_url 回填）
     req_by_id: dict[str, dict] = {}
-    for v in req.videos:
-        rid = v.video_id or _extract_video_id(v.video_url or "")
+    for v in video_list:
+        rid = v.get("video_id") or _extract_video_id(v.get("video_url") or "")
         if rid:
-            req_by_id[rid] = v.model_dump()
+            req_by_id[rid] = v
     results: list[dict | None] = [None] * len(video_list)
     for i, t in tasks:
         task_data = _summarize_tasks.get(t["task_id"])
@@ -610,12 +693,15 @@ async def tool_batch_summarize(req: BatchSummarizeRequest):
             }
     for i, multi in multi_by_index.items():
         video = video_list[i]
-        from vidagent.tools.platforms.bilibili import part_url
+        from vidagent.tools.platforms.bilibili import PARTS_LIST_CAP, part_url
 
         video_id = video.get("_video_id") or multi["bvid"]
         base_title = video.get("title") or multi["bvid"]
+        # 清单/条目上送截断（防千P视频撑爆上下文；total_parts 仍是真实总数，
+        # parts 少于 total_parts 即截断——用户仍可按 P 号指定任意分P）
+        shown = multi["parts"][:PARTS_LIST_CAP]
         entries = []
-        for p in multi["parts"]:
+        for p in shown:
             seg = f"P{p['page']} {p['part']}".strip()
             entries.append({
                 "video_url": part_url(multi["bvid"], p["page"]),
@@ -633,19 +719,26 @@ async def tool_batch_summarize(req: BatchSummarizeRequest):
             "title": base_title,
             "status": "multi_part",
             "total_parts": multi["total_parts"],
-            "parts": multi["parts"],
+            "parts": shown,
             "entries": entries,
             "message": (
                 f"该视频是分P视频（共 {multi['total_parts']} 个分P），未指定分P，未总结。"
                 "请告知用户这是分P视频并询问要总结哪一P或全部；"
-                "总结某一P：从 entries 中取对应条目；全部总结：将 entries 整个数组传入。"
+                "用户答复后以 parts 参数传所选 P 号数组重调本条目"
+                f"（如 parts:[2]，全部为 parts:[1..{multi['total_parts']}]）；"
+                "下载场景用 entries 条目的 URL。"
             ),
         }
 
-    # 清理 video_id → task_id 映射（runnable + multi 待选卡）
+    for i, res in prebaked.items():
+        results[i] = res
+
+    # 清理 video_id → task_id 映射（runnable + multi 待选卡 + 展开错误占位）
     for _, video in runnable:
         _video_task_map.pop(video["_video_id"], None)
     for i in multi_by_index:
+        _video_task_map.pop(video_list[i]["_video_id"], None)
+    for i in prebaked:
         _video_task_map.pop(video_list[i]["_video_id"], None)
 
     logger.info("批量总结完成: batch=%s, done=%d/%d", batch_id,

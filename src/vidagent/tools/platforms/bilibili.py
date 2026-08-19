@@ -188,6 +188,12 @@ def part_url(bvid: str, page: int) -> str:
     return f"https://www.bilibili.com/video/{bvid}?p={page}"
 
 
+def extract_bvid(url: str) -> str | None:
+    """从 URL 提取裸 BV 号（忽略 p 参数；分P选择展开用）。"""
+    m = _BV_RE.search(url)
+    return m.group(1) if m else None
+
+
 async def fetch_popular(client: httpx.AsyncClient, ps: int = 20, pn: int = 1) -> list[dict]:
     """综合热门（首页 trending，最贴近「今日热榜」）。"""
     data = await _get(client, f"{API_BASE}/x/web-interface/popular", {"ps": ps, "pn": pn})
@@ -331,7 +337,7 @@ _parts_cache: dict[str, tuple[float, list[dict]]] = {}
 # total_parts，用户仍可按 P 号指定任意分P）
 _PARTS_ENRICH_CONCURRENCY = 6
 _PARTS_ENRICH_TIMEOUT = 3.0
-_PARTS_LIST_CAP = 50
+PARTS_LIST_CAP = 50
 
 
 async def get_parts_cached(client: httpx.AsyncClient, bvid: str) -> list[dict] | None:
@@ -352,12 +358,21 @@ async def get_parts_cached(client: httpx.AsyncClient, bvid: str) -> list[dict] |
     return parts
 
 
+async def parts_for_bvid(bvid: str) -> list[dict] | None:
+    """按 bvid 取分P清单（自建 client，走共享缓存）；失败 None。
+
+    供总结入口的 parts 选择展开使用（与检索富化/入口检测共享缓存）。
+    """
+    async with make_client() as client:
+        return await get_parts_cached(client, bvid)
+
+
 async def enrich_parts(client: httpx.AsyncClient, items: list[dict]) -> list[dict]:
     """检索结果富化：B站多P条目附加 total_parts + parts 清单。
 
     单P / 获取失败 / 超时 → 条目不带字段（按单P对待，检测是增强能力
     非硬依赖，与总结入口降级口径一致）。并发受限 + 整体超时；超时本轮
-    全部静默放弃。清单截断至 _PARTS_LIST_CAP。
+    全部静默放弃。清单截断至 PARTS_LIST_CAP。
     """
     bvids = list(dict.fromkeys(
         str(it.get("video_id", "")) for it in items
@@ -386,7 +401,7 @@ async def enrich_parts(client: httpx.AsyncClient, items: list[dict]) -> list[dic
         parts = multi.get(str(it.get("video_id", "")))
         if parts:
             it["total_parts"] = len(parts)
-            it["parts"] = parts[:_PARTS_LIST_CAP]
+            it["parts"] = parts[:PARTS_LIST_CAP]
     return items
 
 
