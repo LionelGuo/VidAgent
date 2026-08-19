@@ -263,11 +263,13 @@ async def tool_download_video(req: DownloadRequest):
     # B站分P检测：裸 BV 的多P视频不下载，返回分P清单引导模型询问用户（秒回）
     multi = await _detect_bili_multi_part(req.video_url)
     if multi:
+        from vidagent.tools.platforms.bilibili import part_url
+
         multi["status"] = "multi_part"
         multi["video_url"] = req.video_url
         multi["entries"] = [
             {
-                "video_url": f"https://www.bilibili.com/video/{multi['bvid']}?p={p['page']}",
+                "video_url": part_url(multi["bvid"], p["page"]),
                 "file_name": f"{multi['bvid']}-p{p['page']}",
             }
             for p in multi["parts"]
@@ -522,16 +524,33 @@ async def tool_batch_summarize(req: BatchSummarizeRequest):
         finally:
             cleanup_progress(task_id)
 
-    # ── B站分P检测（裸 BV 多P：不下载、不注册任务，秒回引导）──
+    # ── B站分P检测（裸 BV 多P：不下载，秒回引导）──
     video_list = [v.model_dump() for v in req.videos]
     detects = await asyncio.gather(
         *(_detect_bili_multi_part(v.get("video_url", "")) for v in video_list)
     )
+
+    def _derive_video_id(video: dict, task_id: str) -> str:
+        return (
+            video.get("video_id")
+            or _extract_video_id(video.get("video_url", ""))
+            or f"vid_{abs(hash(video.get('video_url') or video.get('title', task_id))) & 0xFFFFFFFF:08x}"
+        )
+
     multi_by_index: dict[int, dict] = {}
     runnable: list[tuple[int, dict]] = []  # (请求序号, video)
     for i, video in enumerate(video_list):
         if detects[i]:
             multi_by_index[i] = detects[i]
+            # 待选卡也注册任务映射：call 态前端会对每条 args 开 by-video SSE，
+            # 不注册则 5s 轮询后 404 → 卡片被错误态覆盖（混批时持续到整批
+            # 完成）。注册后 PROCESSING 任务不产事件、流静默保持，终态由
+            # POST 返回的 results 驱动（multi_part 待选态）
+            task_id = uuid.uuid4().hex[:12]
+            video_id = _derive_video_id(video, task_id)
+            video["_video_id"] = video_id
+            _video_task_map[video_id] = task_id
+            _summarize_tasks[task_id] = TaskRecord(status=TaskStatus.PROCESSING)
         else:
             runnable.append((i, video))
 
@@ -539,11 +558,7 @@ async def tool_batch_summarize(req: BatchSummarizeRequest):
     tasks: list[tuple[int, dict]] = []  # (请求序号, task_entry)
     for i, video in runnable:
         task_id = uuid.uuid4().hex[:12]
-        video_id = (
-            video.get("video_id")
-            or _extract_video_id(video.get("video_url", ""))
-            or f"vid_{abs(hash(video.get('video_url') or video.get('title', task_id))) & 0xFFFFFFFF:08x}"
-        )
+        video_id = _derive_video_id(video, task_id)
         video["_task_id"] = task_id
         video["_video_id"] = video_id
         _video_task_map[video_id] = task_id
@@ -595,21 +610,20 @@ async def tool_batch_summarize(req: BatchSummarizeRequest):
             }
     for i, multi in multi_by_index.items():
         video = video_list[i]
-        video_id = (
-            video.get("video_id")
-            or _extract_video_id(video.get("video_url", ""))
-            or multi["bvid"]
-        )
+        from vidagent.tools.platforms.bilibili import part_url
+
+        video_id = video.get("_video_id") or multi["bvid"]
         base_title = video.get("title") or multi["bvid"]
         entries = []
         for p in multi["parts"]:
             seg = f"P{p['page']} {p['part']}".strip()
             entries.append({
-                "video_url": f"https://www.bilibili.com/video/{multi['bvid']}?p={p['page']}",
+                "video_url": part_url(multi["bvid"], p["page"]),
                 "video_id": f"{multi['bvid']}-p{p['page']}",
                 "title": f"{base_title} · {seg}" if seg else base_title,
                 "desc": video.get("desc") or "",
                 "author": video.get("author"),
+                "duration": p.get("duration"),
                 "duration_text": p.get("duration_text"),
                 "platform": "bilibili",
             })
@@ -628,9 +642,11 @@ async def tool_batch_summarize(req: BatchSummarizeRequest):
             ),
         }
 
-    # 清理 video_id → task_id 映射
+    # 清理 video_id → task_id 映射（runnable + multi 待选卡）
     for _, video in runnable:
         _video_task_map.pop(video["_video_id"], None)
+    for i in multi_by_index:
+        _video_task_map.pop(video_list[i]["_video_id"], None)
 
     logger.info("批量总结完成: batch=%s, done=%d/%d", batch_id,
                 sum(1 for r in results if r and r["status"] == "done"), len(results))

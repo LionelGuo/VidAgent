@@ -182,6 +182,11 @@ def extract_video_id(url: str) -> str | None:
     return f"{m.group(1)}-p{pm.group(1)}" if pm else m.group(1)
 
 
+def part_url(bvid: str, page: int) -> str:
+    """分P条目的规范 URL（?p= 直达该P；两入口的 entries 单一来源）。"""
+    return f"https://www.bilibili.com/video/{bvid}?p={page}"
+
+
 async def fetch_popular(client: httpx.AsyncClient, ps: int = 20, pn: int = 1) -> list[dict]:
     """综合热门（首页 trending，最贴近「今日热榜」）。"""
     data = await _get(client, f"{API_BASE}/x/web-interface/popular", {"ps": ps, "pn": pn})

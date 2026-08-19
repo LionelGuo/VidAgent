@@ -208,27 +208,25 @@ def _knowledge_lines(
         "view_count 依平台含义不同：bilibili/youtube 为播放量、xiaohongshu/weibo 为点赞数、"
         "douyin 热榜为热度值）。"
     )
-    # 分P知识句（仅声明的平台生成）：分P=同一 BV 多页（URL ?p=N）；
-    # UGC 合集/系列（跨多个独立 BV）不属分P——各成员本就是独立视频（Q6 边界）
+    # 分P知识句（恒置键，无平台声明时为空串——prompts.ts 据空串跳过拼装）：
+    # 分P=同一 BV 多页（URL ?p=N）；UGC 合集/系列（跨多个独立 BV）不属分P
+    # ——各成员本就是独立视频（Q6 边界）
     mp_supported = [n for n in platform_names if caps[n]["multi_part"]]
-    if mp_supported:
-        parts_line = (
-            f"{'、'.join(mp_supported)} 存在分P视频：同一视频下含多个分P"
-            "（每个分P有独立标题与时长，URL 以 p=N 指定）；总结入口对未指定分P的"
-            "分P视频返回分P清单与可直接使用的分P条目，不直接总结"
-            "（处理规则见行为规则段）。"
-            "B站 UGC 合集/系列（跨多个独立视频）不属分P——各成员按独立视频对待，"
-            "不展开。"
-        )
-    else:
-        parts_line = ""
+    parts_line = (
+        f"{'、'.join(mp_supported)} 存在分P视频：同一视频下含多个分P"
+        "（每个分P有独立标题与时长，URL 以 p=N 指定）；总结入口对未指定分P的"
+        "分P视频返回分P清单与可直接使用的分P条目，不直接总结"
+        "（处理规则见行为规则段）。"
+        "B站 UGC 合集/系列（跨多个独立视频）不属分P——各成员按独立视频对待，"
+        "不展开。"
+    ) if mp_supported else ""
 
     return {
         "platformsLine": platforms_line,
         "searchCreatorLine": search_creator_line,
         "hotLine": hot_line,
         "fieldsLine": fields_line,
-        **({"partsLine": parts_line} if parts_line else {}),
+        "partsLine": parts_line,
     }
 
 
@@ -323,7 +321,7 @@ export const SYSTEM_KNOWLEDGE = {{
   searchCreatorLine: {json.dumps(knowledge["searchCreatorLine"], ensure_ascii=False)},
   hotLine: {json.dumps(knowledge["hotLine"], ensure_ascii=False)},
   fieldsLine: {json.dumps(knowledge["fieldsLine"], ensure_ascii=False)},
-  partsLine: {json.dumps(knowledge.get("partsLine", ""), ensure_ascii=False)},
+  partsLine: {json.dumps(knowledge["partsLine"], ensure_ascii=False)},
 }} as const;
 """
 
