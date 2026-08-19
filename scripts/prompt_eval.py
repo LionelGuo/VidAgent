@@ -54,7 +54,7 @@ _INTERNAL_TOKENS = (
     "duration_text", "view_count", "video_url",
     "get_hot_videos", "search_videos", "get_creator_videos",
     "batch_summarize_videos", "download_video", "extract_and_summarize",
-    "multi_part", "entries",
+    "multi_part", "entries", "parts", "total_parts",
 )
 
 # 过时表述形态：「这是/以上是…X月X日(号)…」式声称（B11 回归：曾把条目
@@ -267,6 +267,35 @@ def _check_bili_multi_part_ask(p: dict) -> list[str]:
 # ---------------------------------------------------------------------------
 
 
+def _check_bili_multi_part_search_ask(p: dict) -> list[str]:
+    """检索流先询问（检索前置询问专项）：搜索→第一条是多P→调用前询问。
+
+    自适应前置：读实际搜索载荷的第一条——带分P清单才断言「不调用+询问」；
+    排序漂移导致第一条非多P时报「前置不满足」（环境问题而非模型行为问题，
+    人工判读）。query「AE教程」实测 4/5 前排结果为多P（4P/30P/67P 教程类），
+    第一条稳定多P。
+    """
+    fails = (
+        _require_tools(p, ("search_videos",))
+        + _check_no_internal_jargon(p)
+    )
+    results = _result_items(p, "search_videos")
+    first = results[0] if results else None
+    if not first or not first.get("parts"):
+        fails.append(
+            f"前置不满足: 搜索第一条非多P视频（排序漂移？载荷 {len(results)} 条）——"
+            "本用例仅在其为多P时有效"
+        )
+        return fails
+    if "batch_summarize_videos" in _tool_names(p):
+        fails.append("检索结果带分P清单时不得调用总结工具（应先询问用户选集）")
+    if "分P" not in p["text"] and "分 P" not in p["text"]:
+        fails.append("最终回复应说明这是分P视频")
+    if not _ASK_RE.search(p["text"]):
+        fails.append("最终回复应询问用户要总结哪一P或全部")
+    return fails
+
+
 def _check_hot_bilibili(p: dict) -> list[str]:
     fails = (
         _require_tools(p, ("get_hot_videos",))
@@ -461,6 +490,13 @@ CASES = [
         "bili_multi_part_ask",
         "总结这个B站视频 https://www.bilibili.com/video/BV1bK411W797",
         _check_bili_multi_part_ask,
+    ),
+    # 检索前置询问专项：搜索→第一条多P→不得调用总结工具，先询问
+    # （粘贴流用例上方保留为兜底路径回归）
+    EvalCase(
+        "bili_multi_part_search_ask",
+        "在B站搜索AE教程，然后总结第一条结果",
+        _check_bili_multi_part_search_ask,
     ),
     EvalCase(
         "xhs_duration_filter",
