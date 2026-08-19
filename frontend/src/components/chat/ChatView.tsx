@@ -29,6 +29,34 @@ function extractVideoId(videoUrl: string): string | null {
   if (wb) return wb[1];
   return null;
 }
+
+/** 分P选择展开（与后端 _expand_bili_parts 同规则，检索前置询问专项）：
+ *  带 parts 的条目按 P 号序合成 per-P 伪条目（?p=N URL，键由
+ *  extractVideoId 提取为 BVxxx-pN）。卡片 / SSE / results / 元数据四处
+ *  消费同一展开列表，与后端展开结果同长同序（索引对齐契约）；
+ *  标题无分P子标题（卡片键与进度对齐才是契约，全称由后端结果携带）。 */
+function expandBatchVideos(videos: any[] | undefined | null): any[] {
+  if (!videos?.length) return [];
+  const out: any[] = [];
+  for (const v of videos) {
+    const parts: number[] | undefined = v?.parts;
+    if (!parts?.length) {
+      out.push(v);
+      continue;
+    }
+    for (const n of parts) {
+      const url: string = v.video_url ?? "";
+      out.push({
+        ...v,
+        parts: undefined,
+        video_id: undefined,
+        video_url: url + (url.includes("?") ? "&" : "?") + `p=${n}`,
+        title: v.title ? `${v.title} · P${n}` : `P${n}`,
+      });
+    }
+  }
+  return out;
+}
 import { type Message } from "@ai-sdk/react";
 import { cn } from "@/lib/utils";
 import { SUMMARIZING_STAGES, useLayoutStore, useVideoStore, type VideoInfo } from "@/lib/stores";
@@ -303,7 +331,7 @@ function extractVideoResults(toolInvocations: any[]): VideoInfo[] {
 
     // 批量总结 → 提取 videos[] 元数据 + 完成时写入 summary
     if (ti.toolName === "batch_summarize_videos") {
-      const batchVideos: any[] = ti.args?.videos ?? [];
+      const batchVideos: any[] = expandBatchVideos(ti.args?.videos);
       for (const v of batchVideos) {
         const vid = v.video_id || extractVideoId(v.video_url ?? "");
         if (vid) {
@@ -325,7 +353,7 @@ function extractVideoResults(toolInvocations: any[]): VideoInfo[] {
         // 与 videoCards 渲染分支同索引取渲染键，保证卡片条目必然命中。
         // 旧的 r.video_id / video_url 匹配依赖 Agent 透传字段的完整性，
         // Agent 转写参数（如丢失 xsec_token）时会导致单个卡片永远卡 downloading。
-        const batchVideos: any[] = ti.args?.videos ?? [];
+        const batchVideos: any[] = expandBatchVideos(ti.args?.videos);
         for (let i = 0; i < ti.result.results.length; i++) {
           const r = ti.result.results[i];
           const v = batchVideos[i];
@@ -510,7 +538,7 @@ function AssistantContent({
   const videoCards = toolInvocations
     .filter((ti: any) => ti.toolName === "batch_summarize_videos")
     .flatMap((ti: any) => {
-      const batchVideos: any[] = ti.args?.videos ?? [];
+      const batchVideos: any[] = expandBatchVideos(ti.args?.videos);
       // 查找已完成的结果，用于显示 summary
       const results: any[] = ti.result?.results ?? [];
       const resultByUrl = new Map<string, any>();
@@ -737,7 +765,7 @@ export function ChatView({
 
         // ── batch_summarize_videos（批量）──
         if (ti.toolName === "batch_summarize_videos") {
-          const batchVideos: any[] = ti.args?.videos ?? [];
+          const batchVideos: any[] = expandBatchVideos(ti.args?.videos);
 
           if (ti.state === "call") {
             // 预填 VideoStore 元数据（DetailPanel 必须在总结开始前就知道视频信息）

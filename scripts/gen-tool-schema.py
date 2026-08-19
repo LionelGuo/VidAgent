@@ -210,13 +210,16 @@ def _knowledge_lines(
     )
     # 分P知识句（恒置键，无平台声明时为空串——prompts.ts 据空串跳过拼装）：
     # 分P=同一 BV 多页（URL ?p=N）；UGC 合集/系列（跨多个独立 BV）不属分P
-    # ——各成员本就是独立视频（Q6 边界）
+    # ——各成员本就是独立视频（Q6 边界）。检索前置询问专项：检索结果自带
+    # parts/total_parts（>50P 截断），总结入口引导为裸 URL 兜底
     mp_supported = [n for n in platform_names if caps[n]["multi_part"]]
     parts_line = (
         f"{'、'.join(mp_supported)} 存在分P视频：同一视频下含多个分P"
-        "（每个分P有独立标题与时长，URL 以 p=N 指定）；总结入口对未指定分P的"
-        "分P视频返回分P清单与可直接使用的分P条目，不直接总结"
-        "（处理规则见行为规则段）。"
+        "（每个分P有独立标题与时长，URL 以 p=N 指定）；检索结果中多P视频额外带"
+        " parts（分P清单：page/part/duration/duration_text）与 total_parts"
+        "（分P总数；parts 少于 total_parts 时为截断，仅列前 50，"
+        "仍可按 P 号指定任意分P）；总结入口对未指定分P的分P视频返回分P清单"
+        "与分P条目，不直接总结（处理规则见行为规则段）。"
         "B站 UGC 合集/系列（跨多个独立视频）不属分P——各成员按独立视频对待，"
         "不展开。"
     ) if mp_supported else ""

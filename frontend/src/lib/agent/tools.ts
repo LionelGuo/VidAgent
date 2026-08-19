@@ -83,6 +83,10 @@ const videoItemSchema = z.object({
   author: z.string().nullable().optional().describe("作者/UP 主"),
   duration_text: z.string().nullable().optional().describe("时长文本"),
   platform: z.string().nullable().optional().describe("平台（默认从 URL 自动检测）"),
+  // B站分P选择（检索前置询问专项）：P 号数组由后端展开为分P条目，
+  // 模型无需转写分P标题/URL
+  parts: z.array(z.number().int().min(1)).min(1).optional()
+    .describe("B站分P选择：用户已选定的分P P号数组（如 [2] 选P2、[2,5] 选P2和P5、全部为 1 到分P总数的完整数组）；仅 B站视频可用，传入后无需构造 ?p= URL"),
 });
 
 type BatchVideo = z.infer<typeof videoItemSchema>;
@@ -223,7 +227,7 @@ export const TOOLS = {
   // ── 下载工具 ──
   download_video: {
     description:
-      "下载无水印视频到本地。传入视频 URL（来自搜索/热榜结果的 video_url），下载到 workspace 目录。返回 local_path 供后续总结使用。B站分P视频（未指定分P）返回分P清单而非下载——需询问用户后再按条目重调。",
+      "下载无水印视频到本地。传入视频 URL（来自搜索/热榜结果的 video_url），下载到 workspace 目录。返回 local_path 供后续总结使用。B站分P视频未选定分P前先询问用户，再按返回的分P条目 URL 重调。",
     parameters: z.object({
       video_url: z.string().describe("视频播放页地址（来自检索结果的 video_url）"),
       file_name: z
@@ -244,7 +248,7 @@ export const TOOLS = {
   // ── 批量总结工具（并行下载 + 总结多个视频）──
   batch_summarize_videos: {
     description:
-      "【推荐】批量并行总结多个视频。传入视频列表，后端并行处理并等待全部完成（无需额外查询状态）。返回所有视频的完整总结文本。每个视频独立重试、独立错误。B站分P视频（未指定分P）返回分P清单而非总结——需询问用户后再以分P条目重调。",
+      "【推荐】批量并行总结多个视频。传入视频列表，后端并行处理并等待全部完成（无需额外查询状态）。返回所有视频的完整总结文本。每个视频独立重试、独立错误。B站分P视频未选定分P前不要调用——先询问用户（检索结果自带分P清单的可直接判断），用户选定后在该条目以 parts（P 号数组）传入，其余视频照常一次调用。",
     parameters: z.object({
       videos: z.array(videoItemSchema).describe("要总结的视频列表"),
     }),
@@ -279,7 +283,7 @@ export const TOOLS = {
       const multiParts = results.filter((r: any) => r.status === "multi_part");
       const multiNote = multiParts.length > 0
         ? `\n\n${multiParts.map((m: any) =>
-            `【${m.title}】为分P视频（共 ${m.total_parts} 个分P），未总结：请先询问用户要总结哪一P还是全部，再按该条目 entries 中的分P条目重新调用`).join("\n")}`
+            `【${m.title}】为分P视频（共 ${m.total_parts} 个分P），未总结：请先询问用户要总结哪一P还是全部，再以 parts 参数（P 号数组，全部为 1 到 ${m.total_parts}）随该条目重新调用`).join("\n")}`
         : "";
       return {
         batch_id: data.batch_id,
